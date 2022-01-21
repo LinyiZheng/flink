@@ -21,12 +21,10 @@ package org.apache.flink.runtime.webmonitor;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.JobManagerOptions;
-import org.apache.flink.runtime.concurrent.Executors;
 import org.apache.flink.runtime.webmonitor.handlers.JarUploadHandler;
-import org.apache.flink.runtime.webmonitor.history.JsonArchivist;
 import org.apache.flink.util.TestLogger;
+import org.apache.flink.util.concurrent.Executors;
 
-import org.junit.Assert;
 import org.junit.Test;
 
 import java.nio.file.Paths;
@@ -38,38 +36,24 @@ import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.nullValue;
 import static org.junit.Assert.assertThat;
 
-/**
- * Tests for the WebMonitorUtils.
- */
+/** Tests for the WebMonitorUtils. */
 public class WebMonitorUtilsTest extends TestLogger {
 
-	@Test
-	public void testGetArchivers() {
-		JsonArchivist[] direct = WebRuntimeMonitor.getJsonArchivists();
-		JsonArchivist[] reflected = WebMonitorUtils.getJsonArchivists();
+    /** Tests dynamically loading of handlers such as {@link JarUploadHandler}. */
+    @Test
+    public void testLoadWebSubmissionExtension() throws Exception {
+        final Configuration configuration = new Configuration();
+        configuration.setString(JobManagerOptions.ADDRESS, "localhost");
+        final WebMonitorExtension webMonitorExtension =
+                WebMonitorUtils.loadWebSubmissionExtension(
+                        CompletableFuture::new,
+                        Time.seconds(10),
+                        Collections.emptyMap(),
+                        CompletableFuture.completedFuture("localhost:12345"),
+                        Paths.get("/tmp"),
+                        Executors.directExecutor(),
+                        configuration);
 
-		Assert.assertEquals(direct.length, reflected.length);
-		for (int x = 0; x < direct.length; x++) {
-			Assert.assertSame(direct[x].getClass(), reflected[x].getClass());
-		}
-	}
-
-	/**
-	 * Tests dynamically loading of handlers such as {@link JarUploadHandler}.
-	 */
-	@Test
-	public void testLoadWebSubmissionExtension() throws Exception {
-		final Configuration configuration = new Configuration();
-		configuration.setString(JobManagerOptions.ADDRESS, "localhost");
-		final WebMonitorExtension webMonitorExtension = WebMonitorUtils.loadWebSubmissionExtension(
-			CompletableFuture::new,
-			Time.seconds(10),
-			Collections.emptyMap(),
-			CompletableFuture.completedFuture("localhost:12345"),
-			Paths.get("/tmp"),
-			Executors.directExecutor(),
-			configuration);
-
-		assertThat(webMonitorExtension, is(not(nullValue())));
-	}
+        assertThat(webMonitorExtension, is(not(nullValue())));
+    }
 }

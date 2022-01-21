@@ -21,14 +21,15 @@ import java.io._
 import java.lang.invoke.SerializedLambda
 
 import org.apache.flink.annotation.Internal
+import org.apache.flink.api.common.ExecutionConfig.ClosureCleanerLevel
 import org.apache.flink.api.common.InvalidProgramException
 import org.apache.flink.util.{FlinkException, InstantiationUtil}
 import org.slf4j.LoggerFactory
 
 import scala.collection.mutable.Map
 import scala.collection.mutable.Set
-import org.apache.flink.shaded.asm6.org.objectweb.asm.{ClassReader, ClassVisitor, MethodVisitor, Type}
-import org.apache.flink.shaded.asm6.org.objectweb.asm.Opcodes._
+import org.apache.flink.shaded.asm7.org.objectweb.asm.{ClassReader, ClassVisitor, MethodVisitor, Type}
+import org.apache.flink.shaded.asm7.org.objectweb.asm.Opcodes._
 
 import scala.collection.mutable
 
@@ -37,8 +38,6 @@ import scala.collection.mutable
 object ClosureCleaner {
 
   val LOG = LoggerFactory.getLogger(this.getClass)
-
-  private val isScala2_11 = scala.util.Properties.versionString.contains("2.11")
 
   // Get an ASM class reader for a given class from the JAR that loaded it
   private[scala] def getClassReader(cls: Class[_]): ClassReader = {
@@ -157,12 +156,13 @@ object ClosureCleaner {
    *
    * @param closure the closure to clean
    * @param checkSerializable whether to verify that the closure is serializable after cleaning
-   * @param cleanTransitively whether to clean enclosing closures transitively
+   * @param cleanLevel whether to clean enclosing closures transitively
    */
   def clean(
       closure: AnyRef,
       checkSerializable: Boolean = true,
-      cleanTransitively: Boolean = true): Unit = {
+      cleanLevel: ClosureCleanerLevel = ClosureCleanerLevel.RECURSIVE): Unit = {
+    val cleanTransitively = if (cleanLevel == ClosureCleanerLevel.RECURSIVE) true else false
     clean(closure, checkSerializable, cleanTransitively, Map.empty)
   }
 
@@ -172,9 +172,6 @@ object ClosureCleaner {
    * @param closure the closure to check.
    */
   private def getSerializedLambda(closure: AnyRef): Option[SerializedLambda] = {
-    if (isScala2_11) {
-      return None
-    }
     val isClosureCandidate =
       closure.getClass.isSynthetic &&
         closure

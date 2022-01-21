@@ -28,7 +28,7 @@ n2
 n3
 EOF
 
-common_jepsen_args+=(--ha-storage-dir hdfs:///flink
+common_jepsen_args+=(
 --tarball ${2}
 --ssh-private-key ~/.ssh/id_rsa
 --nodes-file ${dockerdir}/nodes)
@@ -46,10 +46,6 @@ do
   lein run test "${common_jepsen_args[@]}" --nemesis-gen kill-task-managers --test-spec "${dockerdir}/test-specs/yarn-job.edn"
   lein run test "${common_jepsen_args[@]}" --nemesis-gen kill-job-managers --test-spec "${dockerdir}/test-specs/yarn-job.edn"
   lein run test "${common_jepsen_args[@]}" --nemesis-gen fail-name-node-during-recovery --test-spec "${dockerdir}/test-specs/yarn-job.edn"
-
-  # Mesos
-  lein run test "${common_jepsen_args[@]}" --nemesis-gen kill-task-managers --test-spec "${dockerdir}/test-specs/mesos-session.edn"
-  lein run test "${common_jepsen_args[@]}" --nemesis-gen kill-job-managers --test-spec "${dockerdir}/test-specs/mesos-session.edn"
 
   # Standalone
   lein run test "${common_jepsen_args[@]}" --nemesis-gen kill-job-managers --test-spec "${dockerdir}/test-specs/standalone-session.edn"

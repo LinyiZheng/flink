@@ -22,81 +22,61 @@ import org.apache.flink.runtime.blob.BlobWriter;
 import org.apache.flink.runtime.blob.VoidBlobWriter;
 import org.apache.flink.runtime.execution.librarycache.ContextClassLoaderLibraryCacheManager;
 import org.apache.flink.runtime.execution.librarycache.LibraryCacheManager;
-import org.apache.flink.runtime.executiongraph.restart.NoOrFixedIfCheckpointingEnabledRestartStrategyFactory;
-import org.apache.flink.runtime.executiongraph.restart.RestartStrategyFactory;
-import org.apache.flink.runtime.rest.handler.legacy.backpressure.BackPressureStatsTracker;
-import org.apache.flink.runtime.rest.handler.legacy.backpressure.StackTraceSampleCoordinator;
-import org.apache.flink.runtime.rest.handler.legacy.backpressure.VoidBackPressureStatsTracker;
-import org.apache.flink.runtime.testingUtils.TestingUtils;
+import org.apache.flink.runtime.shuffle.ShuffleMaster;
+import org.apache.flink.runtime.shuffle.ShuffleTestUtils;
+import org.apache.flink.testutils.TestingUtils;
 
 import java.util.concurrent.ScheduledExecutorService;
 
-import static org.mockito.Mockito.mock;
-
-/**
- * Builder for the {@link JobManagerSharedServices}.
- */
+/** Builder for the {@link JobManagerSharedServices}. */
 public class TestingJobManagerSharedServicesBuilder {
 
-	private ScheduledExecutorService scheduledExecutorService;
+    private ScheduledExecutorService futureExecutor;
 
-	private LibraryCacheManager libraryCacheManager;
+    private ScheduledExecutorService ioExecutor;
 
-	private RestartStrategyFactory restartStrategyFactory;
+    private LibraryCacheManager libraryCacheManager;
 
-	private StackTraceSampleCoordinator stackTraceSampleCoordinator;
+    private ShuffleMaster<?> shuffleMaster;
 
-	private BackPressureStatsTracker backPressureStatsTracker;
+    private BlobWriter blobWriter;
 
-	private BlobWriter blobWriter;
+    public TestingJobManagerSharedServicesBuilder() {
+        futureExecutor = TestingUtils.defaultExecutor();
+        ioExecutor = TestingUtils.defaultExecutor();
+        libraryCacheManager = ContextClassLoaderLibraryCacheManager.INSTANCE;
+        shuffleMaster = ShuffleTestUtils.DEFAULT_SHUFFLE_MASTER;
+        blobWriter = VoidBlobWriter.getInstance();
+    }
 
-	public TestingJobManagerSharedServicesBuilder() {
-		scheduledExecutorService = TestingUtils.defaultExecutor();
-		libraryCacheManager = ContextClassLoaderLibraryCacheManager.INSTANCE;
-		restartStrategyFactory = new NoOrFixedIfCheckpointingEnabledRestartStrategyFactory();
-		stackTraceSampleCoordinator = mock(StackTraceSampleCoordinator.class);
-		backPressureStatsTracker = VoidBackPressureStatsTracker.INSTANCE;
-		blobWriter = VoidBlobWriter.getInstance();
-	}
+    public TestingJobManagerSharedServicesBuilder futureExecutor(
+            ScheduledExecutorService futureExecutor) {
+        this.futureExecutor = futureExecutor;
+        return this;
+    }
 
-	public TestingJobManagerSharedServicesBuilder setScheduledExecutorService(ScheduledExecutorService scheduledExecutorService) {
-		this.scheduledExecutorService = scheduledExecutorService;
-		return this;
-	}
+    public TestingJobManagerSharedServicesBuilder ioExecutor(ScheduledExecutorService ioExecutor) {
+        this.ioExecutor = ioExecutor;
+        return this;
+    }
 
-	public TestingJobManagerSharedServicesBuilder setLibraryCacheManager(LibraryCacheManager libraryCacheManager) {
-		this.libraryCacheManager = libraryCacheManager;
-		return this;
+    public TestingJobManagerSharedServicesBuilder setShuffleMaster(ShuffleMaster<?> shuffleMaster) {
+        this.shuffleMaster = shuffleMaster;
+        return this;
+    }
 
-	}
+    public TestingJobManagerSharedServicesBuilder setLibraryCacheManager(
+            LibraryCacheManager libraryCacheManager) {
+        this.libraryCacheManager = libraryCacheManager;
+        return this;
+    }
 
-	public TestingJobManagerSharedServicesBuilder setRestartStrategyFactory(RestartStrategyFactory restartStrategyFactory) {
-		this.restartStrategyFactory = restartStrategyFactory;
-		return this;
-	}
+    public void setBlobWriter(BlobWriter blobWriter) {
+        this.blobWriter = blobWriter;
+    }
 
-	public TestingJobManagerSharedServicesBuilder setStackTraceSampleCoordinator(StackTraceSampleCoordinator stackTraceSampleCoordinator) {
-		this.stackTraceSampleCoordinator = stackTraceSampleCoordinator;
-		return this;
-	}
-
-	public TestingJobManagerSharedServicesBuilder setBackPressureStatsTracker(BackPressureStatsTracker backPressureStatsTracker) {
-		this.backPressureStatsTracker = backPressureStatsTracker;
-		return this;
-
-	}
-
-	public void setBlobWriter(BlobWriter blobWriter) {
-		this.blobWriter = blobWriter;
-	}
-
-	public JobManagerSharedServices build() {
-		return new JobManagerSharedServices(
-			scheduledExecutorService,
-			libraryCacheManager,
-			restartStrategyFactory,
-			stackTraceSampleCoordinator,
-			backPressureStatsTracker,
-			blobWriter);
-	}
+    public JobManagerSharedServices build() {
+        return new JobManagerSharedServices(
+                futureExecutor, ioExecutor, libraryCacheManager, shuffleMaster, blobWriter);
+    }
 }

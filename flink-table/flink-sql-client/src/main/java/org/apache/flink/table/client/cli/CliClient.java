@@ -18,23 +18,48 @@
 
 package org.apache.flink.table.client.cli;
 
-import org.apache.flink.table.api.TableSchema;
+import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.table.api.TableResult;
+import org.apache.flink.table.api.internal.TableResultInternal;
 import org.apache.flink.table.client.SqlClientException;
-import org.apache.flink.table.client.cli.SqlCommandParser.SqlCommandCall;
-import org.apache.flink.table.client.config.entries.ViewEntry;
+import org.apache.flink.table.client.config.ResultMode;
+import org.apache.flink.table.client.config.SqlClientOptions;
 import org.apache.flink.table.client.gateway.Executor;
-import org.apache.flink.table.client.gateway.ProgramTargetDescriptor;
 import org.apache.flink.table.client.gateway.ResultDescriptor;
-import org.apache.flink.table.client.gateway.SessionContext;
 import org.apache.flink.table.client.gateway.SqlExecutionException;
+import org.apache.flink.table.operations.BeginStatementSetOperation;
+import org.apache.flink.table.operations.EndStatementSetOperation;
+import org.apache.flink.table.operations.ExplainOperation;
+import org.apache.flink.table.operations.LoadModuleOperation;
+import org.apache.flink.table.operations.ModifyOperation;
+import org.apache.flink.table.operations.Operation;
+import org.apache.flink.table.operations.QueryOperation;
+import org.apache.flink.table.operations.ShowCreateTableOperation;
+import org.apache.flink.table.operations.ShowCreateViewOperation;
+import org.apache.flink.table.operations.SinkModifyOperation;
+import org.apache.flink.table.operations.UnloadModuleOperation;
+import org.apache.flink.table.operations.UseOperation;
+import org.apache.flink.table.operations.command.AddJarOperation;
+import org.apache.flink.table.operations.command.ClearOperation;
+import org.apache.flink.table.operations.command.HelpOperation;
+import org.apache.flink.table.operations.command.QuitOperation;
+import org.apache.flink.table.operations.command.RemoveJarOperation;
+import org.apache.flink.table.operations.command.ResetOperation;
+import org.apache.flink.table.operations.command.SetOperation;
+import org.apache.flink.table.operations.command.ShowJarsOperation;
+import org.apache.flink.table.operations.ddl.AlterOperation;
+import org.apache.flink.table.operations.ddl.CreateOperation;
+import org.apache.flink.table.operations.ddl.DropOperation;
+import org.apache.flink.table.utils.EncodingUtils;
+import org.apache.flink.table.utils.print.PrintStyle;
 
+import org.apache.commons.collections.CollectionUtils;
 import org.jline.reader.EndOfFileException;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
 import org.jline.reader.MaskingCallback;
 import org.jline.reader.UserInterruptException;
 import org.jline.terminal.Terminal;
-import org.jline.terminal.TerminalBuilder;
 import org.jline.utils.AttributedString;
 import org.jline.utils.AttributedStringBuilder;
 import org.jline.utils.AttributedStyle;
@@ -42,492 +67,645 @@ import org.jline.utils.InfoCmp;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nullable;
+
+import java.io.ByteArrayOutputStream;
 import java.io.IOError;
 import java.io.IOException;
-import java.nio.charset.Charset;
+import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Supplier;
 
-/**
- * SQL CLI client.
- */
-public class CliClient {
+import static org.apache.flink.table.api.config.TableConfigOptions.TABLE_DML_SYNC;
+import static org.apache.flink.table.api.internal.TableResultImpl.TABLE_RESULT_OK;
+import static org.apache.flink.table.client.cli.CliStrings.MESSAGE_EXECUTE_STATEMENT;
+import static org.apache.flink.table.client.cli.CliStrings.MESSAGE_FINISH_STATEMENT;
+import static org.apache.flink.table.client.cli.CliStrings.MESSAGE_RESET_KEY;
+import static org.apache.flink.table.client.cli.CliStrings.MESSAGE_SET_KEY;
+import static org.apache.flink.table.client.cli.CliStrings.MESSAGE_STATEMENT_SET_END_CALL_ERROR;
+import static org.apache.flink.table.client.cli.CliStrings.MESSAGE_STATEMENT_SET_SQL_EXECUTION_ERROR;
+import static org.apache.flink.table.client.cli.CliStrings.MESSAGE_STATEMENT_SUBMITTED;
+import static org.apache.flink.table.client.cli.CliStrings.MESSAGE_WAIT_EXECUTE;
+import static org.apache.flink.table.client.config.ResultMode.TABLEAU;
+import static org.apache.flink.table.client.config.SqlClientOptions.EXECUTION_RESULT_MODE;
+import static org.apache.flink.util.Preconditions.checkState;
 
-	private static final Logger LOG = LoggerFactory.getLogger(CliClient.class);
+/** SQL CLI client. */
+public class CliClient implements AutoCloseable {
 
-	private final Executor executor;
+    private static final Logger LOG = LoggerFactory.getLogger(CliClient.class);
+    public static final Supplier<Terminal> DEFAULT_TERMINAL_FACTORY =
+            TerminalUtils::createDefaultTerminal;
 
-	private final SessionContext context;
+    private final Executor executor;
 
-	private final Terminal terminal;
+    private final String sessionId;
 
-	private final LineReader lineReader;
+    private final Path historyFilePath;
 
-	private final String prompt;
+    private final String prompt;
 
-	private boolean isRunning;
+    private final @Nullable MaskingCallback inputTransformer;
 
-	private static final int PLAIN_TERMINAL_WIDTH = 80;
+    private final Supplier<Terminal> terminalFactory;
 
-	private static final int PLAIN_TERMINAL_HEIGHT = 30;
+    private Terminal terminal;
 
-	private static final int SOURCE_MAX_SIZE = 50_000;
+    private boolean isRunning;
 
-	public CliClient(SessionContext context, Executor executor) {
-		this.context = context;
-		this.executor = executor;
+    private boolean isStatementSetMode;
 
-		try {
-			// initialize terminal
-			terminal = TerminalBuilder.builder()
-				.name(CliStrings.CLI_NAME)
-				.build();
-			// make space from previous output and test the writer
-			terminal.writer().println();
-			terminal.writer().flush();
-		} catch (IOException e) {
-			throw new SqlClientException("Error opening command line interface.", e);
-		}
+    private List<ModifyOperation> statementSetOperations;
 
-		// initialize line lineReader
-		lineReader = LineReaderBuilder.builder()
-			.terminal(terminal)
-			.appName(CliStrings.CLI_NAME)
-			.parser(new SqlMultiLineParser())
-			.completer(new SqlCompleter(context, executor))
-			.build();
-		// this option is disabled for now for correct backslash escaping
-		// a "SELECT '\'" query should return a string with a backslash
-		lineReader.option(LineReader.Option.DISABLE_EVENT_EXPANSION, true);
-		// set strict "typo" distance between words when doing code completion
-		lineReader.setVariable(LineReader.ERRORS, 1);
-		// perform code completion case insensitive
-		lineReader.option(LineReader.Option.CASE_INSENSITIVE, true);
+    private static final int PLAIN_TERMINAL_WIDTH = 80;
 
-		// create prompt
-		prompt = new AttributedStringBuilder()
-			.style(AttributedStyle.DEFAULT.foreground(AttributedStyle.GREEN))
-			.append("Flink SQL")
-			.style(AttributedStyle.DEFAULT)
-			.append("> ")
-			.toAnsi();
-	}
+    private static final int PLAIN_TERMINAL_HEIGHT = 30;
 
-	public Terminal getTerminal() {
-		return terminal;
-	}
+    /**
+     * Creates a CLI instance with a custom terminal. Make sure to close the CLI instance afterwards
+     * using {@link #close()}.
+     */
+    @VisibleForTesting
+    public CliClient(
+            Supplier<Terminal> terminalFactory,
+            String sessionId,
+            Executor executor,
+            Path historyFilePath,
+            @Nullable MaskingCallback inputTransformer) {
+        this.terminalFactory = terminalFactory;
+        this.sessionId = sessionId;
+        this.executor = executor;
+        this.inputTransformer = inputTransformer;
+        this.historyFilePath = historyFilePath;
 
-	public SessionContext getContext() {
-		return context;
-	}
+        // create prompt
+        prompt =
+                new AttributedStringBuilder()
+                        .style(AttributedStyle.DEFAULT.foreground(AttributedStyle.GREEN))
+                        .append("Flink SQL")
+                        .style(AttributedStyle.DEFAULT)
+                        .append("> ")
+                        .toAnsi();
+    }
 
-	public void clearTerminal() {
-		if (isPlainTerminal()) {
-			for (int i = 0; i < 200; i++) { // large number of empty lines
-				terminal.writer().println();
-			}
-		} else {
-			terminal.puts(InfoCmp.Capability.clear_screen);
-		}
-	}
+    /**
+     * Creates a CLI instance with a prepared terminal. Make sure to close the CLI instance
+     * afterwards using {@link #close()}.
+     */
+    public CliClient(
+            Supplier<Terminal> terminalFactory,
+            String sessionId,
+            Executor executor,
+            Path historyFilePath) {
+        this(terminalFactory, sessionId, executor, historyFilePath, null);
+    }
 
-	public boolean isPlainTerminal() {
-		// check if terminal width can be determined
-		// e.g. IntelliJ IDEA terminal supports only a plain terminal
-		return terminal.getWidth() == 0 && terminal.getHeight() == 0;
-	}
+    public Terminal getTerminal() {
+        return terminal;
+    }
 
-	public int getWidth() {
-		if (isPlainTerminal()) {
-			return PLAIN_TERMINAL_WIDTH;
-		}
-		return terminal.getWidth();
-	}
+    public String getSessionId() {
+        return this.sessionId;
+    }
 
-	public int getHeight() {
-		if (isPlainTerminal()) {
-			return PLAIN_TERMINAL_HEIGHT;
-		}
-		return terminal.getHeight();
-	}
+    public void clearTerminal() {
+        if (isPlainTerminal()) {
+            for (int i = 0; i < 200; i++) { // large number of empty lines
+                terminal.writer().println();
+            }
+        } else {
+            terminal.puts(InfoCmp.Capability.clear_screen);
+        }
+    }
 
-	public Executor getExecutor() {
-		return executor;
-	}
+    public boolean isPlainTerminal() {
+        // check if terminal width can be determined
+        // e.g. IntelliJ IDEA terminal supports only a plain terminal
+        return terminal.getWidth() == 0 && terminal.getHeight() == 0;
+    }
 
-	/**
-	 * Opens the interactive CLI shell.
-	 */
-	public void open() {
-		isRunning = true;
+    public int getWidth() {
+        if (isPlainTerminal()) {
+            return PLAIN_TERMINAL_WIDTH;
+        }
+        return terminal.getWidth();
+    }
 
-		// print welcome
-		terminal.writer().append(CliStrings.MESSAGE_WELCOME);
+    public int getHeight() {
+        if (isPlainTerminal()) {
+            return PLAIN_TERMINAL_HEIGHT;
+        }
+        return terminal.getHeight();
+    }
 
-		// begin reading loop
-		while (isRunning) {
-			// make some space to previous command
-			terminal.writer().append("\n");
-			terminal.flush();
+    public Executor getExecutor() {
+        return executor;
+    }
 
-			final String line;
-			try {
-				line = lineReader.readLine(prompt, null, (MaskingCallback) null, null);
-			} catch (UserInterruptException e) {
-				// user cancelled line with Ctrl+C
-				continue;
-			} catch (EndOfFileException | IOError e) {
-				// user cancelled application with Ctrl+D or kill
-				break;
-			} catch (Throwable t) {
-				throw new SqlClientException("Could not read from command line.", t);
-			}
-			if (line == null) {
-				continue;
-			}
-			final Optional<SqlCommandCall> cmdCall = parseCommand(line);
-			cmdCall.ifPresent(this::callCommand);
-		}
-	}
+    /** Closes the CLI instance. */
+    public void close() {
+        if (terminal != null) {
+            closeTerminal();
+        }
+    }
 
-	/**
-	 * Submits a SQL update statement and prints status information and/or errors on the terminal.
-	 *
-	 * @param statement SQL update statement
-	 * @return flag to indicate if the submission was successful or not
-	 */
-	public boolean submitUpdate(String statement) {
-		terminal.writer().println(CliStrings.messageInfo(CliStrings.MESSAGE_WILL_EXECUTE).toAnsi());
-		terminal.writer().println(new AttributedString(statement).toString());
-		terminal.flush();
+    /** Opens the interactive CLI shell. */
+    public void executeInInteractiveMode() {
+        try {
+            terminal = terminalFactory.get();
+            executeInteractive();
+        } finally {
+            closeTerminal();
+        }
+    }
 
-		final Optional<SqlCommandCall> parsedStatement = parseCommand(statement);
-		// only support INSERT INTO
-		return parsedStatement.map(cmdCall -> {
-			switch (cmdCall.command) {
-				case INSERT_INTO:
-					return callInsertInto(cmdCall);
-				default:
-					printError(CliStrings.MESSAGE_UNSUPPORTED_SQL);
-					return false;
-			}
-		}).orElse(false);
-	}
+    public void executeInNonInteractiveMode(String content) {
+        try {
+            terminal = terminalFactory.get();
+            executeFile(content, ExecutionMode.NON_INTERACTIVE_EXECUTION);
+        } finally {
+            closeTerminal();
+        }
+    }
 
-	// --------------------------------------------------------------------------------------------
+    public boolean executeInitialization(String content) {
+        try {
+            OutputStream outputStream = new ByteArrayOutputStream(256);
+            terminal = TerminalUtils.createDumbTerminal(outputStream);
+            boolean success = executeFile(content, ExecutionMode.INITIALIZATION);
+            LOG.info(outputStream.toString());
+            return success;
+        } finally {
+            closeTerminal();
+        }
+    }
 
-	private Optional<SqlCommandCall> parseCommand(String line) {
-		final Optional<SqlCommandCall> parsedLine = SqlCommandParser.parse(line);
-		if (!parsedLine.isPresent()) {
-			printError(CliStrings.MESSAGE_UNKNOWN_SQL);
-		}
-		return parsedLine;
-	}
+    // --------------------------------------------------------------------------------------------
 
-	private void callCommand(SqlCommandCall cmdCall) {
-		switch (cmdCall.command) {
-			case QUIT:
-				callQuit();
-				break;
-			case CLEAR:
-				callClear();
-				break;
-			case RESET:
-				callReset();
-				break;
-			case SET:
-				callSet(cmdCall);
-				break;
-			case HELP:
-				callHelp();
-				break;
-			case SHOW_TABLES:
-				callShowTables();
-				break;
-			case SHOW_FUNCTIONS:
-				callShowFunctions();
-				break;
-			case DESCRIBE:
-				callDescribe(cmdCall);
-				break;
-			case EXPLAIN:
-				callExplain(cmdCall);
-				break;
-			case SELECT:
-				callSelect(cmdCall);
-				break;
-			case INSERT_INTO:
-				callInsertInto(cmdCall);
-				break;
-			case CREATE_VIEW:
-				callCreateView(cmdCall);
-				break;
-			case DROP_VIEW:
-				callDropView(cmdCall);
-				break;
-			case SOURCE:
-				callSource(cmdCall);
-				break;
-			default:
-				throw new SqlClientException("Unsupported command: " + cmdCall.command);
-		}
-	}
+    enum ExecutionMode {
+        INTERACTIVE_EXECUTION,
 
-	private void callQuit() {
-		printInfo(CliStrings.MESSAGE_QUIT);
-		isRunning = false;
-	}
+        NON_INTERACTIVE_EXECUTION,
 
-	private void callClear() {
-		clearTerminal();
-	}
+        INITIALIZATION
+    }
 
-	private void callReset() {
-		context.resetSessionProperties();
-		printInfo(CliStrings.MESSAGE_RESET);
-	}
+    // --------------------------------------------------------------------------------------------
 
-	private void callSet(SqlCommandCall cmdCall) {
-		// show all properties
-		if (cmdCall.operands.length == 0) {
-			final Map<String, String> properties;
-			try {
-				properties = executor.getSessionProperties(context);
-			} catch (SqlExecutionException e) {
-				printExecutionException(e);
-				return;
-			}
-			if (properties.isEmpty()) {
-				terminal.writer().println(CliStrings.messageInfo(CliStrings.MESSAGE_EMPTY).toAnsi());
-			} else {
-				properties
-					.entrySet()
-					.stream()
-					.map((e) -> e.getKey() + "=" + e.getValue())
-					.sorted()
-					.forEach((p) -> terminal.writer().println(p));
-			}
-		}
-		// set a property
-		else {
-			context.setSessionProperty(cmdCall.operands[0], cmdCall.operands[1]);
-			terminal.writer().println(CliStrings.messageInfo(CliStrings.MESSAGE_SET).toAnsi());
-		}
-		terminal.flush();
-	}
+    /**
+     * Execute statement from the user input and prints status information and/or errors on the
+     * terminal.
+     */
+    private void executeInteractive() {
+        isRunning = true;
+        LineReader lineReader = createLineReader(terminal);
 
-	private void callHelp() {
-		terminal.writer().println(CliStrings.MESSAGE_HELP);
-		terminal.flush();
-	}
+        // make space from previous output and test the writer
+        terminal.writer().println();
+        terminal.writer().flush();
 
-	private void callShowTables() {
-		final List<String> tables;
-		try {
-			tables = executor.listTables(context);
-		} catch (SqlExecutionException e) {
-			printExecutionException(e);
-			return;
-		}
-		if (tables.isEmpty()) {
-			terminal.writer().println(CliStrings.messageInfo(CliStrings.MESSAGE_EMPTY).toAnsi());
-		} else {
-			tables.forEach((v) -> terminal.writer().println(v));
-		}
-		terminal.flush();
-	}
+        // print welcome
+        terminal.writer().append(CliStrings.MESSAGE_WELCOME);
 
-	private void callShowFunctions() {
-		final List<String> functions;
-		try {
-			functions = executor.listUserDefinedFunctions(context);
-		} catch (SqlExecutionException e) {
-			printExecutionException(e);
-			return;
-		}
-		if (functions.isEmpty()) {
-			terminal.writer().println(CliStrings.messageInfo(CliStrings.MESSAGE_EMPTY).toAnsi());
-		} else {
-			functions.forEach((v) -> terminal.writer().println(v));
-		}
-		terminal.flush();
-	}
+        // begin reading loop
+        while (isRunning) {
+            // make some space to previous command
+            terminal.writer().append("\n");
+            terminal.flush();
 
-	private void callDescribe(SqlCommandCall cmdCall) {
-		final TableSchema schema;
-		try {
-			schema = executor.getTableSchema(context, cmdCall.operands[0]);
-		} catch (SqlExecutionException e) {
-			printExecutionException(e);
-			return;
-		}
-		terminal.writer().println(schema.toString());
-		terminal.flush();
-	}
+            String line;
+            try {
+                line = lineReader.readLine(prompt, null, inputTransformer, null);
+            } catch (UserInterruptException e) {
+                // user cancelled line with Ctrl+C
+                continue;
+            } catch (EndOfFileException | IOError e) {
+                // user cancelled application with Ctrl+D or kill
+                break;
+            } catch (Throwable t) {
+                throw new SqlClientException("Could not read from command line.", t);
+            }
+            if (line == null) {
+                continue;
+            }
 
-	private void callExplain(SqlCommandCall cmdCall) {
-		final String explanation;
-		try {
-			explanation = executor.explainStatement(context, cmdCall.operands[0]);
-		} catch (SqlExecutionException e) {
-			printExecutionException(e);
-			return;
-		}
-		terminal.writer().println(explanation);
-		terminal.flush();
-	}
+            executeStatement(line, ExecutionMode.INTERACTIVE_EXECUTION);
+        }
+    }
 
-	private void callSelect(SqlCommandCall cmdCall) {
-		final ResultDescriptor resultDesc;
-		try {
-			resultDesc = executor.executeQuery(context, cmdCall.operands[0]);
-		} catch (SqlExecutionException e) {
-			printExecutionException(e);
-			return;
-		}
-		final CliResultView view;
-		if (resultDesc.isMaterialized()) {
-			view = new CliTableResultView(this, resultDesc);
-		} else {
-			view = new CliChangelogResultView(this, resultDesc);
-		}
+    /**
+     * Execute content from Sql file and prints status information and/or errors on the terminal.
+     *
+     * @param content SQL file content
+     */
+    private boolean executeFile(String content, ExecutionMode mode) {
+        terminal.writer().println(CliStrings.messageInfo(CliStrings.MESSAGE_EXECUTE_FILE).toAnsi());
 
-		// enter view
-		try {
-			view.open();
+        for (String statement : CliStatementSplitter.splitContent(content)) {
+            terminal.writer()
+                    .println(new AttributedString(String.format("%s%s", prompt, statement)));
+            terminal.flush();
 
-			// view left
-			printInfo(CliStrings.MESSAGE_RESULT_QUIT);
-		} catch (SqlExecutionException e) {
-			printExecutionException(e);
-		}
-	}
+            if (!executeStatement(statement, mode)) {
+                // cancel execution when meet error or ctrl + C;
+                return false;
+            }
+        }
+        return true;
+    }
 
-	private boolean callInsertInto(SqlCommandCall cmdCall) {
-		printInfo(CliStrings.MESSAGE_SUBMITTING_STATEMENT);
+    private boolean executeStatement(String statement, ExecutionMode executionMode) {
+        try {
+            final Optional<Operation> operation = parseCommand(statement);
+            operation.ifPresent(
+                    op -> {
+                        final Thread thread = Thread.currentThread();
+                        final Terminal.SignalHandler previousHandler =
+                                terminal.handle(
+                                        Terminal.Signal.INT, (signal) -> thread.interrupt());
+                        try {
+                            callOperation(op, executionMode);
+                        } finally {
+                            terminal.handle(Terminal.Signal.INT, previousHandler);
+                        }
+                    });
+        } catch (SqlExecutionException e) {
+            printExecutionException(e);
+            return false;
+        }
+        return true;
+    }
 
-		try {
-			final ProgramTargetDescriptor programTarget = executor.executeUpdate(context, cmdCall.operands[0]);
-			terminal.writer().println(CliStrings.messageInfo(CliStrings.MESSAGE_STATEMENT_SUBMITTED).toAnsi());
-			terminal.writer().println(programTarget.toString());
-			terminal.flush();
-		} catch (SqlExecutionException e) {
-			printExecutionException(e);
-			return false;
-		}
-		return true;
-	}
+    private void validate(Operation operation, ExecutionMode executionMode) {
+        if (executionMode.equals(ExecutionMode.INITIALIZATION)) {
+            if (!(operation instanceof SetOperation)
+                    && !(operation instanceof ResetOperation)
+                    && !(operation instanceof CreateOperation)
+                    && !(operation instanceof DropOperation)
+                    && !(operation instanceof UseOperation)
+                    && !(operation instanceof AlterOperation)
+                    && !(operation instanceof LoadModuleOperation)
+                    && !(operation instanceof UnloadModuleOperation)
+                    && !(operation instanceof AddJarOperation)
+                    && !(operation instanceof RemoveJarOperation)) {
+                throw new SqlExecutionException(
+                        "Unsupported operation in sql init file: " + operation.asSummaryString());
+            }
+        } else if (executionMode.equals(ExecutionMode.NON_INTERACTIVE_EXECUTION)) {
+            ResultMode mode = executor.getSessionConfig(sessionId).get(EXECUTION_RESULT_MODE);
+            if (operation instanceof QueryOperation && !mode.equals(TABLEAU)) {
+                throw new SqlExecutionException(
+                        String.format(
+                                "In non-interactive mode, it only supports to use %s as value of %s when execute query. Please add 'SET %s=%s;' in the sql file.",
+                                TABLEAU,
+                                EXECUTION_RESULT_MODE.key(),
+                                EXECUTION_RESULT_MODE.key(),
+                                TABLEAU));
+            }
+        }
 
-	private void callCreateView(SqlCommandCall cmdCall) {
-		final String name = cmdCall.operands[0];
-		final String query = cmdCall.operands[1];
+        // check the current operation is allowed in STATEMENT SET.
+        if (isStatementSetMode) {
+            if (!(operation instanceof SinkModifyOperation
+                    || operation instanceof EndStatementSetOperation)) {
+                // It's up to invoker of the executeStatement to determine whether to continue
+                // execution
+                throw new SqlExecutionException(MESSAGE_STATEMENT_SET_SQL_EXECUTION_ERROR);
+            }
+        }
+    }
 
-		final ViewEntry previousView = context.getViews().get(name);
-		if (previousView != null) {
-			printExecutionError(CliStrings.MESSAGE_VIEW_ALREADY_EXISTS);
-			return;
-		}
+    private Optional<Operation> parseCommand(String stmt) {
+        // normalize
+        stmt = stmt.trim();
+        // remove ';' at the end
+        if (stmt.endsWith(";")) {
+            stmt = stmt.substring(0, stmt.length() - 1).trim();
+        }
 
-		try {
-			// perform and validate change
-			context.addView(ViewEntry.create(name, query));
-			executor.validateSession(context);
-			printInfo(CliStrings.MESSAGE_VIEW_CREATED);
-		} catch (SqlExecutionException e) {
-			// rollback change
-			context.removeView(name);
-			printExecutionException(e);
-		}
-	}
+        // meet bad case, e.g ";\n"
+        if (stmt.trim().isEmpty()) {
+            return Optional.empty();
+        }
 
-	private void callDropView(SqlCommandCall cmdCall) {
-		final String name = cmdCall.operands[0];
-		final ViewEntry view = context.getViews().get(name);
+        Operation operation = executor.parseStatement(sessionId, stmt);
+        return Optional.of(operation);
+    }
 
-		if (view == null) {
-			printExecutionError(CliStrings.MESSAGE_VIEW_NOT_FOUND);
-			return;
-		}
+    private void callOperation(Operation operation, ExecutionMode mode) {
+        validate(operation, mode);
 
-		try {
-			// perform and validate change
-			context.removeView(name);
-			executor.validateSession(context);
-			printInfo(CliStrings.MESSAGE_VIEW_REMOVED);
-		} catch (SqlExecutionException e) {
-			// rollback change
-			context.addView(view);
-			printExecutionException(CliStrings.MESSAGE_VIEW_NOT_REMOVED, e);
-		}
-	}
+        if (operation instanceof QuitOperation) {
+            // QUIT/EXIT
+            callQuit();
+        } else if (operation instanceof ClearOperation) {
+            // CLEAR
+            callClear();
+        } else if (operation instanceof HelpOperation) {
+            // HELP
+            callHelp();
+        } else if (operation instanceof SetOperation) {
+            // SET
+            callSet((SetOperation) operation);
+        } else if (operation instanceof ResetOperation) {
+            // RESET
+            callReset((ResetOperation) operation);
+        } else if (operation instanceof SinkModifyOperation) {
+            // INSERT INTO/OVERWRITE
+            callInsert((SinkModifyOperation) operation);
+        } else if (operation instanceof QueryOperation) {
+            // SELECT
+            callSelect((QueryOperation) operation);
+        } else if (operation instanceof ExplainOperation) {
+            // EXPLAIN
+            callExplain((ExplainOperation) operation);
+        } else if (operation instanceof BeginStatementSetOperation) {
+            // BEGIN STATEMENT SET
+            callBeginStatementSet();
+        } else if (operation instanceof EndStatementSetOperation) {
+            // END
+            callEndStatementSet();
+        } else if (operation instanceof AddJarOperation) {
+            // ADD JAR
+            callAddJar((AddJarOperation) operation);
+        } else if (operation instanceof RemoveJarOperation) {
+            // REMOVE JAR
+            callRemoveJar((RemoveJarOperation) operation);
+        } else if (operation instanceof ShowJarsOperation) {
+            // SHOW JARS
+            callShowJars();
+        } else if (operation instanceof ShowCreateTableOperation) {
+            // SHOW CREATE TABLE
+            callShowCreateTable((ShowCreateTableOperation) operation);
+        } else if (operation instanceof ShowCreateViewOperation) {
+            // SHOW CREATE VIEW
+            callShowCreateView((ShowCreateViewOperation) operation);
+        } else {
+            // fallback to default implementation
+            executeOperation(operation);
+        }
+    }
 
-	private void callSource(SqlCommandCall cmdCall) {
-		final String pathString = cmdCall.operands[0];
+    private void callAddJar(AddJarOperation operation) {
+        String jarPath = operation.getPath();
+        executor.addJar(sessionId, jarPath);
+        printInfo(CliStrings.MESSAGE_ADD_JAR_STATEMENT);
+    }
 
-		// load file
-		final String stmt;
-		try {
-			final Path path = Paths.get(pathString);
-			byte[] encoded = Files.readAllBytes(path);
-			stmt = new String(encoded, Charset.defaultCharset());
-		} catch (IOException e) {
-			printExecutionException(e);
-			return;
-		}
+    private void callRemoveJar(RemoveJarOperation operation) {
+        String jarPath = operation.getPath();
+        executor.removeJar(sessionId, jarPath);
+        printInfo(CliStrings.MESSAGE_REMOVE_JAR_STATEMENT);
+    }
 
-		// limit the output a bit
-		if (stmt.length() > SOURCE_MAX_SIZE) {
-			printExecutionError(CliStrings.MESSAGE_MAX_SIZE_EXCEEDED);
-			return;
-		}
+    private void callShowJars() {
+        List<String> jars = executor.listJars(sessionId);
+        if (CollectionUtils.isEmpty(jars)) {
+            terminal.writer().println("Empty set");
+        } else {
+            jars.forEach(jar -> terminal.writer().println(jar));
+        }
+        terminal.flush();
+    }
 
-		terminal.writer().println(CliStrings.messageInfo(CliStrings.MESSAGE_WILL_EXECUTE).toAnsi());
-		terminal.writer().println(new AttributedString(stmt).toString());
-		terminal.flush();
+    private void callQuit() {
+        printInfo(CliStrings.MESSAGE_QUIT);
+        isRunning = false;
+    }
 
-		// try to run it
-		final Optional<SqlCommandCall> call = parseCommand(stmt);
-		call.ifPresent(this::callCommand);
-	}
+    private void callClear() {
+        clearTerminal();
+    }
 
-	// --------------------------------------------------------------------------------------------
+    private void callReset(ResetOperation resetOperation) {
+        // reset all session properties
+        if (!resetOperation.getKey().isPresent()) {
+            executor.resetSessionProperties(sessionId);
+            printInfo(CliStrings.MESSAGE_RESET);
+        }
+        // reset a session property
+        else {
+            String key = resetOperation.getKey().get();
+            executor.resetSessionProperty(sessionId, key);
+            printInfo(MESSAGE_RESET_KEY);
+        }
+    }
 
-	private void printExecutionException(Throwable t) {
-		printExecutionException(null, t);
-	}
+    private void callSet(SetOperation setOperation) {
+        // set a property
+        if (setOperation.getKey().isPresent() && setOperation.getValue().isPresent()) {
+            String key = setOperation.getKey().get().trim();
+            String value = setOperation.getValue().get().trim();
+            executor.setSessionProperty(sessionId, key, value);
+            printInfo(MESSAGE_SET_KEY);
+        }
+        // show all properties
+        else {
+            final Map<String, String> properties = executor.getSessionConfigMap(sessionId);
+            if (properties.isEmpty()) {
+                terminal.writer()
+                        .println(CliStrings.messageInfo(CliStrings.MESSAGE_EMPTY).toAnsi());
+            } else {
+                List<String> prettyEntries = new ArrayList<>();
+                for (String key : properties.keySet()) {
+                    prettyEntries.add(
+                            String.format(
+                                    "'%s' = '%s'",
+                                    EncodingUtils.escapeSingleQuotes(key),
+                                    EncodingUtils.escapeSingleQuotes(properties.get(key))));
+                }
+                prettyEntries.sort(String::compareTo);
+                prettyEntries.forEach(entry -> terminal.writer().println(entry));
+            }
+            terminal.flush();
+        }
+    }
 
-	private void printExecutionException(String message, Throwable t) {
-		final String finalMessage;
-		if (message == null) {
-			finalMessage = CliStrings.MESSAGE_SQL_EXECUTION_ERROR;
-		} else {
-			finalMessage = CliStrings.MESSAGE_SQL_EXECUTION_ERROR + ' ' + message;
-		}
-		printException(finalMessage, t);
-	}
+    private void callHelp() {
+        terminal.writer().println(CliStrings.MESSAGE_HELP);
+        terminal.flush();
+    }
 
-	private void printExecutionError(String message) {
-		terminal.writer().println(CliStrings.messageError(CliStrings.MESSAGE_SQL_EXECUTION_ERROR, message).toAnsi());
-		terminal.flush();
-	}
+    private void callSelect(QueryOperation operation) {
+        final ResultDescriptor resultDesc = executor.executeQuery(sessionId, operation);
 
-	private void printException(String message, Throwable t) {
-		LOG.warn(message, t);
-		terminal.writer().println(CliStrings.messageError(message, t).toAnsi());
-		terminal.flush();
-	}
+        if (resultDesc.isTableauMode()) {
+            try (CliTableauResultView tableauResultView =
+                    new CliTableauResultView(terminal, executor, sessionId, resultDesc)) {
+                tableauResultView.displayResults();
+            }
+        } else {
+            final CliResultView<?> view;
+            if (resultDesc.isMaterialized()) {
+                view = new CliTableResultView(this, resultDesc);
+            } else {
+                view = new CliChangelogResultView(this, resultDesc);
+            }
 
-	private void printError(String message) {
-		terminal.writer().println(CliStrings.messageError(message).toAnsi());
-		terminal.flush();
-	}
+            // enter view
+            view.open();
 
-	private void printInfo(String message) {
-		terminal.writer().println(CliStrings.messageInfo(message).toAnsi());
-		terminal.flush();
-	}
+            // view left
+            printInfo(CliStrings.MESSAGE_RESULT_QUIT);
+        }
+    }
+
+    private void callInsert(SinkModifyOperation operation) {
+        if (isStatementSetMode) {
+            statementSetOperations.add(operation);
+            printInfo(CliStrings.MESSAGE_ADD_STATEMENT_TO_STATEMENT_SET);
+        } else {
+            callInserts(Collections.singletonList(operation));
+        }
+    }
+
+    private void callInserts(List<ModifyOperation> operations) {
+        printInfo(CliStrings.MESSAGE_SUBMITTING_STATEMENT);
+
+        boolean sync = executor.getSessionConfig(sessionId).get(TABLE_DML_SYNC);
+        if (sync) {
+            printInfo(MESSAGE_WAIT_EXECUTE);
+        }
+        TableResult tableResult = executor.executeModifyOperations(sessionId, operations);
+        checkState(tableResult.getJobClient().isPresent());
+
+        if (sync) {
+            terminal.writer().println(CliStrings.messageInfo(MESSAGE_FINISH_STATEMENT).toAnsi());
+        } else {
+            terminal.writer().println(CliStrings.messageInfo(MESSAGE_STATEMENT_SUBMITTED).toAnsi());
+            terminal.writer()
+                    .println(
+                            String.format(
+                                    "Job ID: %s\n",
+                                    tableResult.getJobClient().get().getJobID().toString()));
+        }
+        terminal.flush();
+    }
+
+    public void callExplain(ExplainOperation operation) {
+        printRawContent(operation);
+    }
+
+    public void callShowCreateTable(ShowCreateTableOperation operation) {
+        printRawContent(operation);
+    }
+
+    public void callShowCreateView(ShowCreateViewOperation operation) {
+        printRawContent(operation);
+    }
+
+    public void printRawContent(Operation operation) {
+        TableResult tableResult = executor.executeOperation(sessionId, operation);
+        // show raw content instead of tableau style
+        final String explanation =
+                Objects.requireNonNull(tableResult.collect().next().getField(0)).toString();
+        terminal.writer().println(explanation);
+        terminal.flush();
+    }
+
+    private void callBeginStatementSet() {
+        isStatementSetMode = true;
+        statementSetOperations = new ArrayList<>();
+        printInfo(CliStrings.MESSAGE_BEGIN_STATEMENT_SET);
+    }
+
+    private void callEndStatementSet() {
+        if (isStatementSetMode) {
+            isStatementSetMode = false;
+            if (!statementSetOperations.isEmpty()) {
+                callInserts(statementSetOperations);
+            } else {
+                printInfo(CliStrings.MESSAGE_NO_STATEMENT_IN_STATEMENT_SET);
+            }
+            statementSetOperations = null;
+        } else {
+            throw new SqlExecutionException(MESSAGE_STATEMENT_SET_END_CALL_ERROR);
+        }
+    }
+
+    private void executeOperation(Operation operation) {
+        TableResultInternal result = executor.executeOperation(sessionId, operation);
+        if (TABLE_RESULT_OK == result) {
+            // print more meaningful message than tableau OK result
+            printInfo(MESSAGE_EXECUTE_STATEMENT);
+        } else {
+            // print tableau if result has content
+            PrintStyle.tableauWithDataInferredColumnWidths(
+                            result.getResolvedSchema(),
+                            result.getRowDataToStringConverter(),
+                            Integer.MAX_VALUE,
+                            true,
+                            false)
+                    .print(result.collectInternal(), terminal.writer());
+        }
+    }
+
+    // --------------------------------------------------------------------------------------------
+
+    private void printExecutionException(Throwable t) {
+        final String errorMessage = CliStrings.MESSAGE_SQL_EXECUTION_ERROR;
+        LOG.warn(errorMessage, t);
+        boolean isVerbose = executor.getSessionConfig(sessionId).get(SqlClientOptions.VERBOSE);
+        terminal.writer().println(CliStrings.messageError(errorMessage, t, isVerbose).toAnsi());
+        terminal.flush();
+    }
+
+    private void printInfo(String message) {
+        terminal.writer().println(CliStrings.messageInfo(message).toAnsi());
+        terminal.flush();
+    }
+
+    private void printWarning(String message) {
+        terminal.writer().println(CliStrings.messageWarning(message).toAnsi());
+        terminal.flush();
+    }
+
+    // --------------------------------------------------------------------------------------------
+
+    private void closeTerminal() {
+        try {
+            terminal.close();
+            terminal = null;
+        } catch (IOException e) {
+            // ignore
+        }
+    }
+
+    private LineReader createLineReader(Terminal terminal) {
+        // initialize line lineReader
+        LineReader lineReader =
+                LineReaderBuilder.builder()
+                        .terminal(terminal)
+                        .appName(CliStrings.CLI_NAME)
+                        .parser(new SqlMultiLineParser())
+                        .completer(new SqlCompleter(sessionId, executor))
+                        .build();
+        // this option is disabled for now for correct backslash escaping
+        // a "SELECT '\'" query should return a string with a backslash
+        lineReader.option(LineReader.Option.DISABLE_EVENT_EXPANSION, true);
+        // set strict "typo" distance between words when doing code completion
+        lineReader.setVariable(LineReader.ERRORS, 1);
+        // perform code completion case insensitive
+        lineReader.option(LineReader.Option.CASE_INSENSITIVE, true);
+        // set history file path
+        if (Files.exists(historyFilePath) || CliUtils.createFile(historyFilePath)) {
+            String msg = "Command history file path: " + historyFilePath;
+            // print it in the command line as well as log file
+            terminal.writer().println(msg);
+            LOG.info(msg);
+            lineReader.setVariable(LineReader.HISTORY_FILE, historyFilePath);
+        } else {
+            String msg = "Unable to create history file: " + historyFilePath;
+            terminal.writer().println(msg);
+            LOG.warn(msg);
+        }
+        return lineReader;
+    }
 }
