@@ -28,10 +28,10 @@ import org.apache.flink.streaming.api.operators.SimpleOperatorFactory;
 import org.apache.flink.streaming.api.operators.StreamOperatorFactory;
 import org.apache.flink.streaming.api.operators.TwoInputStreamOperator;
 
-import org.apache.flink.shaded.guava30.com.google.common.collect.Lists;
-
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * This Transformation represents the application of a {@link TwoInputStreamOperator} to two input
@@ -80,10 +80,55 @@ public class TwoInputTransformation<IN1, IN2, OUT> extends PhysicalTransformatio
             Transformation<IN1> input1,
             Transformation<IN2> input2,
             String name,
+            TwoInputStreamOperator<IN1, IN2, OUT> operator,
+            TypeInformation<OUT> outputType,
+            int parallelism,
+            boolean parallelismConfigured) {
+        this(
+                input1,
+                input2,
+                name,
+                SimpleOperatorFactory.of(operator),
+                outputType,
+                parallelism,
+                parallelismConfigured);
+    }
+
+    public TwoInputTransformation(
+            Transformation<IN1> input1,
+            Transformation<IN2> input2,
+            String name,
             StreamOperatorFactory<OUT> operatorFactory,
             TypeInformation<OUT> outputType,
             int parallelism) {
         super(name, outputType, parallelism);
+        this.input1 = input1;
+        this.input2 = input2;
+        this.operatorFactory = operatorFactory;
+    }
+
+    /**
+     * Creates a new {@code TwoInputTransformation} from the given inputs and operator.
+     *
+     * @param input1 The first input {@code Transformation}
+     * @param input2 The second input {@code Transformation}
+     * @param name The name of the {@code Transformation}, this will be shown in Visualizations and
+     *     the Log
+     * @param operatorFactory The {@code TwoInputStreamOperator} factory
+     * @param outputType The type of the elements produced by this Transformation
+     * @param parallelism The parallelism of this Transformation
+     * @param parallelismConfigured If true, the parallelism of the transformation is explicitly set
+     *     and should be respected. Otherwise the parallelism can be changed at runtime.
+     */
+    public TwoInputTransformation(
+            Transformation<IN1> input1,
+            Transformation<IN2> input2,
+            String name,
+            StreamOperatorFactory<OUT> operatorFactory,
+            TypeInformation<OUT> outputType,
+            int parallelism,
+            boolean parallelismConfigured) {
+        super(name, outputType, parallelism, parallelismConfigured);
         this.input1 = input1;
         this.input2 = input2;
         this.operatorFactory = operatorFactory;
@@ -172,16 +217,26 @@ public class TwoInputTransformation<IN1, IN2, OUT> extends PhysicalTransformatio
     }
 
     @Override
-    public List<Transformation<?>> getTransitivePredecessors() {
-        List<Transformation<?>> result = Lists.newArrayList();
-        result.add(this);
-        result.addAll(input1.getTransitivePredecessors());
-        result.addAll(input2.getTransitivePredecessors());
-        return result;
+    protected List<Transformation<?>> getTransitivePredecessorsInternal() {
+        List<Transformation<?>> predecessors =
+                Stream.of(input1, input2)
+                        .flatMap(input -> input.getTransitivePredecessors().stream())
+                        .distinct()
+                        .collect(Collectors.toList());
+        predecessors.add(this);
+        return predecessors;
     }
 
     @Override
     public final void setChainingStrategy(ChainingStrategy strategy) {
         operatorFactory.setChainingStrategy(strategy);
+    }
+
+    public boolean isOutputOnlyAfterEndOfStream() {
+        return operatorFactory.getOperatorAttributes().isOutputOnlyAfterEndOfStream();
+    }
+
+    public boolean isInternalSorterSupported() {
+        return operatorFactory.getOperatorAttributes().isInternalSorterSupported();
     }
 }

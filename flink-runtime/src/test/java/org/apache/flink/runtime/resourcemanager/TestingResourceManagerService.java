@@ -26,13 +26,15 @@ import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.entrypoint.ClusterInformation;
 import org.apache.flink.runtime.heartbeat.TestingHeartbeatServices;
 import org.apache.flink.runtime.highavailability.TestingHighAvailabilityServices;
-import org.apache.flink.runtime.leaderelection.TestingLeaderElectionService;
+import org.apache.flink.runtime.leaderelection.LeaderInformation;
+import org.apache.flink.runtime.leaderelection.TestingLeaderElection;
 import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalService;
 import org.apache.flink.runtime.metrics.util.TestingMetricRegistry;
 import org.apache.flink.runtime.rpc.FencedRpcEndpoint;
 import org.apache.flink.runtime.rpc.RpcEndpoint;
 import org.apache.flink.runtime.rpc.RpcService;
 import org.apache.flink.runtime.rpc.TestingRpcService;
+import org.apache.flink.runtime.security.token.NoOpDelegationTokenManager;
 import org.apache.flink.runtime.util.TestingFatalErrorHandler;
 import org.apache.flink.util.concurrent.FutureUtils;
 
@@ -52,19 +54,19 @@ public class TestingResourceManagerService implements ResourceManagerService {
     private static final Time TIMEOUT = Time.seconds(10L);
 
     private final ResourceManagerServiceImpl rmService;
-    private final TestingLeaderElectionService leaderElectionService;
+    private final TestingLeaderElection leaderElection;
     private final TestingFatalErrorHandler fatalErrorHandler;
     private final RpcService rpcService;
     private final boolean needStopRpcService;
 
     private TestingResourceManagerService(
             ResourceManagerServiceImpl rmService,
-            TestingLeaderElectionService leaderElectionService,
+            TestingLeaderElection leaderElection,
             TestingFatalErrorHandler fatalErrorHandler,
             RpcService rpcService,
             boolean needStopRpcService) {
         this.rmService = rmService;
-        this.leaderElectionService = leaderElectionService;
+        this.leaderElection = leaderElection;
         this.fatalErrorHandler = fatalErrorHandler;
         this.rpcService = rpcService;
         this.needStopRpcService = needStopRpcService;
@@ -107,12 +109,12 @@ public class TestingResourceManagerService implements ResourceManagerService {
         return Optional.ofNullable(rmService.getLeaderResourceManager());
     }
 
-    public void isLeader(UUID uuid) {
-        leaderElectionService.isLeader(uuid);
+    public CompletableFuture<LeaderInformation> isLeader(UUID uuid) {
+        return leaderElection.isLeader(uuid);
     }
 
     public void notLeader() {
-        leaderElectionService.notLeader();
+        leaderElection.notLeader();
     }
 
     public void rethrowFatalErrorIfAny() throws Exception {
@@ -133,7 +135,7 @@ public class TestingResourceManagerService implements ResourceManagerService {
     }
 
     private CompletableFuture<Void> stopRpcServiceIfNeeded() {
-        return needStopRpcService ? rpcService.stopService() : FutureUtils.completedVoidFuture();
+        return needStopRpcService ? rpcService.closeAsync() : FutureUtils.completedVoidFuture();
     }
 
     public static Builder newBuilder() {
@@ -144,7 +146,7 @@ public class TestingResourceManagerService implements ResourceManagerService {
 
         private RpcService rpcService = null;
         private boolean needStopRpcService = true;
-        private TestingLeaderElectionService rmLeaderElectionService = null;
+        private TestingLeaderElection rmLeaderElection = null;
         private Function<JobID, LeaderRetrievalService> jmLeaderRetrieverFunction = null;
 
         public Builder setRpcService(RpcService rpcService) {
@@ -153,9 +155,8 @@ public class TestingResourceManagerService implements ResourceManagerService {
             return this;
         }
 
-        public Builder setRmLeaderElectionService(
-                TestingLeaderElectionService rmLeaderElectionService) {
-            this.rmLeaderElectionService = checkNotNull(rmLeaderElectionService);
+        public Builder setRmLeaderElection(TestingLeaderElection rmLeaderElection) {
+            this.rmLeaderElection = checkNotNull(rmLeaderElection);
             return this;
         }
 
@@ -167,14 +168,12 @@ public class TestingResourceManagerService implements ResourceManagerService {
 
         public TestingResourceManagerService build() throws Exception {
             rpcService = rpcService != null ? rpcService : new TestingRpcService();
-            rmLeaderElectionService =
-                    rmLeaderElectionService != null
-                            ? rmLeaderElectionService
-                            : new TestingLeaderElectionService();
+            rmLeaderElection =
+                    rmLeaderElection != null ? rmLeaderElection : new TestingLeaderElection();
 
             final TestingHighAvailabilityServices haServices =
                     new TestingHighAvailabilityServices();
-            haServices.setResourceManagerLeaderElectionService(rmLeaderElectionService);
+            haServices.setResourceManagerLeaderElection(rmLeaderElection);
             if (jmLeaderRetrieverFunction != null) {
                 haServices.setJobMasterLeaderRetrieverFunction(jmLeaderRetrieverFunction);
             }
@@ -189,13 +188,14 @@ public class TestingResourceManagerService implements ResourceManagerService {
                             rpcService,
                             haServices,
                             new TestingHeartbeatServices(),
+                            new NoOpDelegationTokenManager(),
                             fatalErrorHandler,
                             new ClusterInformation("localhost", 1234),
                             null,
                             TestingMetricRegistry.builder().build(),
                             "localhost",
                             ForkJoinPool.commonPool()),
-                    rmLeaderElectionService,
+                    rmLeaderElection,
                     fatalErrorHandler,
                     rpcService,
                     needStopRpcService);

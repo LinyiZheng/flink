@@ -21,14 +21,14 @@ package org.apache.flink.table.types.inference;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.inference.strategies.SpecificInputTypeStrategies;
+import org.apache.flink.table.types.logical.LocalZonedTimestampType;
 import org.apache.flink.table.types.logical.LogicalTypeFamily;
 import org.apache.flink.table.types.logical.LogicalTypeRoot;
+import org.apache.flink.table.types.logical.TimestampKind;
+import org.apache.flink.table.types.utils.TypeConversions;
 
-import org.junit.runners.Parameterized.Parameters;
+import java.util.stream.Stream;
 
-import java.util.List;
-
-import static java.util.Arrays.asList;
 import static org.apache.flink.table.types.inference.InputTypeStrategies.ANY;
 import static org.apache.flink.table.types.inference.InputTypeStrategies.LITERAL;
 import static org.apache.flink.table.types.inference.InputTypeStrategies.LITERAL_OR_NULL;
@@ -44,11 +44,11 @@ import static org.apache.flink.table.types.inference.InputTypeStrategies.sequenc
 import static org.apache.flink.table.types.inference.InputTypeStrategies.varyingSequence;
 
 /** Tests for built-in {@link InputTypeStrategies}. */
-public class InputTypeStrategiesTest extends InputTypeStrategiesTestBase {
+class InputTypeStrategiesTest extends InputTypeStrategiesTestBase {
 
-    @Parameters(name = "{index}: {0}")
-    public static List<TestSpec> testData() {
-        return asList(
+    @Override
+    protected Stream<TestSpec> testData() {
+        return Stream.of(
                 // wildcard with 2 arguments
                 TestSpec.forStrategy(WILDCARD)
                         .calledWithArgumentTypes(DataTypes.INT(), DataTypes.INT())
@@ -627,7 +627,115 @@ public class InputTypeStrategiesTest extends InputTypeStrategiesTestBase {
                                         InputTypeStrategies.COMMON_ARG))
                         .calledWithArgumentTypes(DataTypes.INT(), DataTypes.BIGINT())
                         .expectSignature("f(<COMMON>, <COMMON>)")
-                        .expectArgumentTypes(DataTypes.BIGINT(), DataTypes.BIGINT()));
+                        .expectArgumentTypes(DataTypes.BIGINT(), DataTypes.BIGINT()),
+                TestSpec.forStrategy(
+                                "ArrayElement argument type strategy",
+                                sequence(
+                                        logical(LogicalTypeRoot.ARRAY),
+                                        SpecificInputTypeStrategies.ARRAY_ELEMENT_ARG))
+                        .calledWithArgumentTypes(
+                                DataTypes.ARRAY(DataTypes.INT().notNull()).notNull(),
+                                DataTypes.INT())
+                        .expectSignature("f(<ARRAY>, <ARRAY ELEMENT>)")
+                        .expectArgumentTypes(
+                                DataTypes.ARRAY(DataTypes.INT().notNull()).notNull(),
+                                DataTypes.INT()),
+                TestSpec.forStrategy(sequence(SpecificInputTypeStrategies.ARRAY_FULLY_COMPARABLE))
+                        .expectSignature("f(<ARRAY<COMPARABLE>>)")
+                        .calledWithArgumentTypes(DataTypes.ARRAY(DataTypes.ROW()))
+                        .expectErrorMessage(
+                                "Invalid input arguments. Expected signatures are:\n"
+                                        + "f(<ARRAY<COMPARABLE>>)"),
+                TestSpec.forStrategy(
+                                "Strategy fails if input argument type is not ARRAY",
+                                sequence(SpecificInputTypeStrategies.ARRAY_FULLY_COMPARABLE))
+                        .calledWithArgumentTypes(DataTypes.INT())
+                        .expectErrorMessage(
+                                "Invalid input arguments. Expected signatures are:\n"
+                                        + "f(<ARRAY<COMPARABLE>>)"),
+                TestSpec.forStrategy(
+                                "PROCTIME type strategy",
+                                SpecificInputTypeStrategies.windowTimeIndicator(
+                                        TimestampKind.PROCTIME))
+                        .calledWithArgumentTypes(timeIndicatorType(TimestampKind.PROCTIME))
+                        .expectSignature("f(<WINDOW REFERENCE>)")
+                        .expectArgumentTypes(timeIndicatorType(TimestampKind.PROCTIME)),
+                TestSpec.forStrategy(
+                                "PROCTIME type strategy on non time indicator",
+                                SpecificInputTypeStrategies.windowTimeIndicator(
+                                        TimestampKind.PROCTIME))
+                        .calledWithArgumentTypes(DataTypes.BIGINT())
+                        .expectErrorMessage("Reference to a rowtime or proctime window required."),
+                TestSpec.forStrategy(
+                                "ROWTIME type strategy",
+                                SpecificInputTypeStrategies.windowTimeIndicator(
+                                        TimestampKind.ROWTIME))
+                        .calledWithArgumentTypes(timeIndicatorType(TimestampKind.ROWTIME))
+                        .expectSignature("f(<WINDOW REFERENCE>)")
+                        .expectArgumentTypes(timeIndicatorType(TimestampKind.ROWTIME)),
+                TestSpec.forStrategy(
+                                "ROWTIME type strategy on proctime indicator",
+                                SpecificInputTypeStrategies.windowTimeIndicator(
+                                        TimestampKind.ROWTIME))
+                        .calledWithArgumentTypes(timeIndicatorType(TimestampKind.PROCTIME))
+                        .expectErrorMessage(
+                                "A proctime window cannot provide a rowtime attribute."),
+                TestSpec.forStrategy(
+                                "PROCTIME type strategy on rowtime indicator",
+                                SpecificInputTypeStrategies.windowTimeIndicator(
+                                        TimestampKind.PROCTIME))
+                        .calledWithArgumentTypes(timeIndicatorType(TimestampKind.ROWTIME))
+                        .expectArgumentTypes(timeIndicatorType(TimestampKind.PROCTIME)),
+                TestSpec.forStrategy(
+                                "ROWTIME type strategy on long in batch mode",
+                                SpecificInputTypeStrategies.windowTimeIndicator(
+                                        TimestampKind.ROWTIME))
+                        .calledWithArgumentTypes(DataTypes.BIGINT())
+                        .expectArgumentTypes(DataTypes.BIGINT()),
+                TestSpec.forStrategy(
+                                "ROWTIME type strategy on non time attribute",
+                                SpecificInputTypeStrategies.windowTimeIndicator(
+                                        TimestampKind.ROWTIME))
+                        .calledWithArgumentTypes(DataTypes.SMALLINT())
+                        .expectErrorMessage("Reference to a rowtime or proctime window required."),
+                TestSpec.forStrategy(
+                                "PROCTIME type strategy on non time attribute",
+                                SpecificInputTypeStrategies.windowTimeIndicator(
+                                        TimestampKind.PROCTIME))
+                        .calledWithArgumentTypes(DataTypes.SMALLINT())
+                        .expectErrorMessage("Reference to a rowtime or proctime window required."),
+                TestSpec.forStrategy(
+                                "Reinterpret_cast strategy",
+                                SpecificInputTypeStrategies.REINTERPRET_CAST)
+                        .calledWithArgumentTypes(
+                                DataTypes.DATE(), DataTypes.BIGINT(), DataTypes.BOOLEAN().notNull())
+                        .calledWithLiteralAt(1, DataTypes.BIGINT())
+                        .calledWithLiteralAt(2, true)
+                        .expectSignature("f(<ANY>, <TYPE LITERAL>, <TRUE | FALSE>)")
+                        .expectArgumentTypes(
+                                DataTypes.DATE(),
+                                DataTypes.BIGINT(),
+                                DataTypes.BOOLEAN().notNull()),
+                TestSpec.forStrategy(
+                                "Reinterpret_cast strategy non literal overflow",
+                                SpecificInputTypeStrategies.REINTERPRET_CAST)
+                        .calledWithArgumentTypes(
+                                DataTypes.DATE(), DataTypes.BIGINT(), DataTypes.BOOLEAN().notNull())
+                        .calledWithLiteralAt(1, DataTypes.BIGINT())
+                        .expectErrorMessage("Not null boolean literal expected for overflow."),
+                TestSpec.forStrategy(
+                                "Reinterpret_cast strategy not supported cast",
+                                SpecificInputTypeStrategies.REINTERPRET_CAST)
+                        .calledWithArgumentTypes(
+                                DataTypes.INT(), DataTypes.BIGINT(), DataTypes.BOOLEAN().notNull())
+                        .calledWithLiteralAt(1, DataTypes.BIGINT())
+                        .calledWithLiteralAt(2, true)
+                        .expectErrorMessage("Unsupported reinterpret cast from 'INT' to 'BIGINT'"));
+    }
+
+    private static DataType timeIndicatorType(TimestampKind timestampKind) {
+        return TypeConversions.fromLogicalToDataType(
+                new LocalZonedTimestampType(false, timestampKind, 3));
     }
 
     /** Simple pojo that should be converted to a Structured type. */

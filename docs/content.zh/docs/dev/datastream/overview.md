@@ -61,6 +61,12 @@ Flink 程序看起来像一个转换 `DataStream` 的常规程序。每个程序
 4. 指定计算结果的存储位置；
 5. 触发程序执行。
 
+{{< hint warning >}}
+All Flink Scala APIs are deprecated and will be removed in a future Flink version. You can still build your application in Scala, but you should move to the Java version of either the DataStream and/or Table API.
+
+See <a href="https://cwiki.apache.org/confluence/display/FLINK/FLIP-265+Deprecate+and+remove+Scala+API+support">FLIP-265 Deprecate and remove Scala API support</a>
+{{< /hint >}}
+
 {{< tabs "fa68701c-59e8-4509-858e-3e8a123eeacf" >}}
 {{< tab "Java" >}}
 
@@ -69,11 +75,11 @@ Flink 程序看起来像一个转换 `DataStream` 的常规程序。每个程序
 `StreamExecutionEnvironment` 是所有 Flink 程序的基础。你可以使用 `StreamExecutionEnvironment` 的如下静态方法获取 `StreamExecutionEnvironment`：
 
 ```java
-getExecutionEnvironment()
+getExecutionEnvironment();
 
-createLocalEnvironment()
+createLocalEnvironment();
 
-createRemoteEnvironment(String host, int port, String... jarFiles)
+createRemoteEnvironment(String host, int port, String... jarFiles);
 ```
 
 通常，你只需要使用 `getExecutionEnvironment()` 即可，因为该方法会根据上下文做正确的处理：如果你在 IDE 中执行你的程序或将其作为一般的 Java 程序执行，那么它将创建一个本地环境，该环境将在你的本地机器上执行你的程序。如果你基于程序创建了一个 JAR 文件，并通过[命令行]({{< ref "docs/deployment/cli" >}})运行它，Flink 集群管理器将执行程序的 main 方法，同时 `getExecutionEnvironment()` 方法会返回一个执行环境以在集群上执行你的程序。
@@ -106,9 +112,9 @@ DataStream<Integer> parsed = input.map(new MapFunction<String, Integer>() {
 一旦你有了包含最终结果的 DataStream，你就可以通过创建 sink 把它写到外部系统。下面是一些用于创建 sink 的示例方法：
 
 ```java
-writeAsText(String path)
+writeAsText(String path);
 
-print()
+print();
 ```
 
 {{< /tab >}}
@@ -307,7 +313,7 @@ Source 是你的程序从中读取其输入的地方。你可以用 `StreamExecu
   
 - `fromParallelCollection(SplittableIterator, Class)` - 从迭代器并行创建数据流。class 参数指定迭代器返回元素的数据类型。
   
-- `generateSequence(from, to)` - 基于给定间隔内的数字序列并行生成数据流。
+- `fromSequence(from, to)` - 基于给定间隔内的数字序列并行生成数据流。
 
 自定义：
 
@@ -351,7 +357,7 @@ Source 是你的程序从中读取其输入的地方。你可以用 `StreamExecu
   
 - `fromParallelCollection(SplittableIterator, Class)` - 从迭代器并行创建数据流。class 参数指定迭代器返回元素的数据类型。
   
-- `generateSequence(from, to)` - 基于给定间隔内的数字序列并行生成数据流。
+- `fromSequence(from, to)` - 基于给定间隔内的数字序列并行生成数据流。
 
 自定义：
 
@@ -418,97 +424,7 @@ Data sinks 使用 DataStream 并将它们转发到文件、套接字、外部系
 
 注意，DataStream 的 `write*()` 方法主要用于调试目的。它们不参与 Flink 的 checkpointing，这意味着这些函数通常具有至少有一次语义。刷新到目标系统的数据取决于 OutputFormat 的实现。这意味着并非所有发送到 OutputFormat 的元素都会立即显示在目标系统中。此外，在失败的情况下，这些记录可能会丢失。
 
-为了将流可靠地、精准一次地传输到文件系统中，请使用 `StreamingFileSink`。此外，通过 `.addSink(...)` 方法调用的自定义实现也可以参与 Flink 的 checkpointing，以实现精准一次的语义。
-
-{{< top >}}
-
-<a name="iterations"></a>
-
-Iterations
-----------
-
-{{< tabs "c4cc97af-7ce1-4333-a010-3072b34d5540" >}}
-{{< tab "Java" >}}
-
-Iterative streaming 程序实现了 setp function 并将其嵌入到 `IterativeStream` 。由于 DataStream 程序可能永远不会完成，因此没有最大迭代次数。相反，你需要指定流的哪一部分反馈给迭代，哪一部分使用[旁路输出]({{< ref "docs/dev/datastream/side_output" >}})或`过滤器`转发到下游。这里，我们展示了一个使用过滤器的示例。首先，我们定义一个 IterativeStream
-
-```java
-IterativeStream<Integer> iteration = input.iterate();
-```
-
-然后，我们使用一系列转换（这里是一个简单的 `map` 转换）指定将在循环内执行的逻辑
-
-```java
-DataStream<Integer> iterationBody = iteration.map(/* this is executed many times */);
-```
-
-要关闭迭代并定义迭代尾部，请调用 `IterativeStream` 的 `closeWith(feedbackStream)` 方法。提供给 `closeWith` 函数的 DataStream 将反馈给迭代头。一种常见的模式是使用过滤器将反馈的流部分和向前传播的流部分分开。例如，这些过滤器可以定义“终止”逻辑，其中允许元素向下游传播而不是被反馈。
-
-```java
-iteration.closeWith(iterationBody.filter(/* one part of the stream */));
-DataStream<Integer> output = iterationBody.filter(/* some other part of the stream */);
-```
-
-例如，下面的程序从一系列整数中连续减去 1，直到它们达到零：
-
-```java
-DataStream<Long> someIntegers = env.generateSequence(0, 1000);
-
-IterativeStream<Long> iteration = someIntegers.iterate();
-
-DataStream<Long> minusOne = iteration.map(new MapFunction<Long, Long>() {
-  @Override
-  public Long map(Long value) throws Exception {
-    return value - 1 ;
-  }
-});
-
-DataStream<Long> stillGreaterThanZero = minusOne.filter(new FilterFunction<Long>() {
-  @Override
-  public boolean filter(Long value) throws Exception {
-    return (value > 0);
-  }
-});
-
-iteration.closeWith(stillGreaterThanZero);
-
-DataStream<Long> lessThanZero = minusOne.filter(new FilterFunction<Long>() {
-  @Override
-  public boolean filter(Long value) throws Exception {
-    return (value <= 0);
-  }
-});
-```
-{{< /tab >}}
-{{< tab "Scala" >}}
-
-Iterative streaming 程序实现了 setp function 并将其嵌入到 `IterativeStream` 。由于 DataStream 程序可能永远不会完成，因此没有最大迭代次数。相反，你需要指定流的哪一部分反馈给迭代，哪一部分使用[旁路输出]({{< ref "docs/dev/datastream/side_output" >}})或`过滤器`转发到下游。这里，我们展示了一个迭代示例，其中主体（重复计算的部分）是一个简单的映射转换，使用过滤器将反馈的元素和向下游转发的元素进行分离。
-
-```scala
-val iteratedStream = someDataStream.iterate(
-  iteration => {
-    val iterationBody = iteration.map(/* this is executed many times */)
-    (iterationBody.filter(/* one part of the stream */), iterationBody.filter(/* some other part of the stream */))
-})
-```
-
-例如，下面的程序从一系列整数中连续减去 1，直到它们达到零：
-
-```scala
-val someIntegers: DataStream[Long] = env.generateSequence(0, 1000)
-
-val iteratedStream = someIntegers.iterate(
-  iteration => {
-    val minusOne = iteration.map( v => v - 1)
-    val stillGreaterThanZero = minusOne.filter (_ > 0)
-    val lessThanZero = minusOne.filter(_ <= 0)
-    (stillGreaterThanZero, lessThanZero)
-  }
-)
-```
-
-{{< /tab >}}
-{{< /tabs >}}
+为了将流可靠地、精准一次地传输到文件系统中，请使用 `FileSink`。此外，通过 `.addSink(...)` 方法调用的自定义实现也可以参与 Flink 的 checkpointing，以实现精准一次的语义。
 
 {{< top >}}
 
@@ -658,21 +574,16 @@ Flink 还提供了一个 sink 来收集 DataStream 的结果，它用于测试�
 {{< tab "Java" >}}
 
 ```java
-import org.apache.flink.streaming.experimental.DataStreamUtils
-
 DataStream<Tuple2<String, Integer>> myResult = ...
-Iterator<Tuple2<String, Integer>> myOutput = DataStreamUtils.collect(myResult)
+Iterator<Tuple2<String, Integer>> myOutput = myResult.collectAsync();
 ```
 
 {{< /tab >}}
 {{< tab "Scala" >}}
 
 ```scala
-import org.apache.flink.streaming.experimental.DataStreamUtils
-import scala.collection.JavaConverters.asScalaIteratorConverter
-
 val myResult: DataStream[(String, Int)] = ...
-val myOutput: Iterator[(String, Int)] = DataStreamUtils.collect(myResult.javaStream).asScala
+val myOutput: Iterator[(String, Int)] = myResult.collectAsync()
 ```
 {{< /tab >}}
 {{< /tabs >}}

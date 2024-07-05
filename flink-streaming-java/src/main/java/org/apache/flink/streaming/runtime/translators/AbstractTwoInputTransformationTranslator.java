@@ -27,6 +27,7 @@ import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.streaming.api.graph.SimpleTransformationTranslator;
 import org.apache.flink.streaming.api.graph.StreamGraph;
 import org.apache.flink.streaming.api.operators.StreamOperatorFactory;
+import org.apache.flink.streaming.api.transformations.PhysicalTransformation;
 
 import javax.annotation.Nullable;
 
@@ -80,7 +81,8 @@ public abstract class AbstractTwoInputTransformationTranslator<
                     keyTypeInfo != null,
                     "Keyed Transformation without provided key type information.");
 
-            final TypeSerializer<?> keySerializer = keyTypeInfo.createSerializer(executionConfig);
+            final TypeSerializer<?> keySerializer =
+                    keyTypeInfo.createSerializer(executionConfig.getSerializerConfig());
             streamGraph.setTwoInputStateKey(
                     transformationId, firstKeySelector, secondKeySelector, keySerializer);
         }
@@ -89,7 +91,8 @@ public abstract class AbstractTwoInputTransformationTranslator<
                 transformation.getParallelism() != ExecutionConfig.PARALLELISM_DEFAULT
                         ? transformation.getParallelism()
                         : executionConfig.getParallelism();
-        streamGraph.setParallelism(transformationId, parallelism);
+        streamGraph.setParallelism(
+                transformationId, parallelism, transformation.isParallelismConfigured());
         streamGraph.setMaxParallelism(transformationId, transformation.getMaxParallelism());
 
         for (Integer inputId : context.getStreamNodeIds(firstInputTransformation)) {
@@ -98,6 +101,13 @@ public abstract class AbstractTwoInputTransformationTranslator<
 
         for (Integer inputId : context.getStreamNodeIds(secondInputTransformation)) {
             streamGraph.addEdge(inputId, transformationId, 2);
+        }
+
+        if (transformation instanceof PhysicalTransformation) {
+            streamGraph.setSupportsConcurrentExecutionAttempts(
+                    transformationId,
+                    ((PhysicalTransformation<OUT>) transformation)
+                            .isSupportsConcurrentExecutionAttempts());
         }
 
         return Collections.singleton(transformationId);

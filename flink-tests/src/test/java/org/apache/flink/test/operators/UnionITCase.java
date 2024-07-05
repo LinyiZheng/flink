@@ -23,7 +23,7 @@ import org.apache.flink.api.java.DataSet;
 import org.apache.flink.api.java.ExecutionEnvironment;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.test.operators.util.CollectionDataSets;
-import org.apache.flink.test.util.MultipleProgramsTestBase;
+import org.apache.flink.test.util.MultipleProgramsTestBaseJUnit4;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -31,9 +31,11 @@ import org.junit.runners.Parameterized;
 
 import java.util.List;
 
+import static org.apache.flink.test.util.TestBaseUtils.compareResultAsTuples;
+
 /** Integration tests for {@link DataSet#union}. */
 @RunWith(Parameterized.class)
-public class UnionITCase extends MultipleProgramsTestBase {
+public class UnionITCase extends MultipleProgramsTestBaseJUnit4 {
 
     private static final String FULL_TUPLE_3_STRING =
             "1,1,Hi\n"

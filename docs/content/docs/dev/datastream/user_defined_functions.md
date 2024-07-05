@@ -40,7 +40,7 @@ The most basic way is to implement one of the provided interfaces:
 ```java
 class MyMapFunction implements MapFunction<String, Integer> {
   public Integer map(String value) { return Integer.parseInt(value); }
-};
+}
 data.map(new MyMapFunction());
 ```
 
@@ -73,7 +73,7 @@ instead take as argument a *rich* function. For example, instead of
 ```java
 class MyMapFunction implements MapFunction<String, Integer> {
   public Integer map(String value) { return Integer.parseInt(value); }
-};
+}
 ```
 
 you can write
@@ -81,7 +81,7 @@ you can write
 ```java
 class MyMapFunction extends RichMapFunction<String, Integer> {
   public Integer map(String value) { return Integer.parseInt(value); }
-};
+}
 ```
 
 and pass the function as usual to a `map` transformation:
@@ -105,12 +105,12 @@ data.map (new RichMapFunction<String, Integer>() {
 As already seen in previous examples all operations accept lambda functions for describing
 the operation:
 ```scala
-val data: DataSet[String] = // [...]
+val data: DataStream[String] = // [...]
 data.filter { _.startsWith("http://") }
 ```
 
 ```scala
-val data: DataSet[Int] = // [...]
+val data: DataStream[Int] = // [...]
 data.reduce { (i1,i2) => i1 + i2 }
 // or
 data.reduce { _ + _ }
@@ -129,8 +129,8 @@ you can write
 
 ```scala
 class MyMapFunction extends RichMapFunction[String, Int] {
-  def map(in: String):Int = { in.toInt }
-};
+  def map(in: String): Int = in.toInt
+}
 ```
 
 and pass the function to a `map` transformation:
@@ -142,21 +142,11 @@ data.map(new MyMapFunction())
 Rich functions can also be defined as an anonymous class:
 ```scala
 data.map (new RichMapFunction[String, Int] {
-  def map(in: String):Int = { in.toInt }
+  def map(in: String): Int = in.toInt
 })
 ```
 {{< /tab >}}
 {{< /tabs >}}
-
-Rich functions provide, in addition to the user-defined function (map,
-reduce, etc), four methods: `open`, `close`, `getRuntimeContext`, and
-`setRuntimeContext`. These are useful for parameterizing the function
-(see [Passing Parameters to Functions]({{< ref "docs/dev/dataset/overview" >}}#passing-parameters-to-functions)),
-creating and finalizing local state, accessing broadcast variables (see
-[Broadcast Variables]({{< ref "docs/dev/dataset/overview" >}}#broadcast-variables)), and for accessing runtime
-information such as accumulators and counters (see
-[Accumulators and Counters](#accumulators--counters)), and information
-on iterations (see [Iterations]({{< ref "docs/dev/dataset/iterations" >}})).
 
 {{< top >}}
 
@@ -212,7 +202,7 @@ returned from the `execute()` method of the execution environment
 completion of the job).
 
 ```java
-myJobExecutionResult.getAccumulatorResult("num-lines")
+myJobExecutionResult.getAccumulatorResult("num-lines");
 ```
 
 All accumulators share a single namespace per job. Thus you can use the same accumulator in

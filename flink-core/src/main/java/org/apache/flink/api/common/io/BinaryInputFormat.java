@@ -61,7 +61,7 @@ public abstract class BinaryInputFormat<T> extends FileInputFormat<T>
     private static final Logger LOG = LoggerFactory.getLogger(BinaryInputFormat.class);
 
     /** The config parameter which defines the fixed length of a record. */
-    public static final String BLOCK_SIZE_PARAMETER_KEY = "input.block_size";
+    @Deprecated public static final String BLOCK_SIZE_PARAMETER_KEY = "input.block_size";
 
     public static final long NATIVE_BLOCK_SIZE = Long.MIN_VALUE;
 
@@ -147,7 +147,7 @@ public abstract class BinaryInputFormat<T> extends FileInputFormat<T>
             FileStatus last = files.get(files.size() - 1);
             final BlockLocation[] blocks =
                     last.getPath().getFileSystem().getFileBlockLocations(last, 0, last.getLen());
-            for (int index = files.size(); index < minNumSplits; index++) {
+            for (int index = inputSplits.size(); index < minNumSplits; index++) {
                 inputSplits.add(
                         new FileInputSplit(
                                 index, last.getPath(), last.getLen(), 0, blocks[0].getHosts()));

@@ -39,7 +39,13 @@ class EnvironmentAPICompletenessTests(PythonAPICompletenessTestCase, PyFlinkTest
         return {
             'getCompletionHints',
             'fromValues',
-            'create'}
+            # See FLINK-25986
+            'loadPlan',
+            'compilePlanSql',
+            'executePlan',
+            'explainPlan',
+            # See FLINK-32647
+            'createCatalog'}
 
     @classmethod
     def java_method_name(cls, python_method_name):

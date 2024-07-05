@@ -21,7 +21,7 @@ package org.apache.flink.test.example.java;
 
 import org.apache.flink.examples.java.graph.PageRank;
 import org.apache.flink.test.testdata.PageRankData;
-import org.apache.flink.test.util.MultipleProgramsTestBase;
+import org.apache.flink.test.util.MultipleProgramsTestBaseJUnit4;
 import org.apache.flink.util.FileUtils;
 
 import org.junit.After;
@@ -35,9 +35,11 @@ import org.junit.runners.Parameterized;
 import java.io.File;
 import java.util.UUID;
 
+import static org.apache.flink.test.util.TestBaseUtils.compareKeyValuePairsWithDelta;
+
 /** Test for {@link PageRank}. */
 @RunWith(Parameterized.class)
-public class PageRankITCase extends MultipleProgramsTestBase {
+public class PageRankITCase extends MultipleProgramsTestBaseJUnit4 {
 
     public PageRankITCase(TestExecutionMode mode) {
         super(mode);

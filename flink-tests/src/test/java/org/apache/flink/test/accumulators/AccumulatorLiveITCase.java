@@ -20,16 +20,16 @@ package org.apache.flink.test.accumulators;
 
 import org.apache.flink.api.common.Plan;
 import org.apache.flink.api.common.accumulators.IntCounter;
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.functions.RichFlatMapFunction;
 import org.apache.flink.api.common.io.OutputFormat;
 import org.apache.flink.api.common.time.Deadline;
-import org.apache.flink.api.common.time.Time;
 import org.apache.flink.api.java.DataSet;
 import org.apache.flink.api.java.ExecutionEnvironment;
 import org.apache.flink.client.program.ClusterClient;
-import org.apache.flink.configuration.AkkaOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.HeartbeatManagerOptions;
+import org.apache.flink.configuration.RpcOptions;
 import org.apache.flink.core.testutils.CheckedThread;
 import org.apache.flink.core.testutils.OneShotLatch;
 import org.apache.flink.optimizer.DataStatistics;
@@ -43,9 +43,11 @@ import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.test.util.MiniClusterWithClientResource;
 import org.apache.flink.testutils.TestingUtils;
+import org.apache.flink.testutils.executor.TestExecutorResource;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.TestLogger;
 import org.apache.flink.util.concurrent.FutureUtils;
+import org.apache.flink.util.concurrent.ScheduledExecutorServiceAdapter;
 
 import org.junit.Before;
 import org.junit.ClassRule;
@@ -58,6 +60,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 import static org.apache.flink.test.util.TestUtils.submitJobAndWaitForResult;
@@ -67,10 +70,14 @@ public class AccumulatorLiveITCase extends TestLogger {
 
     private static final Logger LOG = LoggerFactory.getLogger(AccumulatorLiveITCase.class);
 
+    @ClassRule
+    public static final TestExecutorResource<ScheduledExecutorService> EXECUTOR_RESOURCE =
+            TestingUtils.defaultExecutorResource();
+
     // name of user accumulator
     private static final String ACCUMULATOR_NAME = "test";
 
-    private static final long HEARTBEAT_INTERVAL = 50L;
+    private static final Duration HEARTBEAT_INTERVAL = Duration.ofMillis(50L);
 
     // number of heartbeat intervals to check
     private static final int NUM_ITERATIONS = 5;
@@ -95,8 +102,8 @@ public class AccumulatorLiveITCase extends TestLogger {
 
     private static Configuration getConfiguration() {
         Configuration config = new Configuration();
-        config.set(AkkaOptions.ASK_TIMEOUT_DURATION, TestingUtils.DEFAULT_AKKA_ASK_TIMEOUT);
-        config.setLong(HeartbeatManagerOptions.HEARTBEAT_INTERVAL, HEARTBEAT_INTERVAL);
+        config.set(RpcOptions.ASK_TIMEOUT_DURATION, TestingUtils.DEFAULT_ASK_TIMEOUT);
+        config.set(HeartbeatManagerOptions.HEARTBEAT_INTERVAL, HEARTBEAT_INTERVAL);
 
         return config;
     }
@@ -126,7 +133,7 @@ public class AccumulatorLiveITCase extends TestLogger {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(1);
 
-        DataStream<Integer> input = env.fromCollection(inputData);
+        DataStream<Integer> input = env.fromData(inputData);
         input.flatMap(new NotifyingMapper())
                 .writeUsingOutputFormat(new DummyOutputFormat())
                 .disableChaining();
@@ -192,14 +199,14 @@ public class AccumulatorLiveITCase extends TestLogger {
                                 return FutureUtils.completedExceptionally(e);
                             }
                         },
-                        Time.milliseconds(20),
+                        Duration.ofMillis(20),
                         deadline,
                         accumulators ->
                                 accumulators.size() == 1
                                         && accumulators.containsKey(ACCUMULATOR_NAME)
                                         && (int) accumulators.get(ACCUMULATOR_NAME)
                                                 == NUM_ITERATIONS,
-                        TestingUtils.defaultScheduledExecutor())
+                        new ScheduledExecutorServiceAdapter(EXECUTOR_RESOURCE.getExecutor()))
                 .get(deadline.timeLeft().toMillis(), TimeUnit.MILLISECONDS);
     }
 
@@ -213,7 +220,7 @@ public class AccumulatorLiveITCase extends TestLogger {
         private final IntCounter counter = new IntCounter();
 
         @Override
-        public void open(Configuration parameters) throws Exception {
+        public void open(OpenContext openContext) throws Exception {
             getRuntimeContext().addAccumulator(ACCUMULATOR_NAME, counter);
         }
 

@@ -19,12 +19,19 @@
 package org.apache.flink.runtime.jobgraph;
 
 import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.annotation.docs.Documentation;
 import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.core.execution.RestoreMode;
 
 import static org.apache.flink.configuration.ConfigOptions.key;
 
-/** The {@link ConfigOption configuration options} used when restoring from a savepoint. */
+/**
+ * The {@link ConfigOption configuration options} used when restoring from a savepoint. @Deprecated
+ * All options are moved into {@link org.apache.flink.configuration.StateRecoveryOptions}.
+ */
 @PublicEvolving
+@Deprecated
+@Documentation.ExcludeFromDocumentation("Hidden for deprecated.")
 public class SavepointConfigOptions {
 
     /** The path to a savepoint that will be used to bootstrap the pipeline's state. */
@@ -52,7 +59,7 @@ public class SavepointConfigOptions {
     public static final ConfigOption<RestoreMode> RESTORE_MODE =
             key("execution.savepoint-restore-mode")
                     .enumType(RestoreMode.class)
-                    .defaultValue(RestoreMode.NO_CLAIM)
+                    .defaultValue(RestoreMode.DEFAULT)
                     .withDescription(
                             "Describes the mode how Flink should restore from the given"
                                     + " savepoint or retained checkpoint.");

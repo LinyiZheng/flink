@@ -191,7 +191,7 @@ Flink SQL> INSERT INTO RubberOrders SELECT product, amount FROM Orders WHERE pro
 
 ```sql
 
-INSERT { INTO | OVERWRITE } [catalog_name.][db_name.]table_name [PARTITION part_spec] select_statement
+[EXECUTE] INSERT { INTO | OVERWRITE } [catalog_name.][db_name.]table_name [PARTITION part_spec] select_statement
 
 part_spec:
   (part_col_name1=val1 [, part_col_name2=val2, ...])
@@ -206,6 +206,13 @@ part_spec:
 
 `PARTITION` 语句应该包含需要插入的静态分区列与值。
 
+**COLUMN LIST**
+
+给定一个表 T(a INT, b INT, c INT)，Flink 支持 INSERT INTO T(c, b) SELECT x, y FROM S。
+预期行为是 “x” 被写入 “c” 列，“y” 被写入 “b” 列，而 “a” 被设置为空值（假设 “a” 列可为空）。<br />
+连接器开发人员在处理部分列更新时，如果希望避免用空值覆盖非目标列，可以从 {{< gh_link file="flink-table/flink-table-common/src/main/java/org/apache/flink/table/connector/sink/DynamicTableSink.java" name="DynamicTableSink$Context.getTargetColumns()" >}}
+中获取用户插入语句指定的目标列信息，然后决定如何处理部分更新。
+
 ### 示例
 
 ```sql
@@ -216,6 +223,10 @@ WITH (...)
 
 -- 追加行到该静态分区中 (date='2019-8-30', country='China')
 INSERT INTO country_page_view PARTITION (date='2019-8-30', country='China')
+  SELECT user, cnt FROM page_view_source;
+
+-- Insert语句的开头可以额外增加EXECUTE关键字,带EXECUTE关键字和不带是等价的
+EXECUTE INSERT INTO country_page_view PARTITION (date='2019-8-30', country='China')
   SELECT user, cnt FROM page_view_source;
 
 -- 追加行到分区 (date, country) 中，其中 date 是静态分区 '2019-8-30'；country 是动态分区，其值由每一行动态决定
@@ -238,7 +249,7 @@ INSERT OVERWRITE country_page_view PARTITION (date='2019-8-30')
 ### 语法
 
 ```sql
-INSERT { INTO | OVERWRITE } [catalog_name.][db_name.]table_name VALUES values_row [, values_row ...]
+[EXECUTE] INSERT { INTO | OVERWRITE } [catalog_name.][db_name.]table_name VALUES values_row [, values_row ...]
 
 values_row:
     : (val1 [, val2, ...])
@@ -254,9 +265,40 @@ values_row:
 
 CREATE TABLE students (name STRING, age INT, gpa DECIMAL(3, 2)) WITH (...);
 
-INSERT INTO students
+EXECUTE INSERT INTO students
   VALUES ('fred flintstone', 35, 1.28), ('barney rubble', 32, 2.32);
 
+```
+## 插入数据到多张表
+`STATEMENT SET` 可以实现通过一个语句插入数据到多个表。
+
+### 语法
+
+```sql
+EXECUTE STATEMENT SET
+BEGIN
+insert_statement;
+...
+insert_statement;
+END;
+
+insert_statement:
+   <insert_from_select>|<insert_from_values>
+```
+
+### 示例
+
+```sql
+
+CREATE TABLE students (name STRING, age INT, gpa DECIMAL(3, 2)) WITH (...);
+
+EXECUTE STATEMENT SET
+BEGIN
+INSERT INTO students
+  VALUES ('fred flintstone', 35, 1.28), ('barney rubble', 32, 2.32);
+INSERT INTO students
+  VALUES ('fred flintstone', 35, 1.28), ('barney rubble', 32, 2.32);
+END;
 ```
 
 {{< top >}}

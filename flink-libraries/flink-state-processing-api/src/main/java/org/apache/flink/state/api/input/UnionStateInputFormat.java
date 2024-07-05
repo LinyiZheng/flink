@@ -19,10 +19,17 @@
 package org.apache.flink.state.api.input;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.state.ListStateDescriptor;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.checkpoint.OperatorState;
 import org.apache.flink.runtime.state.OperatorStateBackend;
+import org.apache.flink.runtime.state.StateBackend;
 import org.apache.flink.util.Preconditions;
+
+import javax.annotation.Nullable;
+
+import java.io.IOException;
 
 /**
  * Input format for reading operator union state.
@@ -40,10 +47,18 @@ public class UnionStateInputFormat<OT> extends OperatorStateInputFormat<OT> {
      * Creates an input format for reading union state from an operator in a savepoint.
      *
      * @param operatorState The state to be queried.
+     * @param configuration The cluster configuration for restoring the backend.
+     * @param backend The state backend used to restore the state.
      * @param descriptor The descriptor for this state, providing a name and serializer.
      */
-    public UnionStateInputFormat(OperatorState operatorState, ListStateDescriptor<OT> descriptor) {
-        super(operatorState, true);
+    public UnionStateInputFormat(
+            OperatorState operatorState,
+            Configuration configuration,
+            @Nullable StateBackend backend,
+            ListStateDescriptor<OT> descriptor,
+            ExecutionConfig executionConfig)
+            throws IOException {
+        super(operatorState, configuration, backend, true, executionConfig);
 
         this.descriptor =
                 Preconditions.checkNotNull(descriptor, "The state descriptor must not be null");

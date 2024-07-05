@@ -68,10 +68,12 @@ import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.streaming.api.windowing.windows.Window;
 import org.apache.flink.streaming.runtime.partitioner.KeyGroupStreamPartitioner;
 import org.apache.flink.streaming.runtime.partitioner.StreamPartitioner;
+import org.apache.flink.util.OutputTag;
 import org.apache.flink.util.Preconditions;
 
 import org.apache.commons.lang3.StringUtils;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Stack;
@@ -428,7 +430,7 @@ public class KeyedStream<T, KEY> extends DataStream<T> {
 
     /**
      * Join elements of this {@link KeyedStream} with elements of another {@link KeyedStream} over a
-     * time interval that can be specified with {@link IntervalJoin#between(Time, Time)}.
+     * time interval that can be specified with {@link IntervalJoin#between(Duration, Duration)}.
      *
      * @param otherStream The other keyed stream to join this keyed stream with
      * @param <T1> Type parameter of elements in the other stream
@@ -496,9 +498,30 @@ public class KeyedStream<T, KEY> extends DataStream<T> {
          *
          * @param lowerBound The lower bound. Needs to be smaller than or equal to the upperBound
          * @param upperBound The upper bound. Needs to be bigger than or equal to the lowerBound
+         * @deprecated Use {@link #between(Duration, Duration)}
          */
+        @Deprecated
         @PublicEvolving
         public IntervalJoined<T1, T2, KEY> between(Time lowerBound, Time upperBound) {
+            return between(lowerBound.toDuration(), upperBound.toDuration());
+        }
+
+        /**
+         * Specifies the time boundaries over which the join operation works, so that
+         *
+         * <pre>
+         * leftElement.timestamp + lowerBound <= rightElement.timestamp <= leftElement.timestamp + upperBound
+         * </pre>
+         *
+         * <p>By default both the lower and the upper bound are inclusive. This can be configured
+         * with {@link IntervalJoined#lowerBoundExclusive()} and {@link
+         * IntervalJoined#upperBoundExclusive()}
+         *
+         * @param lowerBound The lower bound. Needs to be smaller than or equal to the upperBound
+         * @param upperBound The upper bound. Needs to be bigger than or equal to the lowerBound
+         */
+        @PublicEvolving
+        public IntervalJoined<T1, T2, KEY> between(Duration lowerBound, Duration upperBound) {
             if (timeBehaviour != TimeBehaviour.EventTime) {
                 throw new UnsupportedTimeCharacteristicException(
                         "Time-bounded stream joins are only supported in event time");
@@ -508,12 +531,7 @@ public class KeyedStream<T, KEY> extends DataStream<T> {
             checkNotNull(upperBound, "An upper bound needs to be provided for a time-bounded join");
 
             return new IntervalJoined<>(
-                    streamOne,
-                    streamTwo,
-                    lowerBound.toMilliseconds(),
-                    upperBound.toMilliseconds(),
-                    true,
-                    true);
+                    streamOne, streamTwo, lowerBound.toMillis(), upperBound.toMillis(), true, true);
         }
     }
 
@@ -539,6 +557,9 @@ public class KeyedStream<T, KEY> extends DataStream<T> {
 
         private boolean lowerBoundInclusive;
         private boolean upperBoundInclusive;
+
+        private OutputTag<IN1> leftLateDataOutputTag;
+        private OutputTag<IN2> rightLateDataOutputTag;
 
         public IntervalJoined(
                 KeyedStream<IN1, KEY> left,
@@ -572,6 +593,28 @@ public class KeyedStream<T, KEY> extends DataStream<T> {
         @PublicEvolving
         public IntervalJoined<IN1, IN2, KEY> lowerBoundExclusive() {
             this.lowerBoundInclusive = false;
+            return this;
+        }
+
+        /**
+         * Send late arriving left-side data to the side output identified by the given {@link
+         * OutputTag}. Data is considered late after the watermark
+         */
+        @PublicEvolving
+        public IntervalJoined<IN1, IN2, KEY> sideOutputLeftLateData(OutputTag<IN1> outputTag) {
+            outputTag = left.getExecutionEnvironment().clean(outputTag);
+            this.leftLateDataOutputTag = outputTag;
+            return this;
+        }
+
+        /**
+         * Send late arriving right-side data to the side output identified by the given {@link
+         * OutputTag}. Data is considered late after the watermark
+         */
+        @PublicEvolving
+        public IntervalJoined<IN1, IN2, KEY> sideOutputRightLateData(OutputTag<IN2> outputTag) {
+            outputTag = right.getExecutionEnvironment().clean(outputTag);
+            this.rightLateDataOutputTag = outputTag;
             return this;
         }
 
@@ -630,8 +673,14 @@ public class KeyedStream<T, KEY> extends DataStream<T> {
                             upperBound,
                             lowerBoundInclusive,
                             upperBoundInclusive,
-                            left.getType().createSerializer(left.getExecutionConfig()),
-                            right.getType().createSerializer(right.getExecutionConfig()),
+                            leftLateDataOutputTag,
+                            rightLateDataOutputTag,
+                            left.getType()
+                                    .createSerializer(
+                                            left.getExecutionConfig().getSerializerConfig()),
+                            right.getType()
+                                    .createSerializer(
+                                            right.getExecutionConfig().getSerializerConfig()),
                             cleanedUdf);
 
             return left.connect(right)
@@ -748,7 +797,8 @@ public class KeyedStream<T, KEY> extends DataStream<T> {
                         transformation,
                         clean(reducer),
                         keySelector,
-                        getKeyType());
+                        getKeyType(),
+                        false);
 
         getExecutionEnvironment().addOperator(reduce);
 
@@ -1022,12 +1072,28 @@ public class KeyedStream<T, KEY> extends DataStream<T> {
     }
 
     /**
+     * Collect records from each partition into a separate full window. The window emission will be
+     * triggered at the end of inputs. For this keyed data stream(each record has a key), a
+     * partition only contains all records with the same key.
+     *
+     * @return The full windowed data stream on partition.
+     */
+    @PublicEvolving
+    @Override
+    public PartitionWindowedStream<T> fullWindowPartition() {
+        return new KeyedPartitionWindowedStream<>(environment, this);
+    }
+
+    /**
      * Publishes the keyed stream as queryable ValueState instance.
      *
      * @param queryableStateName Name under which to the publish the queryable state instance
      * @return Queryable state instance
+     * @deprecated The Queryable State feature is deprecated since Flink 1.18, and will be removed
+     *     in a future Flink major version.
      */
     @PublicEvolving
+    @Deprecated
     public QueryableStateStream<KEY, T> asQueryableState(String queryableStateName) {
         ValueStateDescriptor<T> valueStateDescriptor =
                 new ValueStateDescriptor<>(UUID.randomUUID().toString(), getType());
@@ -1041,8 +1107,11 @@ public class KeyedStream<T, KEY> extends DataStream<T> {
      * @param queryableStateName Name under which to the publish the queryable state instance
      * @param stateDescriptor State descriptor to create state instance from
      * @return Queryable state instance
+     * @deprecated The Queryable State feature is deprecated since Flink 1.18, and will be removed
+     *     in a future Flink major version.
      */
     @PublicEvolving
+    @Deprecated
     public QueryableStateStream<KEY, T> asQueryableState(
             String queryableStateName, ValueStateDescriptor<T> stateDescriptor) {
 
@@ -1056,7 +1125,7 @@ public class KeyedStream<T, KEY> extends DataStream<T> {
         return new QueryableStateStream<>(
                 queryableStateName,
                 stateDescriptor,
-                getKeyType().createSerializer(getExecutionConfig()));
+                getKeyType().createSerializer(getExecutionConfig().getSerializerConfig()));
     }
 
     /**
@@ -1065,8 +1134,11 @@ public class KeyedStream<T, KEY> extends DataStream<T> {
      * @param queryableStateName Name under which to the publish the queryable state instance
      * @param stateDescriptor State descriptor to create state instance from
      * @return Queryable state instance
+     * @deprecated The Queryable State feature is deprecated since Flink 1.18, and will be removed
+     *     in a future Flink major version.
      */
     @PublicEvolving
+    @Deprecated
     public QueryableStateStream<KEY, T> asQueryableState(
             String queryableStateName, ReducingStateDescriptor<T> stateDescriptor) {
 
@@ -1080,6 +1152,6 @@ public class KeyedStream<T, KEY> extends DataStream<T> {
         return new QueryableStateStream<>(
                 queryableStateName,
                 stateDescriptor,
-                getKeyType().createSerializer(getExecutionConfig()));
+                getKeyType().createSerializer(getExecutionConfig().getSerializerConfig()));
     }
 }

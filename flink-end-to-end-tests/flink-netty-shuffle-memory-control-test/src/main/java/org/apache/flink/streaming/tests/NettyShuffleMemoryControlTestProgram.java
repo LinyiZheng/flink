@@ -18,10 +18,10 @@
 
 package org.apache.flink.streaming.tests;
 
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ConfigOptions;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
 import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunction;
@@ -47,16 +47,19 @@ public class NettyShuffleMemoryControlTestProgram {
 
     private static final ConfigOption<Integer> RUNNING_TIME_IN_SECONDS =
             ConfigOptions.key("test.running_time_in_seconds")
+                    .intType()
                     .defaultValue(120)
                     .withDescription("The time to run.");
 
     private static final ConfigOption<Integer> MAP_PARALLELISM =
             ConfigOptions.key("test.map_parallelism")
+                    .intType()
                     .defaultValue(1)
                     .withDescription("The number of map tasks.");
 
     private static final ConfigOption<Integer> REDUCE_PARALLELISM =
             ConfigOptions.key("test.reduce_parallelism")
+                    .intType()
                     .defaultValue(1)
                     .withDescription("The number of reduce tasks.");
 
@@ -98,6 +101,12 @@ public class NettyShuffleMemoryControlTestProgram {
         env.execute("Netty Shuffle Memory Control Test");
     }
 
+    /**
+     * @deprecated This class is based on the {@link
+     *     org.apache.flink.streaming.api.functions.source.SourceFunction} API, which is due to be
+     *     removed. Use the new {@link org.apache.flink.api.connector.source.Source} API instead.
+     */
+    @Deprecated
     private static class StringSourceFunction extends RichParallelSourceFunction<String> {
         private static final long serialVersionUID = 1L;
 
@@ -112,7 +121,7 @@ public class NettyShuffleMemoryControlTestProgram {
         }
 
         @Override
-        public void open(Configuration parameters) {
+        public void open(OpenContext openContext) {
             isRunning = true;
             stopTime = System.nanoTime() + runningTimeInSeconds * 1_000_000_000L;
         }

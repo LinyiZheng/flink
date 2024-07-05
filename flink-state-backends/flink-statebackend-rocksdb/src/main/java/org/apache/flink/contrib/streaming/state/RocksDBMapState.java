@@ -51,6 +51,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.Objects;
 
 import static org.apache.flink.util.Preconditions.checkArgument;
 
@@ -68,9 +69,9 @@ class RocksDBMapState<K, N, UK, UV> extends AbstractRocksDBState<K, N, Map<UK, U
     private static final Logger LOG = LoggerFactory.getLogger(RocksDBMapState.class);
 
     /** Serializer for the keys and values. */
-    private final TypeSerializer<UK> userKeySerializer;
+    private TypeSerializer<UK> userKeySerializer;
 
-    private final TypeSerializer<UV> userValueSerializer;
+    private TypeSerializer<UV> userValueSerializer;
 
     /**
      * Creates a new {@code RocksDBMapState}.
@@ -278,32 +279,40 @@ class RocksDBMapState<K, N, UK, UV> extends AbstractRocksDBState<K, N, Map<UK, U
 
     @Override
     public void clear() {
-        try {
-            try (RocksIteratorWrapper iterator =
-                            RocksDBOperationUtils.getRocksIterator(
-                                    backend.db, columnFamily, backend.getReadOptions());
-                    RocksDBWriteBatchWrapper rocksDBWriteBatchWrapper =
-                            new RocksDBWriteBatchWrapper(
-                                    backend.db,
-                                    backend.getWriteOptions(),
-                                    backend.getWriteBatchSize())) {
+        try (RocksIteratorWrapper iterator =
+                        RocksDBOperationUtils.getRocksIterator(
+                                backend.db, columnFamily, backend.getReadOptions());
+                RocksDBWriteBatchWrapper rocksDBWriteBatchWrapper =
+                        new RocksDBWriteBatchWrapper(
+                                backend.db,
+                                backend.getWriteOptions(),
+                                backend.getWriteBatchSize())) {
 
-                final byte[] keyPrefixBytes = serializeCurrentKeyWithGroupAndNamespace();
-                iterator.seek(keyPrefixBytes);
+            final byte[] keyPrefixBytes = serializeCurrentKeyWithGroupAndNamespace();
+            iterator.seek(keyPrefixBytes);
 
-                while (iterator.isValid()) {
-                    byte[] keyBytes = iterator.key();
-                    if (startWithKeyPrefix(keyPrefixBytes, keyBytes)) {
-                        rocksDBWriteBatchWrapper.remove(columnFamily, keyBytes);
-                    } else {
-                        break;
-                    }
-                    iterator.next();
+            while (iterator.isValid()) {
+                byte[] keyBytes = iterator.key();
+                if (startWithKeyPrefix(keyPrefixBytes, keyBytes)) {
+                    rocksDBWriteBatchWrapper.remove(columnFamily, keyBytes);
+                } else {
+                    break;
                 }
+                iterator.next();
             }
-        } catch (Exception e) {
-            LOG.warn("Error while cleaning the state.", e);
+        } catch (RocksDBException e) {
+            throw new FlinkRuntimeException("Error while cleaning the state in RocksDB.", e);
         }
+    }
+
+    @Override
+    protected RocksDBMapState<K, N, UK, UV> setValueSerializer(
+            TypeSerializer<Map<UK, UV>> valueSerializer) {
+        super.setValueSerializer(valueSerializer);
+        MapSerializer<UK, UV> castedMapSerializer = (MapSerializer<UK, UV>) valueSerializer;
+        this.userKeySerializer = castedMapSerializer.getKeySerializer();
+        this.userValueSerializer = castedMapSerializer.getValueSerializer();
+        return this;
     }
 
     @Override
@@ -529,6 +538,15 @@ class RocksDBMapState<K, N, UK, UV> extends AbstractRocksDBState<K, N, Map<UK, U
 
             return oldValue;
         }
+
+        @Override
+        public boolean equals(Object o) {
+            if (!(o instanceof Map.Entry)) {
+                return false;
+            }
+            Map.Entry<?, ?> e = (Map.Entry<?, ?>) o;
+            return Objects.equals(getKey(), e.getKey()) && Objects.equals(getValue(), e.getValue());
+        }
     }
 
     /** An auxiliary utility to scan all entries under the given key. */
@@ -694,6 +712,21 @@ class RocksDBMapState<K, N, UK, UV> extends AbstractRocksDBState<K, N, Map<UK, U
                         (TypeSerializer<Map<UK, UV>>) registerResult.f1.getStateSerializer(),
                         (Map<UK, UV>) stateDesc.getDefaultValue(),
                         backend);
+    }
+
+    @SuppressWarnings("unchecked")
+    static <UK, UV, K, N, SV, S extends State, IS extends S> IS update(
+            StateDescriptor<S, SV> stateDesc,
+            Tuple2<ColumnFamilyHandle, RegisteredKeyValueStateBackendMetaInfo<N, SV>>
+                    registerResult,
+            IS existingState) {
+        return (IS)
+                ((RocksDBMapState<K, N, UK, UV>) existingState)
+                        .setNamespaceSerializer(registerResult.f1.getNamespaceSerializer())
+                        .setValueSerializer(
+                                (TypeSerializer<Map<UK, UV>>)
+                                        registerResult.f1.getStateSerializer())
+                        .setDefaultValue((Map<UK, UV>) stateDesc.getDefaultValue());
     }
 
     /**

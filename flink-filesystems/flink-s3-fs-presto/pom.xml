@@ -23,8 +23,7 @@ under the License.
 	<parent>
 		<groupId>org.apache.flink</groupId>
 		<artifactId>flink-filesystems</artifactId>
-		<version>1.15-SNAPSHOT</version>
-		<relativePath>..</relativePath>
+		<version>2.0-SNAPSHOT</version>
 	</parent>
 
 	<artifactId>flink-s3-fs-presto</artifactId>
@@ -33,7 +32,7 @@ under the License.
 	<packaging>jar</packaging>
 
 	<properties>
-		<presto.version>0.257</presto.version>
+		<presto.version>0.272</presto.version>
 	</properties>
 
 	<dependencies>
@@ -46,11 +45,64 @@ under the License.
 			<scope>provided</scope>
 		</dependency>
 
+		<!-- ArchUnit test dependencies -->
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-architecture-tests-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+		
 		<!-- S3 base (bundled) -->
 		<dependency>
 			<groupId>org.apache.flink</groupId>
 			<artifactId>flink-s3-fs-base</artifactId>
 			<version>${project.version}</version>
+			<optional>${flink.markBundledAsOptional}</optional>
+		</dependency>
+
+		<!-- for the HAJobRunOnPrestoS3FileSystemITCase -->
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-runtime</artifactId>
+			<version>${project.version}</version>
+			<scope>test</scope>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-runtime</artifactId>
+			<version>${project.version}</version>
+			<type>test-jar</type>
+			<scope>test</scope>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-s3-fs-base</artifactId>
+			<version>${project.version}</version>
+			<type>test-jar</type>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-test-utils</artifactId>
+			<version>${project.version}</version>
+			<scope>test</scope>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.curator</groupId>
+			<artifactId>curator-test</artifactId>
+			<version>${curator.version}</version>
+			<scope>test</scope>
+			<exclusions>
+				<!-- This transitive dependency causes version conflicts on the classpath. -->
+				<exclusion>
+					<groupId>com.google.guava</groupId>
+					<artifactId>guava</artifactId>
+				</exclusion>
+			</exclusions>
 		</dependency>
 
 		<!-- Presto's S3 file system (bundled) -->
@@ -58,6 +110,7 @@ under the License.
 			<groupId>com.facebook.presto</groupId>
 			<artifactId>presto-hive</artifactId>
 			<version>${presto.version}</version>
+			<optional>${flink.markBundledAsOptional}</optional>
 			<exclusions>
 				<!-- Exclude AWS dependencies which we provide ourselves (and in more recent versions). -->
 				<exclusion>
@@ -274,6 +327,7 @@ under the License.
 			<groupId>com.facebook.presto.hadoop</groupId>
 			<artifactId>hadoop-apache2</artifactId>
 			<version>2.7.4-9</version>
+			<optional>${flink.markBundledAsOptional}</optional>
 		</dependency>
 
 		<dependency>
@@ -309,6 +363,7 @@ under the License.
 				<groupId>org.apache.hadoop</groupId>
 				<artifactId>hadoop-common</artifactId>
 				<version>${fs.hadoopshaded.version}</version>
+				<optional>${flink.markBundledAsOptional}</optional>
 				<exclusions>
 					<exclusion>
 						<groupId>jdk.tools</groupId>
@@ -321,6 +376,14 @@ under the License.
 					<exclusion>
 						<groupId>org.slf4j</groupId>
 						<artifactId>slf4j-log4j12</artifactId>
+					</exclusion>
+					<exclusion>
+						<groupId>ch.qos.reload4j</groupId>
+						<artifactId>reload4j</artifactId>
+					</exclusion>
+					<exclusion>
+						<groupId>org.slf4j</groupId>
+						<artifactId>slf4j-reload4j</artifactId>
 					</exclusion>
 				</exclusions>
 			</dependency>
@@ -328,6 +391,7 @@ under the License.
 				<groupId>org.apache.hadoop</groupId>
 				<artifactId>hadoop-hdfs</artifactId>
 				<version>${fs.hadoopshaded.version}</version>
+				<optional>${flink.markBundledAsOptional}</optional>
 				<exclusions>
 					<exclusion>
 						<groupId>jdk.tools</groupId>
@@ -340,6 +404,14 @@ under the License.
 					<exclusion>
 						<groupId>org.slf4j</groupId>
 						<artifactId>slf4j-log4j12</artifactId>
+					</exclusion>
+					<exclusion>
+						<groupId>ch.qos.reload4j</groupId>
+						<artifactId>reload4j</artifactId>
+					</exclusion>
+					<exclusion>
+						<groupId>org.slf4j</groupId>
+						<artifactId>slf4j-reload4j</artifactId>
 					</exclusion>
 				</exclusions>
 			</dependency>
@@ -349,6 +421,7 @@ under the License.
 				<groupId>commons-beanutils</groupId>
 				<artifactId>commons-beanutils</artifactId>
 				<version>1.9.4</version>
+				<optional>${flink.markBundledAsOptional}</optional>
 			</dependency>
 		</dependencies>
 	</dependencyManagement>

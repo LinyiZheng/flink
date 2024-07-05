@@ -19,11 +19,14 @@
 package org.apache.flink.runtime.io.network;
 
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.NettyShuffleEnvironmentOptions;
+import org.apache.flink.configuration.NettyShuffleEnvironmentOptions.CompressionCodec;
 import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.io.network.netty.NettyConfig;
 import org.apache.flink.runtime.io.network.partition.BoundedBlockingSubpartitionType;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionManager;
+import org.apache.flink.runtime.io.network.partition.hybrid.tiered.common.TieredStorageConfiguration;
 import org.apache.flink.runtime.metrics.groups.UnregisteredMetricGroups;
 import org.apache.flink.runtime.taskmanager.NettyShuffleEnvironmentConfiguration;
 import org.apache.flink.runtime.throughput.BufferDebloatConfiguration;
@@ -31,11 +34,13 @@ import org.apache.flink.runtime.util.EnvironmentInformation;
 import org.apache.flink.util.concurrent.Executors;
 
 import java.time.Duration;
+import java.util.Optional;
 import java.util.concurrent.Executor;
 
 /** Builder for the {@link NettyShuffleEnvironment}. */
 public class NettyShuffleEnvironmentBuilder {
 
+    private static final int DEFAULT_NUM_SLOTS = 1;
     private static final int DEFAULT_NETWORK_BUFFER_SIZE = 32 << 10;
     private static final int DEFAULT_NUM_NETWORK_BUFFERS = 1024;
 
@@ -52,9 +57,17 @@ public class NettyShuffleEnvironmentBuilder {
 
     private int partitionRequestMaxBackoff;
 
+    private int partitionRequestTimeout =
+            (int)
+                    NettyShuffleEnvironmentOptions.NETWORK_PARTITION_REQUEST_TIMEOUT
+                            .defaultValue()
+                            .toMillis();
+
     private int networkBuffersPerChannel = 2;
 
     private int floatingNetworkBuffersPerGate = 8;
+
+    private Optional<Integer> maxRequiredBuffersPerGate = Optional.of(Integer.MAX_VALUE);
 
     private int sortShuffleMinBuffers = 100;
 
@@ -66,7 +79,11 @@ public class NettyShuffleEnvironmentBuilder {
 
     private boolean blockingShuffleCompressionEnabled = false;
 
-    private String compressionCodec = "LZ4";
+    private boolean connectionReuseEnabled = true;
+
+    private int maxOverdraftBuffersPerGate = 0;
+
+    private CompressionCodec compressionCodec = CompressionCodec.LZ4;
 
     private ResourceID taskManagerLocation = ResourceID.generate();
 
@@ -82,6 +99,12 @@ public class NettyShuffleEnvironmentBuilder {
             BufferDebloatConfiguration.fromConfiguration(new Configuration());
 
     private int maxNumberOfConnections = 1;
+
+    private long hybridShuffleNumRetainedInMemoryRegionsMax = Long.MAX_VALUE;
+
+    private int hybridShuffleSpilledIndexSegmentSize = 256;
+
+    private TieredStorageConfiguration tieredStorageConfiguration = null;
 
     public NettyShuffleEnvironmentBuilder setTaskManagerLocation(ResourceID taskManagerLocation) {
         this.taskManagerLocation = taskManagerLocation;
@@ -110,6 +133,11 @@ public class NettyShuffleEnvironmentBuilder {
         return this;
     }
 
+    public NettyShuffleEnvironmentBuilder setPartitionRequestTimeout(int partitionRequestTimeout) {
+        this.partitionRequestTimeout = partitionRequestTimeout;
+        return this;
+    }
+
     public NettyShuffleEnvironmentBuilder setNetworkBuffersPerChannel(
             int networkBuffersPerChannel) {
         this.networkBuffersPerChannel = networkBuffersPerChannel;
@@ -119,6 +147,12 @@ public class NettyShuffleEnvironmentBuilder {
     public NettyShuffleEnvironmentBuilder setFloatingNetworkBuffersPerGate(
             int floatingNetworkBuffersPerGate) {
         this.floatingNetworkBuffersPerGate = floatingNetworkBuffersPerGate;
+        return this;
+    }
+
+    public NettyShuffleEnvironmentBuilder setMaxRequiredBuffersPerGate(
+            Optional<Integer> maxRequiredBuffersPerGate) {
+        this.maxRequiredBuffersPerGate = maxRequiredBuffersPerGate;
         return this;
     }
 
@@ -150,7 +184,19 @@ public class NettyShuffleEnvironmentBuilder {
         return this;
     }
 
-    public NettyShuffleEnvironmentBuilder setCompressionCodec(String compressionCodec) {
+    public NettyShuffleEnvironmentBuilder setConnectionReuseEnabled(
+            boolean connectionReuseEnabled) {
+        this.connectionReuseEnabled = connectionReuseEnabled;
+        return this;
+    }
+
+    public NettyShuffleEnvironmentBuilder setMaxOverdraftBuffersPerGate(
+            int maxOverdraftBuffersPerGate) {
+        this.maxOverdraftBuffersPerGate = maxOverdraftBuffersPerGate;
+        return this;
+    }
+
+    public NettyShuffleEnvironmentBuilder setCompressionCodec(CompressionCodec compressionCodec) {
         this.compressionCodec = compressionCodec;
         return this;
     }
@@ -187,6 +233,25 @@ public class NettyShuffleEnvironmentBuilder {
         return this;
     }
 
+    public NettyShuffleEnvironmentBuilder setHybridShuffleNumRetainedInMemoryRegionsMax(
+            long hybridShuffleNumRetainedInMemoryRegionsMax) {
+        this.hybridShuffleNumRetainedInMemoryRegionsMax =
+                hybridShuffleNumRetainedInMemoryRegionsMax;
+        return this;
+    }
+
+    public NettyShuffleEnvironmentBuilder setHybridShuffleSpilledIndexSegmentSize(
+            int hybridShuffleSpilledIndexSegmentSize) {
+        this.hybridShuffleSpilledIndexSegmentSize = hybridShuffleSpilledIndexSegmentSize;
+        return this;
+    }
+
+    public NettyShuffleEnvironmentBuilder setTieredStorageConfiguration(
+            TieredStorageConfiguration tieredStorageConfiguration) {
+        this.tieredStorageConfiguration = tieredStorageConfiguration;
+        return this;
+    }
+
     public NettyShuffleEnvironment build() {
         return NettyShuffleServiceFactory.createNettyShuffleEnvironment(
                 new NettyShuffleEnvironmentConfiguration(
@@ -194,8 +259,10 @@ public class NettyShuffleEnvironmentBuilder {
                         bufferSize,
                         partitionRequestInitialBackoff,
                         partitionRequestMaxBackoff,
+                        partitionRequestTimeout,
                         networkBuffersPerChannel,
                         floatingNetworkBuffersPerGate,
+                        maxRequiredBuffersPerGate,
                         DEFAULT_REQUEST_SEGMENTS_TIMEOUT,
                         false,
                         nettyConfig,
@@ -208,11 +275,18 @@ public class NettyShuffleEnvironmentBuilder {
                         sortShuffleMinBuffers,
                         sortShuffleMinParallelism,
                         debloatConfiguration,
-                        maxNumberOfConnections),
+                        maxNumberOfConnections,
+                        connectionReuseEnabled,
+                        maxOverdraftBuffersPerGate,
+                        hybridShuffleSpilledIndexSegmentSize,
+                        hybridShuffleNumRetainedInMemoryRegionsMax,
+                        tieredStorageConfiguration),
                 taskManagerLocation,
                 new TaskEventDispatcher(),
                 resultPartitionManager,
                 metricGroup,
-                ioExecutor);
+                ioExecutor,
+                DEFAULT_NUM_SLOTS,
+                DEFAULT_TEMP_DIRS);
     }
 }

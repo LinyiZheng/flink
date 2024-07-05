@@ -19,11 +19,15 @@
 package org.apache.flink.formats.avro;
 
 import org.apache.flink.api.common.ExecutionConfig;
+import org.apache.flink.api.common.serialization.SerializerConfigImpl;
 import org.apache.flink.api.java.typeutils.runtime.kryo.KryoSerializer;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.PipelineOptions;
 
 import com.esotericsoftware.kryo.Kryo;
 import com.esotericsoftware.kryo.Registration;
-import org.junit.Test;
+import org.apache.avro.generic.GenericData;
+import org.junit.jupiter.api.Test;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -32,8 +36,10 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
 
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.fail;
 
 /**
  * Tests that the set of Kryo registrations is the same across compatible Flink versions.
@@ -42,7 +48,7 @@ import static org.junit.Assert.fail;
  * verifies that we correctly register Avro types at the {@link KryoSerializer} when Avro is
  * present.
  */
-public class AvroKryoSerializerRegistrationsTest {
+class AvroKryoSerializerRegistrationsTest {
 
     /**
      * Tests that the registered classes in Kryo did not change.
@@ -51,8 +57,8 @@ public class AvroKryoSerializerRegistrationsTest {
      * change in the serializers can break savepoint backwards compatibility between Flink versions.
      */
     @Test
-    public void testDefaultKryoRegisteredClassesDidNotChange() throws Exception {
-        final Kryo kryo = new KryoSerializer<>(Integer.class, new ExecutionConfig()).getKryo();
+    void testDefaultKryoRegisteredClassesDidNotChange() throws Exception {
+        final Kryo kryo = new KryoSerializer<>(Integer.class, new SerializerConfigImpl()).getKryo();
 
         try (BufferedReader reader =
                 new BufferedReader(
@@ -81,6 +87,36 @@ public class AvroKryoSerializerRegistrationsTest {
         }
     }
 
+    @Test
+    void testEnableForceKryoAvroRegister() {
+        ExecutionConfig executionConfig = new ExecutionConfig();
+        executionConfig.getSerializerConfig().setForceKryoAvro(true);
+        final Kryo kryo = new KryoSerializer<>(Integer.class, executionConfig).getKryo();
+        kryo.setRegistrationRequired(true);
+        assertThatCode(() -> kryo.getRegistration(GenericData.Array.class))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void testDefaultForceKryoAvroRegister() {
+        ExecutionConfig executionConfig = new ExecutionConfig();
+        final Kryo kryo = new KryoSerializer<>(Integer.class, executionConfig).getKryo();
+        kryo.setRegistrationRequired(true);
+        assertThatCode(() -> kryo.getRegistration(GenericData.Array.class))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void testDisableForceKryoAvroRegister() {
+        Configuration configuration = new Configuration();
+        configuration.set(PipelineOptions.FORCE_KRYO_AVRO, false);
+        ExecutionConfig executionConfig = new ExecutionConfig(configuration);
+        final Kryo kryo = new KryoSerializer<>(Integer.class, executionConfig).getKryo();
+        kryo.setRegistrationRequired(true);
+        assertThatThrownBy(() -> kryo.getRegistration(GenericData.Array.class))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
     /**
      * Creates a Kryo serializer and writes the default registrations out to a comma separated file
      * with one entry per line:
@@ -100,10 +136,10 @@ public class AvroKryoSerializerRegistrationsTest {
     private void writeDefaultKryoRegistrations(String filePath) throws IOException {
         final File file = new File(filePath);
         if (file.exists()) {
-            assertTrue(file.delete());
+            assertThat(file.delete()).isTrue();
         }
 
-        final Kryo kryo = new KryoSerializer<>(Integer.class, new ExecutionConfig()).getKryo();
+        final Kryo kryo = new KryoSerializer<>(Integer.class, new SerializerConfigImpl()).getKryo();
         final int nextId = kryo.getNextRegistrationId();
 
         try (BufferedWriter writer = new BufferedWriter(new FileWriter(file))) {

@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.streaming.api.scala.function.util
 
 import org.apache.flink.streaming.api.functions.windowing.{AllWindowFunction => JAllWindowFunction}
@@ -26,11 +25,19 @@ import scala.collection.JavaConverters._
 
 /**
  * A wrapper function that exposes a Scala Function3 as a Java AllWindowFunction.
+ *
+ * @deprecated
+ *   All Flink Scala APIs are deprecated and will be removed in a future Flink major version. You
+ *   can still build your application in Scala, but you should move to the Java version of either
+ *   the DataStream and/or Table API.
+ * @see
+ *   <a href="https://s.apache.org/flip-265">FLIP-265 Deprecate and remove Scala API support</a>
  */
+@deprecated(org.apache.flink.api.scala.FLIP_265_WARNING, since = "1.18.0")
 final class ScalaAllWindowFunction[IN, OUT, W <: Window](
-        private[this] val function: (W, Iterable[IN], Collector[OUT]) => Unit)
-    extends JAllWindowFunction[IN, OUT, W] {
-  
+    private[this] val function: (W, Iterable[IN], Collector[OUT]) => Unit)
+  extends JAllWindowFunction[IN, OUT, W] {
+
   @throws(classOf[Exception])
   override def apply(window: W, input: java.lang.Iterable[IN], out: Collector[OUT]) {
     function.apply(window, input.asScala, out)

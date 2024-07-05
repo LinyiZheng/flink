@@ -34,10 +34,11 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import static org.apache.flink.python.env.beam.ProcessPythonEnvironmentManager.PYTHON_WORKING_DIR;
+import static org.apache.flink.python.env.process.ProcessPythonEnvironmentManager.PYTHON_WORKING_DIR;
 
 /** Utils used to prepare the python environment. */
 @Internal
@@ -54,27 +55,16 @@ public class PythonEnvironmentManagerUtils {
 
     private static final String GET_SITE_PACKAGES_PATH_SCRIPT =
             "import sys;"
-                    + "from distutils.dist import Distribution;"
-                    + "install_obj = Distribution().get_command_obj('install', create=True);"
-                    + "install_obj.prefix = sys.argv[1];"
-                    + "install_obj.finalize_options();"
-                    + "installed_dir = [install_obj.install_purelib];"
-                    + "install_obj.install_purelib != install_obj.install_platlib and "
-                    + "installed_dir.append(install_obj.install_platlib);"
-                    + "print(installed_dir[0]);"
-                    + "len(installed_dir) > 1 and "
-                    + "print(installed_dir[1])";
-
-    private static final String CHECK_PIP_VERSION_SCRIPT =
-            "import sys;"
-                    + "from pkg_resources import get_distribution, parse_version;"
-                    + "pip_version = get_distribution('pip').version;"
-                    + "print(parse_version(pip_version) >= parse_version(sys.argv[1]))";
+                    + "import sysconfig;"
+                    + "print(sysconfig.get_path('platlib', vars={'base': sys.argv[1], 'platbase': sys.argv[1]}));"
+                    + "print(sysconfig.get_path('purelib', vars={'base': sys.argv[1], 'platbase': sys.argv[1]}));";
 
     private static final String GET_RUNNER_DIR_SCRIPT =
             "import pyflink;"
                     + "import os;"
                     + "print(os.path.join(os.path.abspath(os.path.dirname(pyflink.__file__)), 'bin'))";
+
+    private static final String GET_PYTHON_VERSION = "import sys;print(sys.version)";
 
     /**
      * Installs the 3rd party libraries listed in the user-provided requirements file. An optional
@@ -110,13 +100,9 @@ public class PythonEnvironmentManagerUtils {
                                 "install",
                                 "--ignore-installed",
                                 "-r",
-                                requirementsFilePath));
-        if (isPipVersionGreaterEqual("8.0.0", pythonExecutable, environmentVariables)) {
-            commands.addAll(Arrays.asList("--prefix", requirementsInstallDir));
-        } else {
-            commands.addAll(
-                    Arrays.asList("--install-option", "--prefix=" + requirementsInstallDir));
-        }
+                                requirementsFilePath,
+                                "--prefix",
+                                requirementsInstallDir));
         if (requirementsCacheDir != null) {
             commands.addAll(Arrays.asList("--no-index", "--find-links", requirementsCacheDir));
         }
@@ -163,6 +149,12 @@ public class PythonEnvironmentManagerUtils {
         return runnerScriptPath;
     }
 
+    public static String getPythonVersion(String pythonExecutable) throws IOException {
+        String[] commands = new String[] {pythonExecutable, "-c", GET_PYTHON_VERSION};
+        String out = execute(commands, new HashMap<>(), false);
+        return out.trim();
+    }
+
     private static String getSitePackagesPath(
             String prefix, String pythonExecutable, Map<String, String> environmentVariables)
             throws IOException {
@@ -170,15 +162,6 @@ public class PythonEnvironmentManagerUtils {
                 new String[] {pythonExecutable, "-c", GET_SITE_PACKAGES_PATH_SCRIPT, prefix};
         String out = execute(commands, environmentVariables, false);
         return String.join(File.pathSeparator, out.trim().split("\n"));
-    }
-
-    private static boolean isPipVersionGreaterEqual(
-            String pipVersion, String pythonExecutable, Map<String, String> environmentVariables)
-            throws IOException {
-        String[] commands =
-                new String[] {pythonExecutable, "-c", CHECK_PIP_VERSION_SCRIPT, pipVersion};
-        String out = execute(commands, environmentVariables, false);
-        return Boolean.parseBoolean(out.trim());
     }
 
     private static String execute(

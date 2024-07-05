@@ -19,17 +19,21 @@
 
 package org.apache.flink.runtime.scheduler;
 
+import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.api.common.time.Time;
+import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.JobManagerOptions;
+import org.apache.flink.core.failure.FailureEnricher;
 import org.apache.flink.runtime.blob.BlobWriter;
+import org.apache.flink.runtime.blocklist.BlocklistOperations;
 import org.apache.flink.runtime.checkpoint.CheckpointRecoveryFactory;
 import org.apache.flink.runtime.checkpoint.CheckpointsCleaner;
 import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutor;
 import org.apache.flink.runtime.executiongraph.JobStatusListener;
-import org.apache.flink.runtime.executiongraph.failover.flip1.FailoverStrategyFactoryLoader;
-import org.apache.flink.runtime.executiongraph.failover.flip1.RestartBackoffTimeStrategy;
-import org.apache.flink.runtime.executiongraph.failover.flip1.RestartBackoffTimeStrategyFactoryLoader;
+import org.apache.flink.runtime.executiongraph.failover.FailoverStrategyFactoryLoader;
+import org.apache.flink.runtime.executiongraph.failover.RestartBackoffTimeStrategy;
+import org.apache.flink.runtime.executiongraph.failover.RestartBackoffTimeStrategyFactoryLoader;
 import org.apache.flink.runtime.io.network.partition.JobMasterPartitionTracker;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobmaster.ExecutionDeploymentTracker;
@@ -42,10 +46,12 @@ import org.apache.flink.util.concurrent.ScheduledExecutorServiceAdapter;
 
 import org.slf4j.Logger;
 
+import java.util.Collection;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
 
 import static org.apache.flink.runtime.scheduler.DefaultSchedulerComponents.createSchedulerComponents;
+import static org.apache.flink.runtime.scheduler.SchedulerBase.computeVertexParallelismStore;
 
 /** Factory for {@link DefaultScheduler}. */
 public class DefaultSchedulerFactory implements SchedulerNGFactory {
@@ -70,7 +76,9 @@ public class DefaultSchedulerFactory implements SchedulerNGFactory {
             long initializationTimestamp,
             final ComponentMainThreadExecutor mainThreadExecutor,
             final FatalErrorHandler fatalErrorHandler,
-            final JobStatusListener jobStatusListener)
+            final JobStatusListener jobStatusListener,
+            final Collection<FailureEnricher> failureEnrichers,
+            final BlocklistOperations blocklistOperations)
             throws Exception {
 
         final SlotPool slotPool =
@@ -93,6 +101,7 @@ public class DefaultSchedulerFactory implements SchedulerNGFactory {
                                 jobGraph.getSerializedExecutionConfig()
                                         .deserializeValue(userCodeLoader)
                                         .getRestartStrategy(),
+                                jobGraph.getJobConfiguration(),
                                 jobMasterConfiguration,
                                 jobGraph.isCheckpointingEnabled())
                         .create();
@@ -115,6 +124,10 @@ public class DefaultSchedulerFactory implements SchedulerNGFactory {
                         shuffleMaster,
                         partitionTracker);
 
+        final CheckpointsCleaner checkpointsCleaner =
+                new CheckpointsCleaner(
+                        jobMasterConfiguration.get(CheckpointingOptions.CLEANER_PARALLEL_MODE));
+
         return new DefaultScheduler(
                 log,
                 jobGraph,
@@ -123,25 +136,35 @@ public class DefaultSchedulerFactory implements SchedulerNGFactory {
                 schedulerComponents.getStartUpAction(),
                 new ScheduledExecutorServiceAdapter(futureExecutor),
                 userCodeLoader,
-                new CheckpointsCleaner(),
+                checkpointsCleaner,
                 checkpointRecoveryFactory,
                 jobManagerJobMetricGroup,
                 schedulerComponents.getSchedulingStrategyFactory(),
                 FailoverStrategyFactoryLoader.loadFailoverStrategyFactory(jobMasterConfiguration),
                 restartBackoffTimeStrategy,
-                new DefaultExecutionVertexOperations(),
+                new DefaultExecutionOperations(),
                 new ExecutionVertexVersioner(),
                 schedulerComponents.getAllocatorFactory(),
                 initializationTimestamp,
                 mainThreadExecutor,
-                jobStatusListener,
+                (jobId, jobStatus, timestamp) -> {
+                    if (jobStatus == JobStatus.RESTARTING) {
+                        slotPool.setIsJobRestarting(true);
+                    } else {
+                        slotPool.setIsJobRestarting(false);
+                    }
+                    jobStatusListener.jobStatusChanges(jobId, jobStatus, timestamp);
+                },
+                failureEnrichers,
                 executionGraphFactory,
                 shuffleMaster,
-                rpcTimeout);
+                rpcTimeout,
+                computeVertexParallelismStore(jobGraph),
+                new DefaultExecutionDeployer.Factory());
     }
 
     @Override
     public JobManagerOptions.SchedulerType getSchedulerType() {
-        return JobManagerOptions.SchedulerType.Ng;
+        return JobManagerOptions.SchedulerType.Default;
     }
 }

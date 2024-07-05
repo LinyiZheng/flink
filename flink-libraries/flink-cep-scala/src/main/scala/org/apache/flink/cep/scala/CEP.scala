@@ -17,45 +17,59 @@
  */
 package org.apache.flink.cep.scala
 
+import org.apache.flink.cep.{CEP => JCEP, EventComparator}
 import org.apache.flink.cep.scala.pattern.Pattern
-import org.apache.flink.cep.{EventComparator, CEP => JCEP}
 import org.apache.flink.streaming.api.scala.DataStream
 
 /**
-  * Utility method to transform a [[DataStream]] into a [[PatternStream]] to do CEP.
-  */
-
+ * Utility method to transform a [[DataStream]] into a [[PatternStream]] to do CEP.
+ *
+ * @deprecated
+ *   All Flink Scala APIs are deprecated and will be removed in a future Flink major version. You
+ *   can still build your application in Scala, but you should move to the Java version of either
+ *   the DataStream and/or Table API.
+ * @see
+ *   <a href="https://s.apache.org/flip-265">FLIP-265 Deprecate and remove Scala API support</a>
+ */
+@deprecated(org.apache.flink.api.scala.FLIP_265_WARNING, since = "1.18.0")
 object CEP {
+
   /**
-    * Transforms a [[DataStream]] into a [[PatternStream]] in the Scala API.
-    * See [[org.apache.flink.cep.CEP}]]for a more detailed description how the underlying
-    * Java API works.
-    *
-    * @param input   DataStream containing the input events
-    * @param pattern Pattern specification which shall be detected
-    * @tparam T Type of the input events
-    * @return Resulting pattern stream
-    */
+   * Transforms a [[DataStream]] into a [[PatternStream]] in the Scala API. See
+   * [[org.apache.flink.cep.CEP}]]for a more detailed description how the underlying Java API works.
+   *
+   * @param input
+   *   DataStream containing the input events
+   * @param pattern
+   *   Pattern specification which shall be detected
+   * @tparam T
+   *   Type of the input events
+   * @return
+   *   Resulting pattern stream
+   */
   def pattern[T](input: DataStream[T], pattern: Pattern[T, _ <: T]): PatternStream[T] = {
     wrapPatternStream(JCEP.pattern(input.javaStream, pattern.wrappedPattern))
   }
 
   /**
-    * Transforms a [[DataStream]] into a [[PatternStream]] in the Scala API.
-    * See [[org.apache.flink.cep.CEP}]]for a more detailed description how the underlying
-    * Java API works.
-    *
-    * @param input      DataStream containing the input events
-    * @param pattern    Pattern specification which shall be detected
-    * @param comparator Comparator to sort events with equal timestamps
-    * @tparam T Type of the input events
-    * @return Resulting pattern stream
-    */
+   * Transforms a [[DataStream]] into a [[PatternStream]] in the Scala API. See
+   * [[org.apache.flink.cep.CEP}]]for a more detailed description how the underlying Java API works.
+   *
+   * @param input
+   *   DataStream containing the input events
+   * @param pattern
+   *   Pattern specification which shall be detected
+   * @param comparator
+   *   Comparator to sort events with equal timestamps
+   * @tparam T
+   *   Type of the input events
+   * @return
+   *   Resulting pattern stream
+   */
   def pattern[T](
-    input: DataStream[T],
-    pattern: Pattern[T, _ <: T],
-    comparator: EventComparator[T]): PatternStream[T] = {
+      input: DataStream[T],
+      pattern: Pattern[T, _ <: T],
+      comparator: EventComparator[T]): PatternStream[T] = {
     wrapPatternStream(JCEP.pattern(input.javaStream, pattern.wrappedPattern, comparator))
   }
 }
-

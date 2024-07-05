@@ -32,6 +32,7 @@ import org.apache.flink.runtime.executiongraph.TaskInformation;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.jobmaster.JobMasterGateway;
 import org.apache.flink.runtime.jobmaster.JobMasterId;
+import org.apache.flink.runtime.jobmaster.TaskManagerRegistrationInformation;
 import org.apache.flink.runtime.messages.Acknowledge;
 import org.apache.flink.runtime.rpc.TestingRpcService;
 import org.apache.flink.runtime.state.OperatorStreamStateHandle;
@@ -43,9 +44,10 @@ import org.apache.flink.runtime.taskexecutor.slot.SlotOffer;
 import org.apache.flink.runtime.taskmanager.LocalUnresolvedTaskManagerLocation;
 import org.apache.flink.runtime.taskmanager.TaskExecutionState;
 import org.apache.flink.runtime.taskmanager.UnresolvedTaskManagerLocation;
+import org.apache.flink.testutils.TestingUtils;
 import org.apache.flink.util.concurrent.FutureUtils;
 
-import org.apache.flink.shaded.guava30.com.google.common.collect.Iterables;
+import org.apache.flink.shaded.guava31.com.google.common.collect.Iterables;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -59,6 +61,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+
+import static org.apache.flink.runtime.checkpoint.TaskStateSnapshot.serializeTaskStateSnapshot;
 
 /**
  * A testing utility, that simulates the desired interactions with {@link JobMasterGateway} RPC.
@@ -146,7 +150,12 @@ public class JobMasterTester implements Closeable {
     public CompletableFuture<List<TaskDeploymentDescriptor>> deployVertices(int numSlots) {
         return jobMasterGateway
                 .registerTaskManager(
-                        taskExecutorGateway.getAddress(), taskManagerLocation, jobId, TIMEOUT)
+                        jobId,
+                        TaskManagerRegistrationInformation.create(
+                                taskExecutorGateway.getAddress(),
+                                taskManagerLocation,
+                                TestingUtils.zeroUUID()),
+                        TIMEOUT)
                 .thenCompose(ignored -> offerSlots(numSlots))
                 .thenCompose(ignored -> descriptorsFuture);
     }
@@ -195,9 +204,7 @@ public class JobMasterTester implements Closeable {
                                                                     "Task descriptor for %s not found.",
                                                                     executionAttemptId)));
                     try {
-                        return descriptor
-                                .getSerializedTaskInformation()
-                                .deserializeValue(Thread.currentThread().getContextClassLoader());
+                        return descriptor.getTaskInformation();
                     } catch (Exception e) {
                         throw new IllegalStateException(
                                 String.format(
@@ -220,7 +227,8 @@ public class JobMasterTester implements Closeable {
                                     executionAttemptId,
                                     checkpointId,
                                     new CheckpointMetrics(),
-                                    createNonEmptyStateSnapshot(taskInformation));
+                                    serializeTaskStateSnapshot(
+                                            createNonEmptyStateSnapshot(taskInformation)));
                             return CompletableFuture.completedFuture(Acknowledge.get());
                         });
     }

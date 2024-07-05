@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.streaming.api.scala.function.util
 
 import org.apache.flink.api.common.functions.{IterationRuntimeContext, RichFunction, RuntimeContext}
@@ -29,15 +28,23 @@ import scala.collection.JavaConverters._
 
 /**
  * A wrapper function that exposes a Scala WindowFunction as a JavaWindow function.
- * 
+ *
  * The Scala and Java Window functions differ in their type of "Iterable":
  *   - Scala WindowFunction: scala.Iterable
  *   - Java WindowFunction: java.lang.Iterable
+ * @deprecated
+ *   All Flink Scala APIs are deprecated and will be removed in a future Flink major version. You
+ *   can still build your application in Scala, but you should move to the Java version of either
+ *   the DataStream and/or Table API.
+ * @see
+ *   <a href="https://s.apache.org/flip-265">FLIP-265 Deprecate and remove Scala API support</a>
  */
-final class ScalaWindowFunctionWrapper[IN, OUT, KEY, W <: Window]
-(func: WindowFunction[IN, OUT, KEY, W])
+@deprecated(org.apache.flink.api.scala.FLIP_265_WARNING, since = "1.18.0")
+final class ScalaWindowFunctionWrapper[IN, OUT, KEY, W <: Window](
+    func: WindowFunction[IN, OUT, KEY, W])
   extends WrappingFunction[WindowFunction[IN, OUT, KEY, W]](func)
-  with JWindowFunction[IN, OUT, KEY, W] with RichFunction {
+  with JWindowFunction[IN, OUT, KEY, W]
+  with RichFunction {
 
   @throws(classOf[Exception])
   override def apply(key: KEY, window: W, input: java.lang.Iterable[IN], out: Collector[OUT]) {

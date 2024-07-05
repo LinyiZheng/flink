@@ -18,170 +18,151 @@ limitations under the License.
 
 package org.apache.flink.streaming.api.operators;
 
-import org.apache.flink.api.common.ExecutionConfig;
-import org.apache.flink.api.common.state.OperatorStateStore;
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.connector.source.SourceEvent;
 import org.apache.flink.api.connector.source.mocks.MockSourceReader;
 import org.apache.flink.api.connector.source.mocks.MockSourceSplit;
 import org.apache.flink.api.connector.source.mocks.MockSourceSplitSerializer;
-import org.apache.flink.configuration.Configuration;
-import org.apache.flink.core.fs.CloseableRegistry;
-import org.apache.flink.core.io.SimpleVersionedSerialization;
-import org.apache.flink.runtime.execution.Environment;
-import org.apache.flink.runtime.io.AvailabilityProvider;
 import org.apache.flink.runtime.io.network.api.StopMode;
 import org.apache.flink.runtime.operators.coordination.MockOperatorEventGateway;
 import org.apache.flink.runtime.operators.coordination.OperatorEvent;
-import org.apache.flink.runtime.operators.testutils.MockEnvironment;
-import org.apache.flink.runtime.operators.testutils.MockEnvironmentBuilder;
-import org.apache.flink.runtime.operators.testutils.MockInputSplitProvider;
 import org.apache.flink.runtime.source.event.AddSplitEvent;
+import org.apache.flink.runtime.source.event.IsProcessingBacklogEvent;
 import org.apache.flink.runtime.source.event.ReaderRegistrationEvent;
 import org.apache.flink.runtime.source.event.SourceEventWrapper;
-import org.apache.flink.runtime.state.AbstractStateBackend;
 import org.apache.flink.runtime.state.StateInitializationContext;
-import org.apache.flink.runtime.state.StateInitializationContextImpl;
 import org.apache.flink.runtime.state.StateSnapshotContextSynchronousImpl;
-import org.apache.flink.runtime.state.TestTaskStateManager;
-import org.apache.flink.runtime.state.memory.MemoryStateBackend;
 import org.apache.flink.streaming.api.operators.source.CollectingDataOutput;
-import org.apache.flink.streaming.api.operators.source.TestingSourceOperator;
+import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.io.DataInputStatus;
-import org.apache.flink.streaming.runtime.tasks.SourceOperatorStreamTask;
-import org.apache.flink.streaming.runtime.tasks.StreamMockEnvironment;
-import org.apache.flink.streaming.util.MockOutput;
-import org.apache.flink.streaming.util.MockStreamConfig;
+import org.apache.flink.streaming.runtime.io.PushingAsyncDataInput;
+import org.apache.flink.streaming.runtime.streamrecord.LatencyMarker;
+import org.apache.flink.streaming.runtime.streamrecord.RecordAttributes;
+import org.apache.flink.streaming.runtime.streamrecord.StreamElement;
+import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+import org.apache.flink.streaming.runtime.watermarkstatus.WatermarkStatus;
+import org.apache.flink.streaming.util.CollectorOutput;
 import org.apache.flink.util.CollectionUtil;
 
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import javax.annotation.Nullable;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
-import static org.hamcrest.CoreMatchers.not;
-import static org.hamcrest.CoreMatchers.sameInstance;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Unit test for {@link SourceOperator}. */
 @SuppressWarnings("serial")
-public class SourceOperatorTest {
+class SourceOperatorTest {
 
-    private static final int SUBTASK_INDEX = 1;
-    private static final MockSourceSplit MOCK_SPLIT = new MockSourceSplit(1234, 10);
+    @Nullable private SourceOperatorTestContext context;
+    @Nullable private SourceOperator<Integer, MockSourceSplit> operator;
+    @Nullable private MockSourceReader mockSourceReader;
+    @Nullable private MockOperatorEventGateway mockGateway;
 
-    private MockSourceReader mockSourceReader;
-    private MockOperatorEventGateway mockGateway;
-    private SourceOperator<Integer, MockSourceSplit> operator;
-
-    @Before
-    public void setup() throws Exception {
-        this.mockSourceReader = new MockSourceReader();
-        this.mockGateway = new MockOperatorEventGateway();
-        this.operator =
-                new TestingSourceOperator<>(
-                        mockSourceReader,
-                        mockGateway,
-                        SUBTASK_INDEX,
-                        true /* emit progressive watermarks */);
-        Environment env = getTestingEnvironment();
-        this.operator.setup(
-                new SourceOperatorStreamTask<Integer>(env),
-                new MockStreamConfig(new Configuration(), 1),
-                new MockOutput<>(new ArrayList<>()));
-        this.operator.initializeState(
-                new StreamTaskStateInitializerImpl(env, new MemoryStateBackend()));
+    @BeforeEach
+    void setup() throws Exception {
+        context = new SourceOperatorTestContext();
+        operator = context.getOperator();
+        mockSourceReader = context.getSourceReader();
+        mockGateway = context.getGateway();
     }
 
-    @After
-    public void cleanUp() throws Exception {
-        operator.close();
-        assertTrue(mockSourceReader.isClosed());
+    @AfterEach
+    void tearDown() throws Exception {
+        context.close();
+        context = null;
+        operator = null;
+        mockSourceReader = null;
+        mockGateway = null;
     }
 
     @Test
-    public void testInitializeState() throws Exception {
-        StateInitializationContext stateContext = getStateContext();
+    void testInitializeState() throws Exception {
+        StateInitializationContext stateContext = context.createStateContext();
         operator.initializeState(stateContext);
 
-        assertNotNull(
-                stateContext
-                        .getOperatorStateStore()
-                        .getListState(SourceOperator.SPLITS_STATE_DESC));
+        assertThat(
+                        stateContext
+                                .getOperatorStateStore()
+                                .getListState(SourceOperator.SPLITS_STATE_DESC))
+                .isNotNull();
     }
 
     @Test
-    public void testOpen() throws Exception {
+    void testOpen() throws Exception {
         // Initialize the operator.
-        operator.initializeState(getStateContext());
+        operator.initializeState(context.createStateContext());
         // Open the operator.
         operator.open();
         // The source reader should have been assigned a split.
-        assertEquals(Collections.singletonList(MOCK_SPLIT), mockSourceReader.getAssignedSplits());
+        assertThat(mockSourceReader.getAssignedSplits())
+                .containsExactly(SourceOperatorTestContext.MOCK_SPLIT);
         // The source reader should have started.
-        assertTrue(mockSourceReader.isStarted());
+        assertThat(mockSourceReader.isStarted()).isTrue();
 
         // A ReaderRegistrationRequest should have been sent.
-        assertEquals(1, mockGateway.getEventsSent().size());
+        assertThat(mockGateway.getEventsSent()).hasSize(1);
         OperatorEvent operatorEvent = mockGateway.getEventsSent().get(0);
-        assertTrue(operatorEvent instanceof ReaderRegistrationEvent);
-        assertEquals(SUBTASK_INDEX, ((ReaderRegistrationEvent) operatorEvent).subtaskId());
+        assertThat(operatorEvent).isInstanceOf(ReaderRegistrationEvent.class);
+        assertThat(((ReaderRegistrationEvent) operatorEvent).subtaskId())
+                .isEqualTo(SourceOperatorTestContext.SUBTASK_INDEX);
     }
 
     @Test
-    public void testStop() throws Exception {
+    void testStop() throws Exception {
         // Initialize the operator.
-        operator.initializeState(getStateContext());
+        operator.initializeState(context.createStateContext());
         // Open the operator.
         operator.open();
         // The source reader should have been assigned a split.
-        assertEquals(Collections.singletonList(MOCK_SPLIT), mockSourceReader.getAssignedSplits());
+        assertThat(mockSourceReader.getAssignedSplits())
+                .containsExactly(SourceOperatorTestContext.MOCK_SPLIT);
 
         CollectingDataOutput<Integer> dataOutput = new CollectingDataOutput<>();
-        assertEquals(DataInputStatus.NOTHING_AVAILABLE, operator.emitNext(dataOutput));
-        assertFalse(operator.isAvailable());
+        assertThat(operator.emitNext(dataOutput)).isEqualTo(DataInputStatus.NOTHING_AVAILABLE);
+        assertThat(operator.isAvailable()).isFalse();
 
         CompletableFuture<Void> sourceStopped = operator.stop(StopMode.DRAIN);
-        assertTrue(operator.isAvailable());
-        assertFalse(sourceStopped.isDone());
-        assertEquals(DataInputStatus.END_OF_DATA, operator.emitNext(dataOutput));
+        assertThat(operator.isAvailable()).isTrue();
+        assertThat(sourceStopped).isNotDone();
+        assertThat(operator.emitNext(dataOutput)).isEqualTo(DataInputStatus.END_OF_DATA);
         operator.finish();
-        assertTrue(sourceStopped.isDone());
+        assertThat(sourceStopped).isDone();
     }
 
     @Test
-    public void testHandleAddSplitsEvent() throws Exception {
-        operator.initializeState(getStateContext());
+    void testHandleAddSplitsEvent() throws Exception {
+        operator.initializeState(context.createStateContext());
         operator.open();
         MockSourceSplit newSplit = new MockSourceSplit((2));
         operator.handleOperatorEvent(
                 new AddSplitEvent<>(
                         Collections.singletonList(newSplit), new MockSourceSplitSerializer()));
         // The source reader should have been assigned two splits.
-        assertEquals(Arrays.asList(MOCK_SPLIT, newSplit), mockSourceReader.getAssignedSplits());
+        assertThat(mockSourceReader.getAssignedSplits())
+                .containsExactly(SourceOperatorTestContext.MOCK_SPLIT, newSplit);
     }
 
     @Test
-    public void testHandleAddSourceEvent() throws Exception {
-        operator.initializeState(getStateContext());
+    void testHandleAddSourceEvent() throws Exception {
+        operator.initializeState(context.createStateContext());
         operator.open();
         SourceEvent event = new SourceEvent() {};
         operator.handleOperatorEvent(new SourceEventWrapper(event));
         // The source reader should have been assigned two splits.
-        assertEquals(Collections.singletonList(event), mockSourceReader.getReceivedSourceEvents());
+        assertThat(mockSourceReader.getReceivedSourceEvents()).containsExactly(event);
     }
 
     @Test
-    public void testSnapshotState() throws Exception {
-        StateInitializationContext stateContext = getStateContext();
+    void testSnapshotState() throws Exception {
+        StateInitializationContext stateContext = context.createStateContext();
         operator.initializeState(stateContext);
         operator.open();
         MockSourceSplit newSplit = new MockSourceSplit((2));
@@ -193,75 +174,97 @@ public class SourceOperatorTest {
         // Verify the splits in state.
         List<MockSourceSplit> splitsInState =
                 CollectionUtil.iterableToList(operator.getReaderState().get());
-        assertEquals(Arrays.asList(MOCK_SPLIT, newSplit), splitsInState);
+        assertThat(splitsInState).containsExactly(SourceOperatorTestContext.MOCK_SPLIT, newSplit);
     }
 
     @Test
-    public void testNotifyCheckpointComplete() throws Exception {
-        StateInitializationContext stateContext = getStateContext();
+    void testNotifyCheckpointComplete() throws Exception {
+        StateInitializationContext stateContext = context.createStateContext();
         operator.initializeState(stateContext);
         operator.open();
         operator.snapshotState(new StateSnapshotContextSynchronousImpl(100L, 100L));
         operator.notifyCheckpointComplete(100L);
-        assertEquals(100L, (long) mockSourceReader.getCompletedCheckpoints().get(0));
+        assertThat(mockSourceReader.getCompletedCheckpoints().get(0)).isEqualTo(100L);
     }
 
     @Test
-    public void testNotifyCheckpointAborted() throws Exception {
-        StateInitializationContext stateContext = getStateContext();
+    void testNotifyCheckpointAborted() throws Exception {
+        StateInitializationContext stateContext = context.createStateContext();
         operator.initializeState(stateContext);
         operator.open();
         operator.snapshotState(new StateSnapshotContextSynchronousImpl(100L, 100L));
         operator.notifyCheckpointAborted(100L);
-        assertEquals(100L, (long) mockSourceReader.getAbortedCheckpoints().get(0));
+        assertThat(mockSourceReader.getAbortedCheckpoints().get(0)).isEqualTo(100L);
     }
 
     @Test
-    public void testSameAvailabilityFuture() {
-        final CompletableFuture<?> initialFuture = operator.getAvailableFuture();
-        final CompletableFuture<?> secondFuture = operator.getAvailableFuture();
-        assertThat(initialFuture, not(sameInstance(AvailabilityProvider.AVAILABLE)));
-        assertThat(secondFuture, sameInstance(initialFuture));
+    void testHandleBacklogEvent() throws Exception {
+        List<StreamElement> outputStreamElements = new ArrayList<>();
+        context =
+                new SourceOperatorTestContext(
+                        false,
+                        false,
+                        WatermarkStrategy.<Integer>forMonotonousTimestamps()
+                                .withTimestampAssigner((element, recordTimestamp) -> element),
+                        new CollectorOutput<>(outputStreamElements));
+        operator = context.getOperator();
+        operator.initializeState(context.createStateContext());
+        operator.open();
+
+        MockSourceSplit newSplit = new MockSourceSplit(2);
+        newSplit.addRecord(1);
+        newSplit.addRecord(1001);
+        operator.handleOperatorEvent(
+                new AddSplitEvent<>(
+                        Collections.singletonList(newSplit), new MockSourceSplitSerializer()));
+        final DataOutputToOutput<Integer> output = new DataOutputToOutput<>(operator.output);
+        operator.emitNext(output);
+        operator.handleOperatorEvent(new IsProcessingBacklogEvent(true));
+
+        operator.emitNext(output);
+        operator.handleOperatorEvent(new IsProcessingBacklogEvent(false));
+
+        assertThat(outputStreamElements)
+                .containsExactly(
+                        new StreamRecord<>(1, 1),
+                        new Watermark(0),
+                        new RecordAttributes(true),
+                        new StreamRecord<>(1001, 1001),
+                        new Watermark(1000),
+                        new RecordAttributes(false));
     }
 
-    // ---------------- helper methods -------------------------
+    private static class DataOutputToOutput<T> implements PushingAsyncDataInput.DataOutput<T> {
 
-    private StateInitializationContext getStateContext() throws Exception {
-        // Create a mock split.
-        byte[] serializedSplitWithVersion =
-                SimpleVersionedSerialization.writeVersionAndSerialize(
-                        new MockSourceSplitSerializer(), MOCK_SPLIT);
+        private final Output<StreamRecord<T>> output;
 
-        // Crate the state context.
-        OperatorStateStore operatorStateStore = createOperatorStateStore();
-        StateInitializationContext stateContext =
-                new StateInitializationContextImpl(null, operatorStateStore, null, null, null);
+        DataOutputToOutput(Output<StreamRecord<T>> output) {
+            this.output = output;
+        }
 
-        // Update the context.
-        stateContext
-                .getOperatorStateStore()
-                .getListState(SourceOperator.SPLITS_STATE_DESC)
-                .update(Collections.singletonList(serializedSplitWithVersion));
+        @Override
+        public void emitRecord(StreamRecord<T> streamRecord) throws Exception {
+            output.collect(streamRecord);
+        }
 
-        return stateContext;
-    }
+        @Override
+        public void emitWatermark(Watermark watermark) throws Exception {
+            output.emitWatermark(watermark);
+        }
 
-    private OperatorStateStore createOperatorStateStore() throws Exception {
-        MockEnvironment env = new MockEnvironmentBuilder().build();
-        final AbstractStateBackend abstractStateBackend = new MemoryStateBackend();
-        CloseableRegistry cancelStreamRegistry = new CloseableRegistry();
-        return abstractStateBackend.createOperatorStateBackend(
-                env, "test-operator", Collections.emptyList(), cancelStreamRegistry);
-    }
+        @Override
+        public void emitWatermarkStatus(WatermarkStatus watermarkStatus) throws Exception {
+            output.emitWatermarkStatus(watermarkStatus);
+        }
 
-    private Environment getTestingEnvironment() {
-        return new StreamMockEnvironment(
-                new Configuration(),
-                new Configuration(),
-                new ExecutionConfig(),
-                1L,
-                new MockInputSplitProvider(),
-                1,
-                new TestTaskStateManager());
+        @Override
+        public void emitLatencyMarker(LatencyMarker latencyMarker) throws Exception {
+            output.emitLatencyMarker(latencyMarker);
+        }
+
+        @Override
+        public void emitRecordAttributes(RecordAttributes recordAttributes) throws Exception {
+            output.emitRecordAttributes(recordAttributes);
+        }
     }
 }

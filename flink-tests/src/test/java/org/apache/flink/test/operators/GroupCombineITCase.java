@@ -30,7 +30,7 @@ import org.apache.flink.api.java.tuple.Tuple1;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.test.operators.util.CollectionDataSets;
-import org.apache.flink.test.util.MultipleProgramsTestBase;
+import org.apache.flink.test.util.MultipleProgramsTestBaseJUnit4;
 import org.apache.flink.util.Collector;
 
 import org.junit.Assert;
@@ -41,6 +41,8 @@ import org.junit.runners.Parameterized;
 import java.util.Arrays;
 import java.util.List;
 
+import static org.apache.flink.test.util.TestBaseUtils.compareResultAsTuples;
+
 /**
  * The GroupCombine operator is not easy to test because it is essentially just a combiner. The
  * result can be the result of a normal groupReduce at any stage its execution. The basic idea is to
@@ -50,7 +52,7 @@ import java.util.List;
  */
 @SuppressWarnings("serial")
 @RunWith(Parameterized.class)
-public class GroupCombineITCase extends MultipleProgramsTestBase {
+public class GroupCombineITCase extends MultipleProgramsTestBaseJUnit4 {
 
     public GroupCombineITCase(TestExecutionMode mode) {
         super(mode);

@@ -25,7 +25,7 @@ import org.apache.flink.streaming.util.KeyedOneInputStreamOperatorTestHarness;
 import org.apache.flink.streaming.util.OneInputStreamOperatorTestHarness;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.runtime.keyselector.RowDataKeySelector;
-import org.apache.flink.table.runtime.operators.window.slicing.SlicingWindowOperator;
+import org.apache.flink.table.runtime.operators.window.tvf.common.WindowAggOperator;
 import org.apache.flink.table.runtime.typeutils.PagedTypeSerializer;
 import org.apache.flink.table.runtime.typeutils.RowDataSerializer;
 import org.apache.flink.table.runtime.util.GenericRowRecordSortComparator;
@@ -47,7 +47,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 
 import static org.apache.flink.table.runtime.util.StreamRecordUtils.insertRecord;
 import static org.apache.flink.table.runtime.util.TimeWindowUtil.toUtcTimestampMills;
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Tests for window deduplicate operators created by {@link
@@ -100,14 +100,14 @@ public class RowTimeWindowDeduplicateOperatorTest {
     }
 
     private static OneInputStreamOperatorTestHarness<RowData, RowData> createTestHarness(
-            SlicingWindowOperator<RowData, ?> operator) throws Exception {
+            WindowAggOperator<RowData, ?> operator) throws Exception {
         return new KeyedOneInputStreamOperatorTestHarness<>(
                 operator, KEY_SELECTOR, KEY_SELECTOR.getProducedType());
     }
 
     @Test
     public void testRowTimeWindowDeduplicateKeepFirstRow() throws Exception {
-        SlicingWindowOperator<RowData, ?> operator =
+        WindowAggOperator<RowData, ?> operator =
                 RowTimeWindowDeduplicateOperatorBuilder.builder()
                         .inputSerializer(INPUT_ROW_SER)
                         .shiftTimeZone(shiftTimeZone)
@@ -199,14 +199,14 @@ public class RowTimeWindowDeduplicateOperatorTest {
         ASSERTER.assertOutputEqualsSorted(
                 "Output was not correct.", expectedOutput, testHarness.getOutput());
 
-        assertEquals(1, operator.getNumLateRecordsDropped().getCount());
+        assertThat(operator.getNumLateRecordsDropped().getCount()).isEqualTo(1);
 
         testHarness.close();
     }
 
     @Test
     public void testRowTimeWindowDeduplicateKeepLastRow() throws Exception {
-        SlicingWindowOperator<RowData, ?> operator =
+        WindowAggOperator<RowData, ?> operator =
                 RowTimeWindowDeduplicateOperatorBuilder.builder()
                         .inputSerializer(INPUT_ROW_SER)
                         .shiftTimeZone(shiftTimeZone)
@@ -298,7 +298,7 @@ public class RowTimeWindowDeduplicateOperatorTest {
         ASSERTER.assertOutputEqualsSorted(
                 "Output was not correct.", expectedOutput, testHarness.getOutput());
 
-        assertEquals(1, operator.getNumLateRecordsDropped().getCount());
+        assertThat(operator.getNumLateRecordsDropped().getCount()).isEqualTo(1);
 
         testHarness.close();
     }

@@ -18,7 +18,7 @@
 
 package org.apache.flink.runtime.jobgraph.topology;
 
-import org.apache.flink.runtime.executiongraph.failover.flip1.LogicalPipelinedRegionComputeUtil;
+import org.apache.flink.runtime.executiongraph.failover.LogicalPipelinedRegionComputeUtil;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSet;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
 import org.apache.flink.runtime.jobgraph.JobGraph;
@@ -91,7 +91,7 @@ public class DefaultLogicalTopology implements LogicalTopology {
         return verticesSorted;
     }
 
-    private DefaultLogicalVertex getVertex(final JobVertexID vertexId) {
+    public DefaultLogicalVertex getVertex(final JobVertexID vertexId) {
         return Optional.ofNullable(idToVertexMap.get(vertexId))
                 .orElseThrow(
                         () -> new IllegalArgumentException("can not find vertex: " + vertexId));

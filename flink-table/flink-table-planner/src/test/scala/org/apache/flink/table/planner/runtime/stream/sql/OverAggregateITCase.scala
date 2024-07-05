@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.runtime.stream.sql
 
 import org.apache.flink.api.java.typeutils.RowTypeInfo
@@ -23,24 +22,24 @@ import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
 import org.apache.flink.table.api.bridge.scala._
 import org.apache.flink.table.planner.factories.TestValuesTableFactory
+import org.apache.flink.table.planner.runtime.utils.{StreamingWithStateTestBase, TestData, TestingAppendSink}
 import org.apache.flink.table.planner.runtime.utils.BatchTestBase.row
 import org.apache.flink.table.planner.runtime.utils.StreamingWithStateTestBase.StateBackendMode
 import org.apache.flink.table.planner.runtime.utils.TimeTestUtil.EventTimeProcessOperator
 import org.apache.flink.table.planner.runtime.utils.UserDefinedFunctionTestUtils.{CountNullNonNull, CountPairs, LargerThanCount}
-import org.apache.flink.table.planner.runtime.utils.{StreamingWithStateTestBase, TestData, TestingAppendSink}
 import org.apache.flink.table.runtime.typeutils.BigDecimalTypeInfo
+import org.apache.flink.testutils.junit.extensions.parameterized.ParameterizedTestExtension
 import org.apache.flink.types.Row
 
-import org.junit.Assert._
-import org.junit._
-import org.junit.runner.RunWith
-import org.junit.runners.Parameterized
+import org.assertj.core.api.Assertions.{assertThat, assertThatThrownBy}
+import org.junit.jupiter.api.{BeforeEach, TestTemplate}
+import org.junit.jupiter.api.extension.ExtendWith
 
 import java.time.{Instant, LocalDateTime}
 
-import scala.collection.{Seq, mutable}
+import scala.collection.{mutable, Seq}
 
-@RunWith(classOf[Parameterized])
+@ExtendWith(Array(classOf[ParameterizedTestExtension]))
 class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTestBase(mode) {
 
   val data = List(
@@ -52,22 +51,23 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
     (6L, 6, "Hello"),
     (7L, 7, "Hello World"),
     (8L, 8, "Hello World"),
-    (20L, 20, "Hello World"))
+    (20L, 20, "Hello World")
+  )
 
-  @Before
+  @BeforeEach
   def setupEnv(): Unit = {
     // unaligned checkpoints are regenerating watermarks after recovery of in-flight data
     // https://issues.apache.org/jira/browse/FLINK-18405
     env.getCheckpointConfig.enableUnalignedCheckpoints(false)
   }
 
-  @Test
+  @TestTemplate
   def testLagFunction(): Unit = {
     val sqlQuery = "SELECT a, b, c, " +
-        "  LAG(b) OVER(PARTITION BY a ORDER BY rowtime)," +
-        "  LAG(b, 2) OVER(PARTITION BY a ORDER BY rowtime)," +
-        "  LAG(b, 2, CAST(10086 AS BIGINT)) OVER(PARTITION BY a ORDER BY rowtime)" +
-        "FROM T1"
+      "  LAG(b) OVER(PARTITION BY a ORDER BY rowtime)," +
+      "  LAG(b, 2) OVER(PARTITION BY a ORDER BY rowtime)," +
+      "  LAG(b, 2, CAST(10086 AS BIGINT)) OVER(PARTITION BY a ORDER BY rowtime)" +
+      "FROM T1"
 
     val data: Seq[Either[(Long, (Int, Long, String)), Long]] = Seq(
       Left(14000001L, (1, 1L, "Hi")),
@@ -78,17 +78,19 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       Right(14000020L),
       Left(14000021L, (1, 6L, "Hello world")),
       Left(14000022L, (1, 7L, "Hello world")),
-      Right(14000030L))
+      Right(14000030L)
+    )
 
     val source = failingDataSource(data)
-    val t1 = source.transform("TimeAssigner", new EventTimeProcessOperator[(Int, Long, String)])
-        .setParallelism(source.parallelism)
-        .toTable(tEnv, 'a, 'b, 'c, 'rowtime.rowtime)
+    val t1 = source
+      .transform("TimeAssigner", new EventTimeProcessOperator[(Int, Long, String)])
+      .setParallelism(source.parallelism)
+      .toTable(tEnv, 'a, 'b, 'c, 'rowtime.rowtime)
 
-    tEnv.registerTable("T1", t1)
+    tEnv.createTemporaryView("T1", t1)
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sqlQuery).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sqlQuery).toDataStream.addSink(sink)
     env.execute()
 
     val expected = List(
@@ -98,19 +100,18 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       s"1,5,Hello,4,3,3",
       s"1,2,Hi,5,4,4",
       s"1,6,Hello world,2,5,5",
-      s"1,7,Hello world,6,2,2")
-    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+      s"1,7,Hello world,6,2,2"
+    )
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
   }
 
-  @Test
+  @TestTemplate
   def testLeadFunction(): Unit = {
-    expectedException.expectMessage("LEAD Function is not supported in stream mode")
-
     val sqlQuery = "SELECT a, b, c, " +
-        "  LEAD(b) OVER(PARTITION BY a ORDER BY rowtime)," +
-        "  LEAD(b, 2) OVER(PARTITION BY a ORDER BY rowtime)," +
-        "  LEAD(b, 2, CAST(10086 AS BIGINT)) OVER(PARTITION BY a ORDER BY rowtime)" +
-        "FROM T1"
+      "  LEAD(b) OVER(PARTITION BY a ORDER BY rowtime)," +
+      "  LEAD(b, 2) OVER(PARTITION BY a ORDER BY rowtime)," +
+      "  LEAD(b, 2, CAST(10086 AS BIGINT)) OVER(PARTITION BY a ORDER BY rowtime)" +
+      "FROM T1"
 
     val data: Seq[Either[(Long, (Int, Long, String)), Long]] = Seq(
       Left(14000001L, (1, 1L, "Hi")),
@@ -118,26 +119,31 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       Right(14000020L),
       Left(14000021L, (1, 6L, "Hello world")),
       Left(14000022L, (1, 7L, "Hello world")),
-      Right(14000030L))
+      Right(14000030L)
+    )
     val source = failingDataSource(data)
-    val t1 = source.transform("TimeAssigner", new EventTimeProcessOperator[(Int, Long, String)])
-        .setParallelism(source.parallelism)
-        .toTable(tEnv, 'a, 'b, 'c, 'rowtime.rowtime)
-    tEnv.registerTable("T1", t1)
+    val t1 = source
+      .transform("TimeAssigner", new EventTimeProcessOperator[(Int, Long, String)])
+      .setParallelism(source.parallelism)
+      .toTable(tEnv, 'a, 'b, 'c, 'rowtime.rowtime)
+    tEnv.createTemporaryView("T1", t1)
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sqlQuery).toAppendStream[Row].addSink(sink)
+
+    assertThatThrownBy(() => tEnv.sqlQuery(sqlQuery).toDataStream.addSink(sink))
+      .hasMessageContaining("LEAD Function is not supported in stream mode")
+
     env.execute()
   }
 
-  @Test
+  @TestTemplate
   def testRowNumberOnOver(): Unit = {
     val t = failingDataSource(TestData.tupleData5)
       .toTable(tEnv, 'a, 'b, 'c, 'd, 'e, 'proctime.proctime)
-    tEnv.registerTable("MyTable", t)
+    tEnv.createTemporaryView("MyTable", t)
     val sqlQuery = "SELECT a, ROW_NUMBER() OVER (PARTITION BY a ORDER BY proctime()) FROM MyTable"
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sqlQuery).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sqlQuery).toDataStream.addSink(sink)
     env.execute()
 
     val expected = List(
@@ -156,14 +162,74 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       "5,3",
       "5,4",
       "5,5")
-    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
   }
 
-  @Test
+  @TestTemplate
+  def testDenseRankOnOver(): Unit = {
+    val t = failingDataSource(TestData.tupleData5)
+      .toTable(tEnv, 'a, 'b, 'c, 'd, 'e, 'proctime.proctime)
+    tEnv.createTemporaryView("MyTable", t)
+    val sqlQuery = "SELECT a, DENSE_RANK() OVER (PARTITION BY a ORDER BY proctime) FROM MyTable"
+
+    val sink = new TestingAppendSink
+    tEnv.sqlQuery(sqlQuery).toDataStream.addSink(sink)
+    env.execute()
+
+    val expected = List(
+      "1,1",
+      "2,1",
+      "2,2",
+      "3,1",
+      "3,2",
+      "3,3",
+      "4,1",
+      "4,2",
+      "4,3",
+      "4,4",
+      "5,1",
+      "5,2",
+      "5,3",
+      "5,4",
+      "5,5")
+    assertThat(expected.sorted).isEqualTo(sink.getAppendResults.sorted)
+  }
+
+  @TestTemplate
+  def testRankOnOver(): Unit = {
+    val t = failingDataSource(TestData.tupleData5)
+      .toTable(tEnv, 'a, 'b, 'c, 'd, 'e, 'proctime.proctime)
+    tEnv.createTemporaryView("MyTable", t)
+    val sqlQuery = "SELECT a, RANK() OVER (PARTITION BY a ORDER BY proctime) FROM MyTable"
+
+    val sink = new TestingAppendSink
+    tEnv.sqlQuery(sqlQuery).toDataStream.addSink(sink)
+    env.execute()
+
+    val expected = List(
+      "1,1",
+      "2,1",
+      "2,2",
+      "3,1",
+      "3,2",
+      "3,3",
+      "4,1",
+      "4,2",
+      "4,3",
+      "4,4",
+      "5,1",
+      "5,2",
+      "5,3",
+      "5,4",
+      "5,5")
+    assertThat(expected.sorted).isEqualTo(sink.getAppendResults.sorted)
+  }
+
+  @TestTemplate
   def testProcTimeBoundedPartitionedRowsOver(): Unit = {
     val t = failingDataSource(TestData.tupleData5)
       .toTable(tEnv, 'a, 'b, 'c, 'd, 'e, 'proctime.proctime)
-    tEnv.registerTable("MyTable", t)
+    tEnv.createTemporaryView("MyTable", t)
 
     val sqlQuery = "SELECT a, " +
       "  SUM(c) OVER (" +
@@ -173,7 +239,7 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       "FROM MyTable"
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sqlQuery).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sqlQuery).toDataStream.addSink(sink)
     env.execute()
 
     val expected = List(
@@ -192,13 +258,13 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       "5,33,10",
       "5,46,10",
       "5,60,10")
-    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
   }
 
-  @Test
+  @TestTemplate
   def testProcTimeBoundedPartitionedRowsOverWithBulitinProctime(): Unit = {
     val t = failingDataSource(TestData.tupleData5).toTable(tEnv, 'a, 'b, 'c, 'd, 'e)
-    tEnv.registerTable("MyTable", t)
+    tEnv.createTemporaryView("MyTable", t)
 
     val sqlQuery = "SELECT a, " +
       "  SUM(c) OVER (" +
@@ -208,7 +274,7 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       "FROM MyTable"
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sqlQuery).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sqlQuery).toDataStream.addSink(sink)
     env.execute()
 
     val expected = List(
@@ -227,13 +293,13 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       "5,33,10",
       "5,46,10",
       "5,60,10")
-    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
   }
 
-  @Test
+  @TestTemplate
   def testProcTimeBoundedPartitionedRowsOverWithBuiltinProctime(): Unit = {
     val t = failingDataSource(TestData.tupleData5).toTable(tEnv, 'a, 'b, 'c, 'd, 'e)
-    tEnv.registerTable("MyTable", t)
+    tEnv.createTemporaryView("MyTable", t)
 
     val sqlQuery = "SELECT a, " +
       "  SUM(c) OVER (" +
@@ -243,7 +309,7 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       "FROM MyTable"
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sqlQuery).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sqlQuery).toDataStream.addSink(sink)
     env.execute()
 
     val expected = List(
@@ -262,14 +328,14 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       "5,33,10",
       "5,46,10",
       "5,60,10")
-    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
   }
 
-  @Test
+  @TestTemplate
   def testProcTimeBoundedNonPartitionedRowsOver(): Unit = {
     val t = failingDataSource(TestData.tupleData5)
       .toTable(tEnv, 'a, 'b, 'c, 'd, 'e, 'proctime.proctime)
-    tEnv.registerTable("MyTable", t)
+    tEnv.createTemporaryView("MyTable", t)
 
     val sqlQuery = "SELECT a, " +
       " first_value(d) OVER (" +
@@ -283,7 +349,7 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       "FROM MyTable"
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sqlQuery).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sqlQuery).toDataStream.addSink(sink)
     env.execute()
 
     val expected = List(
@@ -301,15 +367,16 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       "5,Hallo Welt,HIJ,66,1",
       "5,Hallo Welt wie,IJK,77,2",
       "5,Hallo Welt wie gehts?,JKL,88,3",
-      "5,ABC,KLM,99,4")
-    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+      "5,ABC,KLM,99,4"
+    )
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
   }
 
-  @Test
+  @TestTemplate
   def testProcTimeUnboundedPartitionedRangeOver(): Unit = {
     val t1 = failingDataSource(data).toTable(tEnv, 'a, 'b, 'c, 'proctime.proctime)
 
-    tEnv.registerTable("T1", t1)
+    tEnv.createTemporaryView("T1", t1)
 
     val sqlQuery = "SELECT " +
       "c, " +
@@ -320,21 +387,28 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       "from T1"
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sqlQuery).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sqlQuery).toDataStream.addSink(sink)
     env.execute()
 
     val expected = List(
-      "Hello World,7,7,1,7", "Hello World,7,8,2,15", "Hello World,7,20,3,35",
-      "Hello,1,1,1,1", "Hello,1,2,2,3", "Hello,1,3,3,6", "Hello,1,4,4,10", "Hello,1,5,5,15",
-      "Hello,1,6,6,21")
-    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+      "Hello World,7,7,1,7",
+      "Hello World,7,8,2,15",
+      "Hello World,7,20,3,35",
+      "Hello,1,1,1,1",
+      "Hello,1,2,2,3",
+      "Hello,1,3,3,6",
+      "Hello,1,4,4,10",
+      "Hello,1,5,5,15",
+      "Hello,1,6,6,21"
+    )
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
   }
 
-  @Test
+  @TestTemplate
   def testProcTimeUnboundedPartitionedRowsOver(): Unit = {
     val t1 = failingDataSource(data).toTable(tEnv, 'a, 'b, 'c, 'proctime.proctime)
 
-    tEnv.registerTable("T1", t1)
+    tEnv.createTemporaryView("T1", t1)
 
     val sql =
       """
@@ -352,22 +426,29 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       """.stripMargin
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sql).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sql).toDataStream.addSink(sink)
     env.execute()
 
     val expected = List(
-      "Hello World,1,null", "Hello World,2,null", "Hello World,3,null",
-      "Hello,1,null", "Hello,2,null", "Hello,3,null", "Hello,4,null",
-      "Hello,5,null", "Hello,6,null")
-    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+      "Hello World,1,null",
+      "Hello World,2,null",
+      "Hello World,3,null",
+      "Hello,1,null",
+      "Hello,2,null",
+      "Hello,3,null",
+      "Hello,4,null",
+      "Hello,5,null",
+      "Hello,6,null"
+    )
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
 
   }
 
-  @Test
+  @TestTemplate
   def testProcTimeUnboundedNonPartitionedRangeOver(): Unit = {
     val t1 = failingDataSource(data).toTable(tEnv, 'a, 'b, 'c, 'proctime.proctime)
 
-    tEnv.registerTable("T1", t1)
+    tEnv.createTemporaryView("T1", t1)
 
     val sqlQuery = "SELECT " +
       "c, " +
@@ -376,20 +457,27 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       "from T1"
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sqlQuery).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sqlQuery).toDataStream.addSink(sink)
     env.execute()
 
     val expected = List(
-      "Hello World,7,28", "Hello World,8,36", "Hello World,9,56",
-      "Hello,1,1", "Hello,2,3", "Hello,3,6", "Hello,4,10", "Hello,5,15", "Hello,6,21")
-    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+      "Hello World,7,28",
+      "Hello World,8,36",
+      "Hello World,9,56",
+      "Hello,1,1",
+      "Hello,2,3",
+      "Hello,3,6",
+      "Hello,4,10",
+      "Hello,5,15",
+      "Hello,6,21")
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
   }
 
-  @Test
+  @TestTemplate
   def testProcTimeUnboundedNonPartitionedRowsOver(): Unit = {
     val t1 = failingDataSource(data).toTable(tEnv, 'a, 'b, 'c, 'proctime.proctime)
 
-    tEnv.registerTable("T1", t1)
+    tEnv.createTemporaryView("T1", t1)
 
     val sqlQuery = "SELECT " +
       "listagg(distinct c, '|') " +
@@ -399,15 +487,23 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       "from T1"
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sqlQuery).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sqlQuery).toDataStream.addSink(sink)
     env.execute()
 
-    val expected = List("Hello,1", "Hello,2", "Hello,3", "Hello,4", "Hello,5", "Hello,6",
-      "Hello|Hello World,7", "Hello|Hello World,8", "Hello|Hello World,9")
-    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+    val expected = List(
+      "Hello,1",
+      "Hello,2",
+      "Hello,3",
+      "Hello,4",
+      "Hello,5",
+      "Hello,6",
+      "Hello|Hello World,7",
+      "Hello|Hello World,8",
+      "Hello|Hello World,9")
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
   }
 
-  @Test
+  @TestTemplate
   def testRowTimeBoundedPartitionedRangeOver(): Unit = {
     val data: Seq[Either[(Long, (Long, Int, String)), Long]] = Seq(
       Left((1500L, (1L, 15, "Hello"))),
@@ -439,15 +535,17 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       Left((15000L, (8L, 8, "Hello World"))),
       Right(17000L),
       Left((20000L, (20L, 20, "Hello World"))),
-      Right(19000L))
+      Right(19000L)
+    )
 
     val source = failingDataSource(data)
-    val t1 = source.transform("TimeAssigner", new EventTimeProcessOperator[(Long, Int, String)])
+    val t1 = source
+      .transform("TimeAssigner", new EventTimeProcessOperator[(Long, Int, String)])
       .setParallelism(source.parallelism)
       .toTable(tEnv, 'a, 'b, 'c, 'rowtime.rowtime)
 
-    tEnv.registerTable("T1", t1)
-    tEnv.registerFunction("LTCNT", new LargerThanCount)
+    tEnv.createTemporaryView("T1", t1)
+    tEnv.createTemporarySystemFunction("LTCNT", classOf[LargerThanCount])
 
     val sqlQuery = "SELECT " +
       "  c, b, " +
@@ -460,7 +558,7 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       " FROM T1"
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sqlQuery).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sqlQuery).toDataStream.addSink(sink)
     env.execute()
 
     val expected = List(
@@ -483,11 +581,12 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       "Hello World,77,3,3,21",
       "Hello World,18,1,1,7",
       "Hello World,8,2,2,15",
-      "Hello World,20,1,1,20")
-    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+      "Hello World,20,1,1,20"
+    )
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
   }
 
-  @Test
+  @TestTemplate
   def testRowTimeBoundedPartitionedRowsOver(): Unit = {
     val data: Seq[Either[(Long, (Long, Int, String)), Long]] = Seq(
       Left((1L, (1L, 1, "Hello"))),
@@ -508,15 +607,17 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       Right(6L),
       Left((8L, (8L, 8, "Hello World"))),
       Left((7L, (7L, 7, "Hello World"))),
-      Right(20L))
+      Right(20L)
+    )
 
     val source = failingDataSource(data)
-    val t1 = source.transform("TimeAssigner", new EventTimeProcessOperator[(Long, Int, String)])
+    val t1 = source
+      .transform("TimeAssigner", new EventTimeProcessOperator[(Long, Int, String)])
       .setParallelism(source.parallelism)
       .toTable(tEnv, 'a, 'b, 'c, 'rowtime.rowtime)
 
-    tEnv.registerTable("T1", t1)
-    tEnv.registerFunction("LTCNT", new LargerThanCount)
+    tEnv.createTemporaryView("T1", t1)
+    tEnv.createTemporarySystemFunction("LTCNT", classOf[LargerThanCount])
 
     val sqlQuery = "SELECT " +
       " c, a, " +
@@ -529,20 +630,31 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       "FROM T1"
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sqlQuery).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sqlQuery).toDataStream.addSink(sink)
     env.execute()
 
     val expected = List(
-      "Hello,1,0,1,1", "Hello,1,0,2,2", "Hello,1,0,3,3",
-      "Hello,2,0,3,4", "Hello,2,0,3,5", "Hello,2,0,3,6",
-      "Hello,3,0,3,7", "Hello,4,0,3,9", "Hello,5,1,3,12",
+      "Hello,1,0,1,1",
+      "Hello,1,0,2,2",
+      "Hello,1,0,3,3",
+      "Hello,2,0,3,4",
+      "Hello,2,0,3,5",
+      "Hello,2,0,3,6",
+      "Hello,3,0,3,7",
+      "Hello,4,0,3,9",
+      "Hello,5,1,3,12",
       "Hello,6,2,3,15",
-      "Hello World,7,1,1,7", "Hello World,7,2,2,14", "Hello World,7,3,3,21",
-      "Hello World,7,3,3,21", "Hello World,8,3,3,22", "Hello World,20,3,3,35")
-    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+      "Hello World,7,1,1,7",
+      "Hello World,7,2,2,14",
+      "Hello World,7,3,3,21",
+      "Hello World,7,3,3,21",
+      "Hello World,8,3,3,22",
+      "Hello World,20,3,3,35"
+    )
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
   }
 
-  @Test
+  @TestTemplate
   def testRowTimeBoundedNonPartitionedRangeOver(): Unit = {
     val data: Seq[Either[(Long, (Long, Int, String)), Long]] = Seq(
       Left((1500L, (1L, 15, "Hello"))),
@@ -574,14 +686,16 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       Left((15000L, (8L, 8, "Hello World"))),
       Right(17000L),
       Left((20000L, (20L, 20, "Hello World"))),
-      Right(19000L))
+      Right(19000L)
+    )
 
     val source = failingDataSource(data)
-    val t1 = source.transform("TimeAssigner", new EventTimeProcessOperator[(Long, Int, String)])
+    val t1 = source
+      .transform("TimeAssigner", new EventTimeProcessOperator[(Long, Int, String)])
       .setParallelism(source.parallelism)
       .toTable(tEnv, 'a, 'b, 'c, 'rowtime.rowtime)
 
-    tEnv.registerTable("T1", t1)
+    tEnv.createTemporaryView("T1", t1)
 
     val sqlQuery = "SELECT " +
       "  c, b, " +
@@ -592,24 +706,35 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       " FROM T1"
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sqlQuery).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sqlQuery).toDataStream.addSink(sink)
     env.execute()
 
     val expected = List(
-      "Hello,1,1,1", "Hello,15,2,2", "Hello,16,3,3",
-      "Hello,2,6,9", "Hello,3,6,9", "Hello,2,6,9",
+      "Hello,1,1,1",
+      "Hello,15,2,2",
+      "Hello,16,3,3",
+      "Hello,2,6,9",
+      "Hello,3,6,9",
+      "Hello,2,6,9",
       "Hello,3,4,9",
       "Hello,4,2,7",
       "Hello,5,2,9",
-      "Hello,6,2,11", "Hello,65,2,12",
-      "Hello,9,2,12", "Hello,9,2,12", "Hello,18,3,18",
-      "Hello World,7,4,25", "Hello World,17,3,21", "Hello World,77,3,21", "Hello World,18,1,7",
+      "Hello,6,2,11",
+      "Hello,65,2,12",
+      "Hello,9,2,12",
+      "Hello,9,2,12",
+      "Hello,18,3,18",
+      "Hello World,7,4,25",
+      "Hello World,17,3,21",
+      "Hello World,77,3,21",
+      "Hello World,18,1,7",
       "Hello World,8,2,15",
-      "Hello World,20,1,20")
-    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+      "Hello World,20,1,20"
+    )
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
   }
 
-  @Test
+  @TestTemplate
   def testRowTimeBoundedNonPartitionedRowsOver(): Unit = {
     val data: Seq[Either[(Long, (Long, Int, String)), Long]] = Seq(
       Left((2L, (2L, 2, "Hello"))),
@@ -630,14 +755,16 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       Left((9L, (9L, 9, "Hello World"))),
       Left((8L, (8L, 8, "Hello World"))),
       Left((8L, (8L, 8, "Hello World"))),
-      Right(20L))
+      Right(20L)
+    )
 
     val source = failingDataSource(data)
-    val t1 = source.transform("TimeAssigner", new EventTimeProcessOperator[(Long, Int, String)])
+    val t1 = source
+      .transform("TimeAssigner", new EventTimeProcessOperator[(Long, Int, String)])
       .setParallelism(source.parallelism)
       .toTable(tEnv, 'a, 'b, 'c, 'rowtime.rowtime)
 
-    tEnv.registerTable("T1", t1)
+    tEnv.createTemporaryView("T1", t1)
 
     val sqlQuery = "SELECT " +
       "c, a, " +
@@ -646,22 +773,30 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       "FROM T1"
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sqlQuery).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sqlQuery).toDataStream.addSink(sink)
     env.execute()
 
     val expected = List(
-      "Hello,1,1,1", "Hello,1,2,2", "Hello,1,3,3",
-      "Hello,2,3,4", "Hello,2,3,5", "Hello,2,3,6",
+      "Hello,1,1,1",
+      "Hello,1,2,2",
+      "Hello,1,3,3",
+      "Hello,2,3,4",
+      "Hello,2,3,5",
+      "Hello,2,3,6",
       "Hello,3,3,7",
-      "Hello,4,3,9", "Hello,5,3,12",
-      "Hello,6,3,15", "Hello World,7,3,18",
-      "Hello World,8,3,21", "Hello World,8,3,23",
+      "Hello,4,3,9",
+      "Hello,5,3,12",
+      "Hello,6,3,15",
+      "Hello World,7,3,18",
+      "Hello World,8,3,21",
+      "Hello World,8,3,23",
       "Hello World,9,3,25",
-      "Hello World,20,3,37")
-    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+      "Hello World,20,3,37"
+    )
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
   }
 
-  @Test
+  @TestTemplate
   def testRowTimeUnBoundedPartitionedRangeOver(): Unit = {
     val sqlQuery = "SELECT a, b, c, " +
       "  LTCNT(b, CAST('4' AS BIGINT)) OVER(" +
@@ -693,38 +828,41 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       Left(14000022L, (1, 7L, "Hello world")),
       Left(14000023L, (2, 4L, "Hello world")),
       Left(14000023L, (2, 5L, "Hello world")),
-      Right(14000030L))
+      Right(14000030L)
+    )
 
     val source = failingDataSource(data)
-    val t1 = source.transform("TimeAssigner", new EventTimeProcessOperator[(Int, Long, String)])
+    val t1 = source
+      .transform("TimeAssigner", new EventTimeProcessOperator[(Int, Long, String)])
       .setParallelism(source.parallelism)
       .toTable(tEnv, 'a, 'b, 'c, 'rowtime.rowtime)
 
-    tEnv.registerTable("T1", t1)
-    tEnv.registerFunction("LTCNT", new LargerThanCount)
+    tEnv.createTemporaryView("T1", t1)
+    tEnv.createTemporarySystemFunction("LTCNT", new LargerThanCount)
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sqlQuery).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sqlQuery).toDataStream.addSink(sink)
     env.execute()
 
     val expected = List(
-      s"1,1,Hello,0,6,3,${6/3},3,1",
-      s"1,2,Hello,0,6,3,${6/3},3,1",
-      s"1,3,Hello world,0,6,3,${6/3},3,1",
-      s"1,1,Hi,0,7,4,${7/4},3,1",
-      s"2,1,Hello,0,1,1,${1/1},1,1",
-      s"2,2,Hello world,0,6,3,${6/3},3,1",
-      s"2,3,Hello world,0,6,3,${6/3},3,1",
-      s"1,4,Hello world,0,11,5,${11/5},4,1",
-      s"1,5,Hello world,3,29,8,${29/8},7,1",
-      s"1,6,Hello world,3,29,8,${29/8},7,1",
-      s"1,7,Hello world,3,29,8,${29/8},7,1",
-      s"2,4,Hello world,1,15,5,${15/5},5,1",
-      s"2,5,Hello world,1,15,5,${15/5},5,1")
-    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+      s"1,1,Hello,0,6,3,${6 / 3},3,1",
+      s"1,2,Hello,0,6,3,${6 / 3},3,1",
+      s"1,3,Hello world,0,6,3,${6 / 3},3,1",
+      s"1,1,Hi,0,7,4,${7 / 4},3,1",
+      s"2,1,Hello,0,1,1,${1 / 1},1,1",
+      s"2,2,Hello world,0,6,3,${6 / 3},3,1",
+      s"2,3,Hello world,0,6,3,${6 / 3},3,1",
+      s"1,4,Hello world,0,11,5,${11 / 5},4,1",
+      s"1,5,Hello world,3,29,8,${29 / 8},7,1",
+      s"1,6,Hello world,3,29,8,${29 / 8},7,1",
+      s"1,7,Hello world,3,29,8,${29 / 8},7,1",
+      s"2,4,Hello world,1,15,5,${15 / 5},5,1",
+      s"2,5,Hello world,1,15,5,${15 / 5},5,1"
+    )
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
   }
 
-  @Test
+  @TestTemplate
   def testRowTimeUnBoundedPartitionedRowsOver(): Unit = {
     val sqlQuery = "SELECT a, b, c, " +
       "LTCNT(b, CAST('4' AS BIGINT)) over(" +
@@ -758,39 +896,42 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       Left(14000026L, (1, 7L, "Hello world")),
       Left(14000025L, (1, 8L, "Hello world")),
       Left(14000022L, (1, 9L, "Hello world")),
-      Right(14000030L))
+      Right(14000030L)
+    )
 
     val source = failingDataSource(data)
-    val t1 = source.transform("TimeAssigner", new EventTimeProcessOperator[(Int, Long, String)])
+    val t1 = source
+      .transform("TimeAssigner", new EventTimeProcessOperator[(Int, Long, String)])
       .setParallelism(source.parallelism)
       .toTable(tEnv, 'a, 'b, 'c, 'rowtime.rowtime)
 
-    tEnv.registerTable("T1", t1)
-    tEnv.registerFunction("LTCNT", new LargerThanCount)
+    tEnv.createTemporaryView("T1", t1)
+    tEnv.createTemporarySystemFunction("LTCNT", classOf[LargerThanCount])
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sqlQuery).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sqlQuery).toDataStream.addSink(sink)
     env.execute()
 
     val expected = mutable.MutableList(
-      s"1,2,Hello,0,2,1,${2/1},2,2",
-      s"1,3,Hello world,0,5,2,${5/2},3,2",
-      s"1,1,Hi,0,6,3,${6/3},3,1",
-      s"2,1,Hello,0,1,1,${1/1},1,1",
-      s"2,2,Hello world,0,3,2,${3/2},2,1",
-      s"3,1,Hello,0,1,1,${1/1},1,1",
-      s"3,2,Hello world,0,3,2,${3/2},2,1",
-      s"1,5,Hello world,1,11,4,${11/4},5,1",
-      s"1,6,Hello world,2,17,5,${17/5},6,1",
-      s"1,9,Hello world,3,26,6,${26/6},9,1",
-      s"1,8,Hello world,4,34,7,${34/7},9,1",
-      s"1,7,Hello world,5,41,8,${41/8},9,1",
-      s"2,5,Hello world,1,8,3,${8/3},5,1",
-      s"3,5,Hello world,1,8,3,${8/3},5,1")
-    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+      s"1,2,Hello,0,2,1,${2 / 1},2,2",
+      s"1,3,Hello world,0,5,2,${5 / 2},3,2",
+      s"1,1,Hi,0,6,3,${6 / 3},3,1",
+      s"2,1,Hello,0,1,1,${1 / 1},1,1",
+      s"2,2,Hello world,0,3,2,${3 / 2},2,1",
+      s"3,1,Hello,0,1,1,${1 / 1},1,1",
+      s"3,2,Hello world,0,3,2,${3 / 2},2,1",
+      s"1,5,Hello world,1,11,4,${11 / 4},5,1",
+      s"1,6,Hello world,2,17,5,${17 / 5},6,1",
+      s"1,9,Hello world,3,26,6,${26 / 6},9,1",
+      s"1,8,Hello world,4,34,7,${34 / 7},9,1",
+      s"1,7,Hello world,5,41,8,${41 / 8},9,1",
+      s"2,5,Hello world,1,8,3,${8 / 3},5,1",
+      s"3,5,Hello world,1,8,3,${8 / 3},5,1"
+    )
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
   }
 
-  @Test
+  @TestTemplate
   def testRowTimeUnBoundedNonPartitionedRangeOver(): Unit = {
     val sqlQuery = "SELECT a, b, c, " +
       "  SUM(b) OVER (ORDER BY rowtime RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW), " +
@@ -815,38 +956,41 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       Left(14000022L, (1, 7L, "Hello world")),
       Left(14000023L, (2, 4L, "Hello world")),
       Left(14000023L, (2, 5L, "Hello world")),
-      Right(14000030L))
+      Right(14000030L)
+    )
 
     val source = failingDataSource(data)
-    val t1 = source.transform("TimeAssigner", new EventTimeProcessOperator[(Int, Long, String)])
+    val t1 = source
+      .transform("TimeAssigner", new EventTimeProcessOperator[(Int, Long, String)])
       .setParallelism(source.parallelism)
       .toTable(tEnv, 'a, 'b, 'c, 'rowtime.rowtime)
 
-    tEnv.registerTable("T1", t1)
+    tEnv.createTemporaryView("T1", t1)
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sqlQuery).toAppendStream[Row].addSink(sink).setParallelism(1)
+    tEnv.sqlQuery(sqlQuery).toDataStream.addSink(sink).setParallelism(1)
     env.execute()
 
     val expected = List(
-      s"2,1,Hello,1,1,${1/1},1,1",
-      s"1,1,Hello,7,4,${7/4},3,1",
-      s"1,2,Hello,7,4,${7/4},3,1",
-      s"1,3,Hello world,7,4,${7/4},3,1",
-      s"2,2,Hello world,12,6,${12/6},3,1",
-      s"2,3,Hello world,12,6,${12/6},3,1",
-      s"1,1,Hi,13,7,${13/7},3,1",
-      s"1,4,Hello world,17,8,${17/8},4,1",
-      s"1,5,Hello world,35,11,${35/11},7,1",
-      s"1,6,Hello world,35,11,${35/11},7,1",
-      s"1,7,Hello world,35,11,${35/11},7,1",
-      s"2,4,Hello world,44,13,${44/13},7,1",
-      s"2,5,Hello world,44,13,${44/13},7,1")
+      s"2,1,Hello,1,1,${1 / 1},1,1",
+      s"1,1,Hello,7,4,${7 / 4},3,1",
+      s"1,2,Hello,7,4,${7 / 4},3,1",
+      s"1,3,Hello world,7,4,${7 / 4},3,1",
+      s"2,2,Hello world,12,6,${12 / 6},3,1",
+      s"2,3,Hello world,12,6,${12 / 6},3,1",
+      s"1,1,Hi,13,7,${13 / 7},3,1",
+      s"1,4,Hello world,17,8,${17 / 8},4,1",
+      s"1,5,Hello world,35,11,${35 / 11},7,1",
+      s"1,6,Hello world,35,11,${35 / 11},7,1",
+      s"1,7,Hello world,35,11,${35 / 11},7,1",
+      s"2,4,Hello world,44,13,${44 / 13},7,1",
+      s"2,5,Hello world,44,13,${44 / 13},7,1"
+    )
 
-    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
   }
 
-  @Test
+  @TestTemplate
   def testRowTimeUnBoundedNonPartitionedRowsOver(): Unit = {
     val sqlQuery = "SELECT a, b, c, " +
       "  SUM(b) OVER (ORDER BY rowtime ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW), " +
@@ -873,30 +1017,32 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
     )
 
     val source = failingDataSource(data)
-    val t1 = source.transform("TimeAssigner", new EventTimeProcessOperator[(Int, Long, String)])
+    val t1 = source
+      .transform("TimeAssigner", new EventTimeProcessOperator[(Int, Long, String)])
       .setParallelism(source.parallelism)
       .toTable(tEnv, 'a, 'b, 'c, 'rowtime.rowtime)
 
-    tEnv.registerTable("T1", t1)
+    tEnv.createTemporaryView("T1", t1)
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sqlQuery).toAppendStream[Row].addSink(sink).setParallelism(1)
+    tEnv.sqlQuery(sqlQuery).toDataStream.addSink(sink).setParallelism(1)
     env.execute()
 
     val expected = mutable.MutableList(
-      s"2,2,Hello,2,1,${2/1},2,2",
-      s"3,5,Hello,7,2,${7/2},5,2",
-      s"1,3,Hello,10,3,${10/3},5,2",
-      s"3,7,Hello world,17,4,${17/4},7,2",
-      s"1,1,Hi,18,5,${18/5},7,1",
-      s"4,9,Hello world,27,6,${27/6},9,1",
-      s"5,8,Hello world,35,7,${35/7},9,1",
-      s"6,8,Hello world,43,8,${43/8},9,1")
-    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+      s"2,2,Hello,2,1,${2 / 1},2,2",
+      s"3,5,Hello,7,2,${7 / 2},5,2",
+      s"1,3,Hello,10,3,${10 / 3},5,2",
+      s"3,7,Hello world,17,4,${17 / 4},7,2",
+      s"1,1,Hi,18,5,${18 / 5},7,1",
+      s"4,9,Hello world,27,6,${27 / 6},9,1",
+      s"5,8,Hello world,35,7,${35 / 7},9,1",
+      s"6,8,Hello world,43,8,${43 / 8},9,1"
+    )
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
   }
 
-  /** test sliding event-time unbounded window with partition by **/
-  @Test
+  /** test sliding event-time unbounded window with partition by * */
+  @TestTemplate
   def testRowTimeUnBoundedPartitionedRowsOver2(): Unit = {
     val sqlQuery = "SELECT a, b, c, " +
       "SUM(b) over (" +
@@ -940,40 +1086,41 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
     )
 
     val source = failingDataSource(data)
-    val t1 = source.transform("TimeAssigner", new EventTimeProcessOperator[(Int, Long, String)])
+    val t1 = source
+      .transform("TimeAssigner", new EventTimeProcessOperator[(Int, Long, String)])
       .setParallelism(source.parallelism)
       .toTable(tEnv, 'a, 'b, 'c, 'rowtime.rowtime)
 
-    tEnv.registerTable("T1", t1)
+    tEnv.createTemporaryView("T1", t1)
 
     val sink = new TestingAppendSink
-    tEnv.sqlQuery(sqlQuery).toAppendStream[Row].addSink(sink)
+    tEnv.sqlQuery(sqlQuery).toDataStream.addSink(sink)
     env.execute()
 
     val expected = List(
-      s"1,2,Hello,2,1,${2/1},2,2",
-      s"1,3,Hello world,5,2,${5/2},3,2",
-      s"1,1,Hi,6,3,${6/3},3,1",
-      s"2,1,Hello,1,1,${1/1},1,1",
-      s"2,2,Hello world,3,2,${3/2},2,1",
-      s"3,1,Hello,1,1,${1/1},1,1",
-      s"3,2,Hello world,3,2,${3/2},2,1",
-      s"1,5,Hello world,11,4,${11/4},5,1",
-      s"1,6,Hello world,17,5,${17/5},6,1",
-      s"1,9,Hello world,26,6,${26/6},9,1",
-      s"1,8,Hello world,34,7,${34/7},9,1",
-      s"1,7,Hello world,41,8,${41/8},9,1",
-      s"2,5,Hello world,8,3,${8/3},5,1",
-      s"3,5,Hello world,8,3,${8/3},5,1"
+      s"1,2,Hello,2,1,${2 / 1},2,2",
+      s"1,3,Hello world,5,2,${5 / 2},3,2",
+      s"1,1,Hi,6,3,${6 / 3},3,1",
+      s"2,1,Hello,1,1,${1 / 1},1,1",
+      s"2,2,Hello world,3,2,${3 / 2},2,1",
+      s"3,1,Hello,1,1,${1 / 1},1,1",
+      s"3,2,Hello world,3,2,${3 / 2},2,1",
+      s"1,5,Hello world,11,4,${11 / 4},5,1",
+      s"1,6,Hello world,17,5,${17 / 5},6,1",
+      s"1,9,Hello world,26,6,${26 / 6},9,1",
+      s"1,8,Hello world,34,7,${34 / 7},9,1",
+      s"1,7,Hello world,41,8,${41 / 8},9,1",
+      s"2,5,Hello world,8,3,${8 / 3},5,1",
+      s"3,5,Hello world,8,3,${8 / 3},5,1"
     )
-    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
   }
 
-  @Test
+  @TestTemplate
   def testProcTimeDistinctUnboundedPartitionedRowsOver(): Unit = {
     val t = failingDataSource(TestData.tupleData5)
       .toTable(tEnv, 'a, 'b, 'c, 'd, 'e, 'proctime.proctime)
-    tEnv.registerTable("MyTable", t)
+    tEnv.createTemporaryView("MyTable", t)
 
     val sqlQuery = "SELECT a, " +
       "  COUNT(e) OVER (" +
@@ -984,7 +1131,7 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       "    PARTITION BY a ORDER BY proctime RANGE UNBOUNDED preceding) " +
       "FROM MyTable"
 
-    val result = tEnv.sqlQuery(sqlQuery).toAppendStream[Row]
+    val result = tEnv.sqlQuery(sqlQuery).toDataStream
     val sink = new TestingAppendSink
     result.addSink(sink)
     env.execute()
@@ -1005,10 +1152,10 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       "5,3,4,1",
       "5,4,6,1",
       "5,5,6,1")
-    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
   }
 
-  @Test
+  @TestTemplate
   def testTimestampRowTimeDistinctUnboundedPartitionedRangeOverWithNullValues(): Unit = {
     val rows = Seq(
       row(LocalDateTime.parse("1970-01-01T00:00:01"), 1, null),
@@ -1020,25 +1167,25 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       row(LocalDateTime.parse("1970-01-01T00:00:07"), 1, "Hello World"),
       row(LocalDateTime.parse("1970-01-01T00:00:08"), 2, "Hello World"),
       row(LocalDateTime.parse("1970-01-01T00:00:09"), 2, "Hello World"),
-      row(LocalDateTime.parse("1970-01-01T00:00:10"), 1, null))
+      row(LocalDateTime.parse("1970-01-01T00:00:10"), 1, null)
+    )
 
     val tableId = TestValuesTableFactory.registerData(rows)
 
     // for sum aggregation ensure that every time the order of each element is consistent
     env.setParallelism(1)
-    tEnv.executeSql(
-      s"""
-         |CREATE TABLE MyTable (
-         |  rowtime TIMESTAMP(3),
-         |  b INT,
-         |  c STRING,
-         |  WATERMARK FOR rowtime AS rowtime
-         |) WITH (
-         |  'connector' = 'values',
-         |  'data-id' = '$tableId',
-         |  'bounded' = 'true'
-         |)
-         |""".stripMargin)
+    tEnv.executeSql(s"""
+                       |CREATE TABLE MyTable (
+                       |  rowtime TIMESTAMP(3),
+                       |  b INT,
+                       |  c STRING,
+                       |  WATERMARK FOR rowtime AS rowtime
+                       |) WITH (
+                       |  'connector' = 'values',
+                       |  'data-id' = '$tableId',
+                       |  'bounded' = 'true'
+                       |)
+                       |""".stripMargin)
 
     tEnv.createTemporaryFunction("CntNullNonNull", new CountNullNonNull)
 
@@ -1052,19 +1199,27 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       "FROM " +
       "  MyTable"
 
-    val result = tEnv.sqlQuery(sqlQuery).toAppendStream[Row]
+    val result = tEnv.sqlQuery(sqlQuery).toDataStream
     val sink = new TestingAppendSink
     result.addSink(sink)
     env.execute()
 
     val expected = List(
-      "null,1,0,0|1", "null,1,0,0|1", "null,2,0,0|1", "null,1,2,2|1",
-      "Hello,1,1,1|1", "Hello,1,1,1|1", "Hello,2,1,1|1",
-      "Hello World,1,2,2|1", "Hello World,2,2,2|1", "Hello World,2,2,2|1")
-    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+      "null,1,0,0|1",
+      "null,1,0,0|1",
+      "null,2,0,0|1",
+      "null,1,2,2|1",
+      "Hello,1,1,1|1",
+      "Hello,1,1,1|1",
+      "Hello,2,1,1|1",
+      "Hello World,1,2,2|1",
+      "Hello World,2,2,2|1",
+      "Hello World,2,2,2|1"
+    )
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
   }
 
-  @Test
+  @TestTemplate
   def testTimestampLtzRowTimeDistinctUnboundedPartitionedRangeOverWithNullValues(): Unit = {
     val rows = Seq(
       row(Instant.ofEpochSecond(1L), 1, null),
@@ -1076,25 +1231,25 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       row(Instant.ofEpochSecond(7L), 1, "Hello World"),
       row(Instant.ofEpochSecond(8L), 2, "Hello World"),
       row(Instant.ofEpochSecond(9L), 2, "Hello World"),
-      row(Instant.ofEpochSecond(10L), 1, null))
+      row(Instant.ofEpochSecond(10L), 1, null)
+    )
 
     val tableId = TestValuesTableFactory.registerData(rows)
 
     // for sum aggregation ensure that every time the order of each element is consistent
     env.setParallelism(1)
-    tEnv.executeSql(
-      s"""
-         |CREATE TABLE MyTable (
-         |  rowtime TIMESTAMP_LTZ(3),
-         |  b INT,
-         |  c STRING,
-         |  WATERMARK FOR rowtime AS rowtime
-         |) WITH (
-         |  'connector' = 'values',
-         |  'data-id' = '$tableId',
-         |  'bounded' = 'true'
-         |)
-         |""".stripMargin)
+    tEnv.executeSql(s"""
+                       |CREATE TABLE MyTable (
+                       |  rowtime TIMESTAMP_LTZ(3),
+                       |  b INT,
+                       |  c STRING,
+                       |  WATERMARK FOR rowtime AS rowtime
+                       |) WITH (
+                       |  'connector' = 'values',
+                       |  'data-id' = '$tableId',
+                       |  'bounded' = 'true'
+                       |)
+                       |""".stripMargin)
 
     tEnv.createTemporaryFunction("CntNullNonNull", new CountNullNonNull)
 
@@ -1108,23 +1263,31 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       "FROM " +
       "  MyTable"
 
-    val result = tEnv.sqlQuery(sqlQuery).toAppendStream[Row]
+    val result = tEnv.sqlQuery(sqlQuery).toDataStream
     val sink = new TestingAppendSink
     result.addSink(sink)
     env.execute()
 
     val expected = List(
-      "null,1,0,0|1", "null,1,0,0|1", "null,2,0,0|1", "null,1,2,2|1",
-      "Hello,1,1,1|1", "Hello,1,1,1|1", "Hello,2,1,1|1",
-      "Hello World,1,2,2|1", "Hello World,2,2,2|1", "Hello World,2,2,2|1")
-    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+      "null,1,0,0|1",
+      "null,1,0,0|1",
+      "null,2,0,0|1",
+      "null,1,2,2|1",
+      "Hello,1,1,1|1",
+      "Hello,1,1,1|1",
+      "Hello,2,1,1|1",
+      "Hello World,1,2,2|1",
+      "Hello World,2,2,2|1",
+      "Hello World,2,2,2|1"
+    )
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
   }
 
-  @Test
+  @TestTemplate
   def testProcTimeDistinctBoundedPartitionedRowsOver(): Unit = {
     val t = failingDataSource(TestData.tupleData5)
       .toTable(tEnv, 'a, 'b, 'c, 'd, 'e, 'proctime.proctime)
-    tEnv.registerTable("MyTable", t)
+    tEnv.createTemporaryView("MyTable", t)
 
     val sqlQuery = "SELECT a, " +
       "  SUM(DISTINCT e) OVER (" +
@@ -1135,7 +1298,7 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       "    PARTITION BY a ORDER BY proctime ROWS BETWEEN 3 PRECEDING AND CURRENT ROW) " +
       "FROM MyTable"
 
-    val result = tEnv.sqlQuery(sqlQuery).toAppendStream[Row]
+    val result = tEnv.sqlQuery(sqlQuery).toDataStream
     val sink = new TestingAppendSink
     result.addSink(sink)
     env.execute()
@@ -1155,11 +1318,12 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       "5,4,1,{1=1, 3=1}",
       "5,4,1,{1=1, 3=1}",
       "5,6,1,{1=1, 2=1, 3=1}",
-      "5,5,2,{2=1, 3=1}")
-    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+      "5,5,2,{2=1, 3=1}"
+    )
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
   }
 
-  @Test
+  @TestTemplate
   def testProcTimeDistinctPairWithNulls(): Unit = {
 
     val data = List(
@@ -1172,20 +1336,21 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       (null, "Hello World"),
       (null, "Hello World"),
       ("A", "Hello World"),
-      ("B", "Hello World"))
+      ("B", "Hello World")
+    )
 
     env.setParallelism(1)
 
     val table = env.fromCollection(data).toTable(tEnv, 'a, 'b, 'proctime.proctime)
-    tEnv.registerTable("MyTable", table)
-    tEnv.registerFunction("PairCount", new CountPairs)
+    tEnv.createTemporaryView("MyTable", table)
+    tEnv.createTemporarySystemFunction("PairCount", classOf[CountPairs])
 
     val sqlQuery = "SELECT a, b, " +
       "  PairCount(a, b) OVER (ORDER BY proctime RANGE UNBOUNDED preceding), " +
       "  PairCount(DISTINCT a, b) OVER (ORDER BY proctime RANGE UNBOUNDED preceding) " +
       "FROM MyTable"
 
-    val result = tEnv.sqlQuery(sqlQuery).toAppendStream[Row]
+    val result = tEnv.sqlQuery(sqlQuery).toDataStream
     val sink = new TestingAppendSink
     result.addSink(sink)
     env.execute()
@@ -1200,11 +1365,12 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       "null,Hello World,7,5",
       "null,Hello World,8,5",
       "A,Hello World,9,6",
-      "B,Hello World,10,7")
-    assertEquals(expected, sink.getAppendResults)
+      "B,Hello World,10,7"
+    )
+    assertThat(sink.getAppendResults).isEqualTo(expected)
   }
 
-  @Test
+  @TestTemplate
   def testDecimalSum0(): Unit = {
     val data = new mutable.MutableList[Row]
     data.+=(Row.of(BigDecimal(1.11).bigDecimal))
@@ -1215,12 +1381,12 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
     env.setParallelism(1)
     val rowType = new RowTypeInfo(BigDecimalTypeInfo.of(38, 18))
     val t = failingDataSource(data)(rowType).toTable(tEnv, 'd, 'proctime.proctime)
-    tEnv.registerTable("T", t)
+    tEnv.createTemporaryView("T", t)
 
     val sqlQuery = "select sum(d) over (ORDER BY proctime rows between unbounded preceding " +
       "and current row) from T"
 
-    val result = tEnv.sqlQuery(sqlQuery).toAppendStream[Row]
+    val result = tEnv.sqlQuery(sqlQuery).toDataStream
     val sink = new TestingAppendSink
     result.addSink(sink)
     env.execute()
@@ -1230,6 +1396,6 @@ class OverAggregateITCase(mode: StateBackendMode) extends StreamingWithStateTest
       "3.330000000000000000",
       "6.660000000000000000",
       "11.100000000000000000")
-    assertEquals(expected, sink.getAppendResults)
+    assertThat(sink.getAppendResults).isEqualTo(expected)
   }
 }

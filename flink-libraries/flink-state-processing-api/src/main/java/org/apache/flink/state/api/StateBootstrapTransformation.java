@@ -25,6 +25,7 @@ import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.execution.CheckpointingMode;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.memory.ManagedMemoryUseCase;
 import org.apache.flink.runtime.checkpoint.OperatorState;
@@ -36,12 +37,10 @@ import org.apache.flink.state.api.output.TaggedOperatorSubtaskState;
 import org.apache.flink.state.api.output.operators.BroadcastStateBootstrapOperator;
 import org.apache.flink.state.api.output.operators.GroupReduceOperator;
 import org.apache.flink.state.api.runtime.MutableConfig;
-import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.graph.StreamConfig;
 import org.apache.flink.streaming.api.operators.StreamOperator;
-import org.apache.flink.util.TernaryBoolean;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -197,8 +196,7 @@ public class StateBootstrapTransformation<T> {
             Configuration additionalConfig,
             StreamOperator<TaggedOperatorSubtaskState> operator) {
         // Eagerly perform a deep copy of the configuration, otherwise it will result in undefined
-        // behavior
-        // when deploying with multiple bootstrap transformations.
+        // behavior when deploying with multiple bootstrap transformations.
         Configuration deepCopy =
                 new Configuration(
                         MutableConfig.of(stream.getExecutionEnvironment().getConfiguration()));
@@ -211,7 +209,8 @@ public class StateBootstrapTransformation<T> {
 
         if (keyType != null) {
             TypeSerializer<?> keySerializer =
-                    keyType.createSerializer(stream.getExecutionEnvironment().getConfig());
+                    keyType.createSerializer(
+                            stream.getExecutionEnvironment().getConfig().getSerializerConfig());
 
             config.setStateKeySerializer(keySerializer);
             config.setStatePartitioner(0, keySelector);
@@ -221,9 +220,8 @@ public class StateBootstrapTransformation<T> {
         config.setOperatorName(operatorID.toHexString());
         config.setOperatorID(operatorID);
         config.setStateBackend(stateBackend);
-        // This means leaving this stateBackend unwrapped.
-        config.setChangelogStateBackendEnabled(TernaryBoolean.FALSE);
         config.setManagedMemoryFractionOperatorOfUseCase(ManagedMemoryUseCase.STATE_BACKEND, 1.0);
+        config.serializeAllConfigs();
         return config;
     }
 

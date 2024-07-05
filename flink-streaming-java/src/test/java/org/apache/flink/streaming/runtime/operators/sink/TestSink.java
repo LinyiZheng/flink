@@ -26,6 +26,7 @@ import org.apache.flink.api.connector.sink.SinkWriter;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.streaming.api.functions.sink.filesystem.bucketassigners.SimpleVersionedStringSerializer;
+import org.apache.flink.streaming.api.transformations.SinkV1Adapter;
 
 import javax.annotation.Nullable;
 
@@ -46,9 +47,15 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
-import static org.junit.Assert.assertNotNull;
+import static org.assertj.core.api.Assertions.assertThat;
 
-/** A {@link Sink TestSink} for all the sink related tests. */
+/**
+ * A {@link Sink TestSink} for all the sink related tests. Use only for tests where {@link
+ * SinkV1Adapter} should be tested.
+ *
+ * @deprecated Use {@link TestSinkV2} instead.
+ */
+@Deprecated
 public class TestSink<T> implements Sink<T, String, String, String> {
 
     public static final String END_OF_INPUT_STR = "end of input";
@@ -126,6 +133,10 @@ public class TestSink<T> implements Sink<T, String, String, String> {
         return new Builder<>();
     }
 
+    public org.apache.flink.api.connector.sink2.Sink<T> asV2() {
+        return SinkV1Adapter.wrap(this);
+    }
+
     /** A builder class for {@link TestSink}. */
     public static class Builder<T> {
 
@@ -173,11 +184,6 @@ public class TestSink<T> implements Sink<T, String, String, String> {
         public Builder<T> setDefaultCommitter(Supplier<Queue<String>> queueSupplier) {
             this.committer = new DefaultCommitter(queueSupplier);
             this.committableSerializer = StringCommittableSerializer.INSTANCE;
-            return this;
-        }
-
-        public Builder<T> setGlobalCommitter(GlobalCommitter<String, String> globalCommitter) {
-            this.globalCommitter = globalCommitter;
             return this;
         }
 
@@ -306,7 +312,7 @@ public class TestSink<T> implements Sink<T, String, String, String> {
         @Override
         public List<String> commit(List<String> committables) {
             if (committedData == null) {
-                assertNotNull(queueSupplier);
+                assertThat(queueSupplier).isNotNull();
                 committedData = queueSupplier.get();
             }
             committedData.addAll(committables);
@@ -358,10 +364,6 @@ public class TestSink<T> implements Sink<T, String, String, String> {
 
         private final String committedSuccessData;
 
-        DefaultGlobalCommitter() {
-            this("");
-        }
-
         DefaultGlobalCommitter(String committedSuccessData) {
             this.committedSuccessData = committedSuccessData;
         }
@@ -389,39 +391,6 @@ public class TestSink<T> implements Sink<T, String, String, String> {
         @Override
         public void endOfInput() {
             commit(Collections.singletonList(END_OF_INPUT_STR));
-        }
-    }
-
-    /** A {@link GlobalCommitter} that always re-commits global committables it received. */
-    static class RetryOnceGlobalCommitter extends DefaultGlobalCommitter {
-
-        private final Set<String> seen = new LinkedHashSet<>();
-
-        @Override
-        public List<String> filterRecoveredCommittables(List<String> globalCommittables) {
-            return globalCommittables;
-        }
-
-        @Override
-        public String combine(List<String> committables) {
-            return String.join("|", committables);
-        }
-
-        @Override
-        public void endOfInput() {}
-
-        @Override
-        public List<String> commit(List<String> committables) {
-            committables.forEach(
-                    c -> {
-                        if (seen.remove(c)) {
-                            checkNotNull(committedData);
-                            committedData.add(c);
-                        } else {
-                            seen.add(c);
-                        }
-                    });
-            return new ArrayList<>(seen);
         }
     }
 

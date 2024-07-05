@@ -18,8 +18,8 @@
 
 package org.apache.flink.table.runtime.operators.wmassigners;
 
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.streaming.runtime.watermarkstatus.WatermarkStatus;
@@ -37,18 +37,33 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
-import static junit.framework.TestCase.assertTrue;
-import static org.hamcrest.Matchers.equalTo;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.fail;
+import static org.apache.flink.table.runtime.operators.wmassigners.WatermarkAssignerOperator.calculateProcessingTimeTimerInterval;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 /** Tests of {@link WatermarkAssignerOperator}. */
 public class WatermarkAssignerOperatorTest extends WatermarkAssignerOperatorTestBase {
 
     private static final WatermarkGenerator WATERMARK_GENERATOR =
             new BoundedOutOfOrderWatermarkGenerator(0, 1);
+
+    @Test
+    public void testCalculateProcessingTimeTimerInterval() {
+        assertThat(calculateProcessingTimeTimerInterval(5, 0)).isEqualTo(5);
+        assertThat(calculateProcessingTimeTimerInterval(5, -1)).isEqualTo(5);
+
+        assertThat(calculateProcessingTimeTimerInterval(0, 5)).isEqualTo(5);
+        assertThat(calculateProcessingTimeTimerInterval(-1, 5)).isEqualTo(5);
+
+        assertThat(calculateProcessingTimeTimerInterval(5, 42)).isEqualTo(5);
+        assertThat(calculateProcessingTimeTimerInterval(42, 5)).isEqualTo(5);
+
+        assertThat(calculateProcessingTimeTimerInterval(2, 4)).isEqualTo(1);
+        assertThat(calculateProcessingTimeTimerInterval(4, 2)).isEqualTo(1);
+
+        assertThat(calculateProcessingTimeTimerInterval(100, 110)).isEqualTo(20);
+        assertThat(calculateProcessingTimeTimerInterval(110, 100)).isEqualTo(20);
+    }
 
     @Test
     public void testWatermarkAssignerWithIdleSource() throws Exception {
@@ -70,11 +85,14 @@ public class WatermarkAssignerOperatorTest extends WatermarkAssignerOperatorTest
         // trigger watermark emit
         testHarness.setProcessingTime(51);
         expectedOutput.add(new Watermark(3));
-        assertThat(filterOutRecords(output), equalTo(expectedOutput));
+        assertThat(filterOutRecords(output)).isEqualTo(expectedOutput);
 
-        testHarness.setProcessingTime(1001);
+        stepProcessingTime(testHarness, 52, 1050, 50);
+        assertThat(filterOutRecords(output)).isEqualTo(expectedOutput);
+
+        stepProcessingTime(testHarness, 1051, 1100, 50);
         expectedOutput.add(WatermarkStatus.IDLE);
-        assertThat(filterOutRecords(output), equalTo(expectedOutput));
+        assertThat(filterOutRecords(output)).isEqualTo(expectedOutput);
 
         expectedOutput.add(WatermarkStatus.ACTIVE);
         testHarness.processElement(new StreamRecord<>(GenericRowData.of(4L)));
@@ -83,9 +101,55 @@ public class WatermarkAssignerOperatorTest extends WatermarkAssignerOperatorTest
         testHarness.processElement(new StreamRecord<>(GenericRowData.of(7L)));
         testHarness.processElement(new StreamRecord<>(GenericRowData.of(8L)));
 
-        testHarness.setProcessingTime(1060);
+        assertThat(filterOutRecords(output)).isEqualTo(expectedOutput);
+
+        stepProcessingTime(testHarness, 1101, 1200, 50);
         expectedOutput.add(new Watermark(7));
-        assertThat(filterOutRecords(output), equalTo(expectedOutput));
+        assertThat(filterOutRecords(output)).isEqualTo(expectedOutput);
+    }
+
+    @Test
+    public void testWatermarkIntervalSmallerThanIdleTimeout() throws Exception {
+        testIdleTimeout(1000, 50);
+    }
+
+    @Test
+    public void testIdleTimeoutSmallerThanWatermarkInterval() throws Exception {
+        testIdleTimeout(50, 1000);
+    }
+
+    private void testIdleTimeout(long idleTimeout, long watermarkInterval) throws Exception {
+        long step = Math.min(idleTimeout, watermarkInterval);
+        OneInputStreamOperatorTestHarness<RowData, RowData> testHarness =
+                createTestHarness(0, WATERMARK_GENERATOR, idleTimeout);
+        testHarness.getExecutionConfig().setAutoWatermarkInterval(watermarkInterval);
+        testHarness.open();
+
+        ConcurrentLinkedQueue<Object> output = testHarness.getOutput();
+
+        long timeBetweenRecords = (long) (idleTimeout * 0.9);
+        // Process elements at intervals less than idleTimeout (1000ms)
+        for (long i = 1; i <= 10; i++) {
+            long timestamp = i * timeBetweenRecords;
+            testHarness.processElement(new StreamRecord<>(GenericRowData.of(timestamp), timestamp));
+            stepProcessingTime(testHarness, timestamp, timestamp + timeBetweenRecords - 1, step);
+        }
+
+        // Check if the status ever becomes IDLE (it shouldn't)
+        assertThat(extractWatermarkStatuses(output)).doesNotContain(WatermarkStatus.IDLE);
+    }
+
+    private void stepProcessingTime(
+            OneInputStreamOperatorTestHarness<?, ?> testHarness,
+            long fromInclusive,
+            long toInclusive,
+            long step)
+            throws Exception {
+        for (long time = fromInclusive; time < toInclusive; time += step) {
+            // incrementally fire processing time timers
+            testHarness.setProcessingTime(time);
+        }
+        testHarness.setProcessingTime(toInclusive);
     }
 
     @Test
@@ -115,14 +179,14 @@ public class WatermarkAssignerOperatorTest extends WatermarkAssignerOperatorTest
             while (lastWatermark < 3) {
                 if (output.size() > 0) {
                     Object next = output.poll();
-                    assertNotNull(next);
+                    assertThat(next).isNotNull();
                     Tuple2<Long, Long> update =
                             validateElement(next, nextElementValue, lastWatermark);
                     nextElementValue = update.f0;
                     lastWatermark = update.f1;
 
                     // check the invariant
-                    assertTrue(lastWatermark < nextElementValue);
+                    assertThat(lastWatermark).isLessThan(nextElementValue);
                 } else {
                     currentTime = currentTime + 10;
                     testHarness.setProcessingTime(currentTime);
@@ -148,14 +212,14 @@ public class WatermarkAssignerOperatorTest extends WatermarkAssignerOperatorTest
             while (lastWatermark < 7) {
                 if (output.size() > 0) {
                     Object next = output.poll();
-                    assertNotNull(next);
+                    assertThat(next).isNotNull();
                     Tuple2<Long, Long> update =
                             validateElement(next, nextElementValue, lastWatermark);
                     nextElementValue = update.f0;
                     lastWatermark = update.f1;
 
                     // check the invariant
-                    assertTrue(lastWatermark < nextElementValue);
+                    assertThat(lastWatermark).isLessThan(nextElementValue);
                 } else {
                     currentTime = currentTime + 10;
                     testHarness.setProcessingTime(currentTime);
@@ -166,7 +230,8 @@ public class WatermarkAssignerOperatorTest extends WatermarkAssignerOperatorTest
         }
 
         testHarness.processWatermark(new Watermark(Long.MAX_VALUE));
-        assertEquals(Long.MAX_VALUE, ((Watermark) testHarness.getOutput().poll()).getTimestamp());
+        assertThat(((Watermark) testHarness.getOutput().poll()).getTimestamp())
+                .isEqualTo(Long.MAX_VALUE);
     }
 
     @Test
@@ -216,11 +281,11 @@ public class WatermarkAssignerOperatorTest extends WatermarkAssignerOperatorTest
         expected.add(Watermark.MAX_WATERMARK);
 
         // num_watermark + num_records
-        assertEquals(expected.size() + 11, testHarness.getOutput().size());
         List<Watermark> results = extractWatermarks(testHarness.getOutput());
-        assertEquals(expected, results);
-        assertTrue(MyWatermarkGenerator.openCalled);
-        assertTrue(MyWatermarkGenerator.closeCalled);
+        assertThat(results).isEqualTo(expected);
+        assertThat(MyWatermarkGenerator.openCalled).isTrue();
+        assertThat(MyWatermarkGenerator.closeCalled).isTrue();
+        assertThat(testHarness.getOutput()).hasSize(expected.size() + 11);
     }
 
     private static OneInputStreamOperatorTestHarness<RowData, RowData> createTestHarness(
@@ -262,8 +327,8 @@ public class WatermarkAssignerOperatorTest extends WatermarkAssignerOperatorTest
         }
 
         @Override
-        public void open(Configuration parameters) throws Exception {
-            super.open(parameters);
+        public void open(OpenContext openContext) throws Exception {
+            super.open(openContext);
             if (closeCalled) {
                 fail("Close called before open.");
             }

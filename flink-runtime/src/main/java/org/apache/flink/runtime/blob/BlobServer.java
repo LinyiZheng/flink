@@ -25,18 +25,23 @@ import org.apache.flink.configuration.BlobServerOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.configuration.SecurityOptions;
+import org.apache.flink.runtime.dispatcher.cleanup.GloballyCleanableResource;
+import org.apache.flink.runtime.dispatcher.cleanup.LocallyCleanableResource;
 import org.apache.flink.runtime.net.SSLUtils;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FileUtils;
 import org.apache.flink.util.NetUtils;
 import org.apache.flink.util.Reference;
 import org.apache.flink.util.ShutdownHookUtil;
+import org.apache.flink.util.concurrent.FutureUtils;
 import org.apache.flink.util.function.FunctionUtils;
+import org.apache.flink.util.function.ThrowingRunnable;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
+import javax.annotation.concurrent.GuardedBy;
 import javax.net.ServerSocketFactory;
 
 import java.io.File;
@@ -55,8 +60,12 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 import java.util.Timer;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReadWriteLock;
@@ -74,7 +83,12 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  * the directory structure to store the BLOBs or temporarily cache them.
  */
 public class BlobServer extends Thread
-        implements BlobService, BlobWriter, PermanentBlobService, TransientBlobService {
+        implements BlobService,
+                BlobWriter,
+                PermanentBlobService,
+                TransientBlobService,
+                LocallyCleanableResource,
+                GloballyCleanableResource {
 
     /** The log object used for debugging. */
     private static final Logger LOG = LoggerFactory.getLogger(BlobServer.class);
@@ -150,7 +164,7 @@ public class BlobServer extends Thread
         LOG.info("Created BLOB server storage directory {}", storageDir);
 
         // configure the maximum number of concurrent connections
-        final int maxConnections = config.getInteger(BlobServerOptions.FETCH_CONCURRENT);
+        final int maxConnections = config.get(BlobServerOptions.FETCH_CONCURRENT);
         if (maxConnections >= 1) {
             this.maxConnections = maxConnections;
         } else {
@@ -162,7 +176,7 @@ public class BlobServer extends Thread
         }
 
         // configure the backlog of connections
-        int backlog = config.getInteger(BlobServerOptions.FETCH_BACKLOG);
+        int backlog = config.get(BlobServerOptions.FETCH_BACKLOG);
         if (backlog < 1) {
             LOG.warn(
                     "Invalid value for BLOB connection backlog: {}. Using default value of {}",
@@ -174,7 +188,7 @@ public class BlobServer extends Thread
         // Initializing the clean up task
         this.cleanupTimer = new Timer(true);
 
-        this.cleanupInterval = config.getLong(BlobServerOptions.CLEANUP_INTERVAL) * 1000;
+        this.cleanupInterval = config.get(BlobServerOptions.CLEANUP_INTERVAL) * 1000;
         this.cleanupTimer.schedule(
                 new TransientBlobCleanupTask(blobExpiryTimes, this::deleteInternal, LOG),
                 cleanupInterval,
@@ -184,12 +198,12 @@ public class BlobServer extends Thread
 
         //  ----------------------- start the server -------------------
 
-        final String serverPortRange = config.getString(BlobServerOptions.PORT);
+        final String serverPortRange = config.get(BlobServerOptions.PORT);
         final Iterator<Integer> ports = NetUtils.getPortRangeFromString(serverPortRange);
 
         final ServerSocketFactory socketFactory;
         if (SecurityOptions.isInternalSSLEnabled(config)
-                && config.getBoolean(BlobServerOptions.SSL_ENABLED)) {
+                && config.get(BlobServerOptions.SSL_ENABLED)) {
             try {
                 socketFactory = SSLUtils.createSSLServerSocketFactory(config);
             } catch (Exception e) {
@@ -861,60 +875,99 @@ public class BlobServer extends Thread
     }
 
     /**
-     * Removes all BLOBs from local and HA store belonging to the given job ID.
+     * Deletes locally stored artifacts for the job represented by the given {@link JobID}. This
+     * doesn't touch the job's entry in the {@link BlobStore} to enable recovering.
      *
-     * @param jobId ID of the job this blob belongs to
-     * @param cleanupBlobStoreFiles True if the corresponding blob store files shall be cleaned up
-     *     as well. Otherwise false.
-     * @return <tt>true</tt> if the job directory is successfully deleted or non-existing;
-     *     <tt>false</tt> otherwise
+     * @param jobId The {@code JobID} of the job that is subject to cleanup.
      */
-    public boolean cleanupJob(JobID jobId, boolean cleanupBlobStoreFiles) {
+    @Override
+    public CompletableFuture<Void> localCleanupAsync(JobID jobId, Executor cleanupExecutor) {
         checkNotNull(jobId);
 
+        return runAsyncWithWriteLock(() -> internalLocalCleanup(jobId), cleanupExecutor);
+    }
+
+    @GuardedBy("readWriteLock")
+    private void internalLocalCleanup(JobID jobId) throws IOException {
         final File jobDir =
                 new File(
                         BlobUtils.getStorageLocationPath(
                                 storageDir.deref().getAbsolutePath(), jobId));
+        FileUtils.deleteDirectory(jobDir);
 
-        readWriteLock.writeLock().lock();
-
-        try {
-            // delete locally
-            boolean deletedLocally = false;
-            try {
-                FileUtils.deleteDirectory(jobDir);
-
-                // NOTE: Instead of going through blobExpiryTimes, keep lingering entries - they
-                //       will be cleaned up by the timer task which tolerates non-existing files
-                //       If inserted again with the same IDs (via put()), the TTL will be updated
-                //       again.
-
-                deletedLocally = true;
-            } catch (IOException e) {
-                LOG.warn(
-                        "Failed to locally delete BLOB storage directory at "
-                                + jobDir.getAbsolutePath(),
-                        e);
-            }
-
-            // delete in HA blob store files
-            final boolean deletedHA = !cleanupBlobStoreFiles || blobStore.deleteAll(jobId);
-
-            return deletedLocally && deletedHA;
-        } finally {
-            readWriteLock.writeLock().unlock();
-        }
+        // NOTE on why blobExpiryTimes are not cleaned up: Instead of going through
+        // blobExpiryTimes, keep lingering entries. They will be cleaned up by the timer
+        // task which tolerate non-existing files. If inserted again with the same IDs
+        // (via put()), the TTL will be updated again.
     }
 
-    public void retainJobs(Collection<JobID> jobsToRetain) throws IOException {
+    /**
+     * Removes all BLOBs from local and HA store belonging to the given {@link JobID}.
+     *
+     * @param jobId ID of the job this blob belongs to
+     */
+    @Override
+    public CompletableFuture<Void> globalCleanupAsync(JobID jobId, Executor executor) {
+        checkNotNull(jobId);
+
+        return runAsyncWithWriteLock(
+                () -> {
+                    IOException exception = null;
+
+                    try {
+                        internalLocalCleanup(jobId);
+                    } catch (IOException e) {
+                        exception = e;
+                    }
+
+                    if (!blobStore.deleteAll(jobId)) {
+                        exception =
+                                ExceptionUtils.firstOrSuppressed(
+                                        new IOException(
+                                                "Error while cleaning up the BlobStore for job "
+                                                        + jobId),
+                                        exception);
+                    }
+
+                    if (exception != null) {
+                        throw new IOException(exception);
+                    }
+                },
+                executor);
+    }
+
+    private CompletableFuture<Void> runAsyncWithWriteLock(
+            ThrowingRunnable<IOException> runnable, Executor executor) {
+        return CompletableFuture.runAsync(
+                () -> {
+                    readWriteLock.writeLock().lock();
+                    try {
+                        runnable.run();
+                    } catch (IOException e) {
+                        throw new CompletionException(e);
+                    } finally {
+                        readWriteLock.writeLock().unlock();
+                    }
+                },
+                executor);
+    }
+
+    public void retainJobs(Collection<JobID> jobsToRetain, Executor ioExecutor) throws IOException {
         if (storageDir.deref().exists()) {
             final Set<JobID> jobsToRemove = BlobUtils.listExistingJobs(storageDir.deref().toPath());
 
             jobsToRemove.removeAll(jobsToRetain);
 
+            final Collection<CompletableFuture<Void>> cleanupResultFutures =
+                    new ArrayList<>(jobsToRemove.size());
             for (JobID jobToRemove : jobsToRemove) {
-                cleanupJob(jobToRemove, true);
+                cleanupResultFutures.add(globalCleanupAsync(jobToRemove, ioExecutor));
+            }
+
+            try {
+                FutureUtils.completeAll(cleanupResultFutures).get();
+            } catch (InterruptedException | ExecutionException e) {
+                ExceptionUtils.rethrowIOException(e);
             }
         }
     }
@@ -936,7 +989,7 @@ public class BlobServer extends Thread
      */
     @Override
     public final int getMinOffloadingSize() {
-        return blobServiceConfiguration.getInteger(BlobServerOptions.OFFLOAD_MINSIZE);
+        return blobServiceConfiguration.get(BlobServerOptions.OFFLOAD_MINSIZE);
     }
 
     /**

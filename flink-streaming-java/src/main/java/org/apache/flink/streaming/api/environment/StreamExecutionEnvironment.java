@@ -35,12 +35,12 @@ import org.apache.flink.api.common.operators.ResourceSpec;
 import org.apache.flink.api.common.operators.SlotSharingGroup;
 import org.apache.flink.api.common.operators.util.SlotSharingGroupUtils;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
-import org.apache.flink.api.common.time.Time;
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.connector.source.Boundedness;
 import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.api.connector.source.lib.NumberSequenceSource;
+import org.apache.flink.api.connector.source.util.ratelimit.RateLimiterStrategy;
 import org.apache.flink.api.dag.Transformation;
 import org.apache.flink.api.java.ClosureCleaner;
 import org.apache.flink.api.java.Utils;
@@ -51,6 +51,7 @@ import org.apache.flink.api.java.typeutils.MissingTypeInfo;
 import org.apache.flink.api.java.typeutils.PojoTypeInfo;
 import org.apache.flink.api.java.typeutils.ResultTypeQueryable;
 import org.apache.flink.api.java.typeutils.TypeExtractor;
+import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.CoreOptions;
@@ -60,8 +61,12 @@ import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.PipelineOptions;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.configuration.RestOptions;
+import org.apache.flink.configuration.StateBackendOptions;
 import org.apache.flink.configuration.StateChangelogOptions;
-import org.apache.flink.configuration.UnmodifiableConfiguration;
+import org.apache.flink.connector.datagen.functions.FromElementsGeneratorFunction;
+import org.apache.flink.connector.datagen.source.DataGeneratorSource;
+import org.apache.flink.core.execution.CacheSupportedPipelineExecutor;
+import org.apache.flink.core.execution.CheckpointingMode;
 import org.apache.flink.core.execution.DefaultExecutorServiceLoader;
 import org.apache.flink.core.execution.DetachedJobExecutionResult;
 import org.apache.flink.core.execution.JobClient;
@@ -71,10 +76,9 @@ import org.apache.flink.core.execution.PipelineExecutorFactory;
 import org.apache.flink.core.execution.PipelineExecutorServiceLoader;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
+import org.apache.flink.runtime.scheduler.ClusterDatasetCorruptedException;
 import org.apache.flink.runtime.state.KeyGroupRangeAssignment;
 import org.apache.flink.runtime.state.StateBackend;
-import org.apache.flink.runtime.state.StateBackendLoader;
-import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
@@ -96,7 +100,10 @@ import org.apache.flink.streaming.api.functions.source.TimestampedFileInputSplit
 import org.apache.flink.streaming.api.graph.StreamGraph;
 import org.apache.flink.streaming.api.graph.StreamGraphGenerator;
 import org.apache.flink.streaming.api.operators.StreamSource;
-import org.apache.flink.util.DynamicCodeLoadingException;
+import org.apache.flink.streaming.api.operators.collect.CollectResultIterator;
+import org.apache.flink.streaming.api.transformations.CacheTransformation;
+import org.apache.flink.streaming.api.windowing.assigners.WindowAssigner;
+import org.apache.flink.util.AbstractID;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.InstantiationUtil;
@@ -110,19 +117,22 @@ import com.esotericsoftware.kryo.Serializer;
 
 import javax.annotation.Nullable;
 
-import java.io.IOException;
 import java.io.Serializable;
 import java.net.URI;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.stream.Collectors;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
@@ -139,7 +149,14 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  * @see org.apache.flink.streaming.api.environment.RemoteStreamEnvironment
  */
 @Public
-public class StreamExecutionEnvironment {
+public class StreamExecutionEnvironment implements AutoCloseable {
+
+    private final List<CollectResultIterator<?>> collectIterators = new ArrayList<>();
+
+    @Internal
+    public void registerCollectIterator(CollectResultIterator<?> iterator) {
+        collectIterators.add(iterator);
+    }
 
     /**
      * The default name to use for a streaming job if no other name has been specified.
@@ -168,29 +185,33 @@ public class StreamExecutionEnvironment {
     // ------------------------------------------------------------------------
 
     /** The execution configuration for this environment. */
-    private final ExecutionConfig config = new ExecutionConfig();
+    protected final ExecutionConfig config;
 
     /** Settings that control the checkpointing behavior. */
-    private final CheckpointConfig checkpointCfg = new CheckpointConfig();
+    protected final CheckpointConfig checkpointCfg;
 
     protected final List<Transformation<?>> transformations = new ArrayList<>();
 
-    private long bufferTimeout = ExecutionOptions.BUFFER_TIMEOUT.defaultValue().toMillis();
+    private final Map<AbstractID, CacheTransformation<?>> cachedTransformations = new HashMap<>();
 
-    protected boolean isChainingEnabled = true;
-
-    /** The state backend used for storing k/v state and state snapshots. */
-    private StateBackend defaultStateBackend;
-
-    /** Whether to enable ChangelogStateBackend, default value is unset. */
-    private TernaryBoolean changelogStateBackendEnabled = TernaryBoolean.UNDEFINED;
-
-    /** The default savepoint directory used by the job. */
-    private Path defaultSavepointDirectory;
+    /**
+     * The state backend used for storing k/v state and state snapshots.
+     *
+     * @deprecated The field is marked as deprecated because starting from Flink 1.19, the usage of
+     *     all complex Java objects related to configuration, including their getter and setter
+     *     methods, should be replaced by ConfigOption. In a future major version of Flink, this
+     *     field will be removed entirely.
+     */
+    @Deprecated private StateBackend defaultStateBackend;
 
     /** The time characteristic used by the data streams. */
     private TimeCharacteristic timeCharacteristic = DEFAULT_TIME_CHARACTERISTIC;
 
+    /**
+     * Now we could not migrate this field to configuration. Because this object field remains
+     * directly accessible and modifiable as it is exposed through a getter to users, allowing
+     * external modifications.
+     */
     protected final List<Tuple2<String, DistributedCache.DistributedCacheEntry>> cacheFile =
             new ArrayList<>();
 
@@ -260,11 +281,13 @@ public class StreamExecutionEnvironment {
             final ClassLoader userClassloader) {
         this.executorServiceLoader = checkNotNull(executorServiceLoader);
         this.configuration = new Configuration(checkNotNull(configuration));
+        this.config = new ExecutionConfig(this.configuration);
+        this.checkpointCfg = new CheckpointConfig(this.configuration);
         this.userClassloader =
                 userClassloader == null ? getClass().getClassLoader() : userClassloader;
 
         // the configuration of a job or an operator can be specified at the following places:
-        //     i) at the operator level using e.g. parallelism using the
+        //     i) at the operator level via e.g. parallelism by using the
         // SingleOutputStreamOperator.setParallelism().
         //     ii) programmatically by using e.g. the env.setRestartStrategy() method
         //     iii) in the configuration passed here
@@ -336,13 +359,13 @@ public class StreamExecutionEnvironment {
 
     /**
      * Sets the maximum degree of parallelism defined for the program. The upper limit (inclusive)
-     * is Short.MAX_VALUE.
+     * is Short.MAX_VALUE + 1.
      *
      * <p>The maximum degree of parallelism specifies the upper limit for dynamic scaling. It also
      * defines the number of key groups used for partitioned state.
      *
      * @param maxParallelism Maximum degree of parallelism to be used for the program., with {@code
-     *     0 < maxParallelism <= 2^15 - 1}.
+     *     0 < maxParallelism <= 2^15}.
      */
     public StreamExecutionEnvironment setMaxParallelism(int maxParallelism) {
         Preconditions.checkArgument(
@@ -421,7 +444,12 @@ public class StreamExecutionEnvironment {
             throw new IllegalArgumentException("Timeout of buffer must be non-negative or -1");
         }
 
-        this.bufferTimeout = timeoutMillis;
+        if (timeoutMillis == ExecutionOptions.DISABLED_NETWORK_BUFFER_TIMEOUT) {
+            this.configuration.set(ExecutionOptions.BUFFER_TIMEOUT_ENABLED, false);
+        } else {
+            this.configuration.set(
+                    ExecutionOptions.BUFFER_TIMEOUT, Duration.ofMillis(timeoutMillis));
+        }
         return this;
     }
 
@@ -432,7 +460,9 @@ public class StreamExecutionEnvironment {
      * @return The timeout of the buffer.
      */
     public long getBufferTimeout() {
-        return this.bufferTimeout;
+        return this.configuration.get(ExecutionOptions.BUFFER_TIMEOUT_ENABLED)
+                ? this.configuration.get(ExecutionOptions.BUFFER_TIMEOUT).toMillis()
+                : ExecutionOptions.DISABLED_NETWORK_BUFFER_TIMEOUT;
     }
 
     /**
@@ -444,7 +474,7 @@ public class StreamExecutionEnvironment {
      */
     @PublicEvolving
     public StreamExecutionEnvironment disableOperatorChaining() {
-        this.isChainingEnabled = false;
+        this.configuration.set(PipelineOptions.OPERATOR_CHAINING, false);
         return this;
     }
 
@@ -455,7 +485,13 @@ public class StreamExecutionEnvironment {
      */
     @PublicEvolving
     public boolean isChainingEnabled() {
-        return isChainingEnabled;
+        return this.configuration.get(PipelineOptions.OPERATOR_CHAINING);
+    }
+
+    @PublicEvolving
+    public boolean isChainingOfOperatorsWithDifferentMaxParallelismEnabled() {
+        return this.configuration.get(
+                PipelineOptions.OPERATOR_CHAINING_CHAIN_OPERATORS_WITH_DIFFERENT_MAX_PARALLELISM);
     }
 
     // ------------------------------------------------------------------------
@@ -481,10 +517,8 @@ public class StreamExecutionEnvironment {
      * <p>The job draws checkpoints periodically, in the given interval. The state will be stored in
      * the configured state backend.
      *
-     * <p>NOTE: Checkpointing iterative streaming dataflows in not properly supported at the moment.
-     * For that reason, iterative jobs will not be started if used with enabled checkpointing. To
-     * override this mechanism, use the {@link #enableCheckpointing(long, CheckpointingMode,
-     * boolean)} method.
+     * <p>NOTE: Checkpointing iterative streaming dataflows is not properly supported at the moment.
+     * For that reason, iterative jobs will not be started if used with enabled checkpointing.
      *
      * @param interval Time interval between state checkpoints in milliseconds.
      */
@@ -499,20 +533,43 @@ public class StreamExecutionEnvironment {
      * restarted from the latest completed checkpoint.
      *
      * <p>The job draws checkpoints periodically, in the given interval. The system uses the given
+     * {@link org.apache.flink.streaming.api.CheckpointingMode} for the checkpointing ("exactly
+     * once" vs "at least once"). The state will be stored in the configured state backend.
+     *
+     * <p>NOTE: Checkpointing iterative streaming dataflows is not properly supported at the moment.
+     * For that reason, iterative jobs will not be started if used with enabled checkpointing.
+     *
+     * @param interval Time interval between state checkpoints in milliseconds.
+     * @param mode The checkpointing mode, selecting between "exactly once" and "at least once"
+     *     guaranteed.
+     * @deprecated use {@link #enableCheckpointing(long, CheckpointingMode)} instead.
+     */
+    @Deprecated
+    public StreamExecutionEnvironment enableCheckpointing(
+            long interval, org.apache.flink.streaming.api.CheckpointingMode mode) {
+        checkpointCfg.setCheckpointingMode(mode);
+        checkpointCfg.setCheckpointInterval(interval);
+        return this;
+    }
+
+    /**
+     * Enables checkpointing for the streaming job. The distributed state of the streaming dataflow
+     * will be periodically snapshotted. In case of a failure, the streaming dataflow will be
+     * restarted from the latest completed checkpoint.
+     *
+     * <p>The job draws checkpoints periodically, in the given interval. The system uses the given
      * {@link CheckpointingMode} for the checkpointing ("exactly once" vs "at least once"). The
      * state will be stored in the configured state backend.
      *
-     * <p>NOTE: Checkpointing iterative streaming dataflows in not properly supported at the moment.
-     * For that reason, iterative jobs will not be started if used with enabled checkpointing. To
-     * override this mechanism, use the {@link #enableCheckpointing(long, CheckpointingMode,
-     * boolean)} method.
+     * <p>NOTE: Checkpointing iterative streaming dataflows is not properly supported at the moment.
+     * For that reason, iterative jobs will not be started if used with enabled checkpointing.
      *
      * @param interval Time interval between state checkpoints in milliseconds.
      * @param mode The checkpointing mode, selecting between "exactly once" and "at least once"
      *     guaranteed.
      */
     public StreamExecutionEnvironment enableCheckpointing(long interval, CheckpointingMode mode) {
-        checkpointCfg.setCheckpointingMode(mode);
+        checkpointCfg.setCheckpointingConsistencyMode(mode);
         checkpointCfg.setCheckpointInterval(interval);
         return this;
     }
@@ -525,7 +582,7 @@ public class StreamExecutionEnvironment {
      * <p>The job draws checkpoints periodically, in the given interval. The state will be stored in
      * the configured state backend.
      *
-     * <p>NOTE: Checkpointing iterative streaming dataflows in not properly supported at the moment.
+     * <p>NOTE: Checkpointing iterative streaming dataflows is not properly supported at the moment.
      * If the "force" parameter is set to true, the system will execute the job nonetheless.
      *
      * @param interval Time interval between state checkpoints in millis.
@@ -539,7 +596,7 @@ public class StreamExecutionEnvironment {
     @SuppressWarnings("deprecation")
     @PublicEvolving
     public StreamExecutionEnvironment enableCheckpointing(
-            long interval, CheckpointingMode mode, boolean force) {
+            long interval, org.apache.flink.streaming.api.CheckpointingMode mode, boolean force) {
         checkpointCfg.setCheckpointingMode(mode);
         checkpointCfg.setCheckpointInterval(interval);
         checkpointCfg.setForceCheckpointing(force);
@@ -555,10 +612,8 @@ public class StreamExecutionEnvironment {
      * <p>The job draws checkpoints periodically, in the default interval. The state will be stored
      * in the configured state backend.
      *
-     * <p>NOTE: Checkpointing iterative streaming dataflows in not properly supported at the moment.
-     * For that reason, iterative jobs will not be started if used with enabled checkpointing. To
-     * override this mechanism, use the {@link #enableCheckpointing(long, CheckpointingMode,
-     * boolean)} method.
+     * <p>NOTE: Checkpointing iterative streaming dataflows is not properly supported at the moment.
+     * For that reason, iterative jobs will not be started if used with enabled checkpointing.
      *
      * @deprecated Use {@link #enableCheckpointing(long)} instead.
      */
@@ -610,9 +665,22 @@ public class StreamExecutionEnvironment {
      * <p>Shorthand for {@code getCheckpointConfig().getCheckpointingMode()}.
      *
      * @return The checkpoint mode
+     * @deprecated Use {@link #getCheckpointingConsistencyMode()} instead.
      */
-    public CheckpointingMode getCheckpointingMode() {
+    @Deprecated
+    public org.apache.flink.streaming.api.CheckpointingMode getCheckpointingMode() {
         return checkpointCfg.getCheckpointingMode();
+    }
+
+    /**
+     * Returns the checkpointing consistency mode (exactly-once vs. at-least-once).
+     *
+     * <p>Shorthand for {@code getCheckpointConfig().getCheckpointingConsistencyMode()}.
+     *
+     * @return The checkpoint mode
+     */
+    public CheckpointingMode getCheckpointingConsistencyMode() {
+        return checkpointCfg.getCheckpointingConsistencyMode();
     }
 
     /**
@@ -637,10 +705,24 @@ public class StreamExecutionEnvironment {
      * org.apache.flink.runtime.state.CheckpointStorage} which configures how and where state
      * backends persist during a checkpoint.
      *
+     * @deprecated The method is marked as deprecated because starting from Flink 1.19, the usage of
+     *     all complex Java objects related to configuration, including their getter and setter
+     *     methods, should be replaced by ConfigOption. In a future major version of Flink, this
+     *     method will be removed entirely. It is recommended to switch to using the ConfigOptions
+     *     provided for configuring state backend like the following code snippet:
+     *     <pre>{@code
+     * Configuration config = new Configuration();
+     * config.set(StateBackendOptions.STATE_BACKEND, "hashmap");
+     * StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(config);
+     * }</pre>
+     *     For more details on using ConfigOption for state backend configuration, please refer to
+     *     the Flink documentation: <a
+     *     href="https://nightlies.apache.org/flink/flink-docs-stable/docs/ops/state/state_backends">state-backends</a>
      * @return This StreamExecutionEnvironment itself, to allow chaining of function calls.
      * @see #getStateBackend()
      * @see CheckpointConfig#setCheckpointStorage( org.apache.flink.runtime.state.CheckpointStorage)
      */
+    @Deprecated
     @PublicEvolving
     public StreamExecutionEnvironment setStateBackend(StateBackend backend) {
         this.defaultStateBackend = Preconditions.checkNotNull(backend);
@@ -650,8 +732,16 @@ public class StreamExecutionEnvironment {
     /**
      * Gets the state backend that defines how to store and checkpoint state.
      *
+     * @deprecated The method is marked as deprecated because starting from Flink 1.19, the usage of
+     *     all complex Java objects related to configuration, including their getter and setter
+     *     methods, should be replaced by ConfigOption. In a future major version of Flink, this
+     *     method will be removed entirely. It is recommended to find which state backend is used by
+     *     state backend ConfigOption. For more details on using ConfigOption for state backend
+     *     configuration, please refer to the Flink documentation: <a
+     *     href="https://nightlies.apache.org/flink/flink-docs-stable/docs/ops/state/state_backends">state-backends</a>
      * @see #setStateBackend(StateBackend)
      */
+    @Deprecated
     @PublicEvolving
     public StateBackend getStateBackend() {
         return defaultStateBackend;
@@ -689,7 +779,7 @@ public class StreamExecutionEnvironment {
      */
     @PublicEvolving
     public StreamExecutionEnvironment enableChangelogStateBackend(boolean enabled) {
-        this.changelogStateBackendEnabled = TernaryBoolean.fromBoolean(enabled);
+        configuration.set(StateChangelogOptions.ENABLE_STATE_CHANGE_LOG, enabled);
         return this;
     }
 
@@ -703,7 +793,10 @@ public class StreamExecutionEnvironment {
      */
     @PublicEvolving
     public TernaryBoolean isChangelogStateBackendEnabled() {
-        return changelogStateBackendEnabled;
+        return this.configuration
+                .getOptional(StateChangelogOptions.ENABLE_STATE_CHANGE_LOG)
+                .map(TernaryBoolean::fromBoolean)
+                .orElse(TernaryBoolean.UNDEFINED);
     }
 
     /**
@@ -715,8 +808,10 @@ public class StreamExecutionEnvironment {
      */
     @PublicEvolving
     public StreamExecutionEnvironment setDefaultSavepointDirectory(String savepointDirectory) {
-        Preconditions.checkNotNull(savepointDirectory);
-        return setDefaultSavepointDirectory(new Path(savepointDirectory));
+        this.configuration.set(
+                CheckpointingOptions.SAVEPOINT_DIRECTORY,
+                Preconditions.checkNotNull(savepointDirectory));
+        return this;
     }
 
     /**
@@ -729,7 +824,7 @@ public class StreamExecutionEnvironment {
     @PublicEvolving
     public StreamExecutionEnvironment setDefaultSavepointDirectory(URI savepointDirectory) {
         Preconditions.checkNotNull(savepointDirectory);
-        return setDefaultSavepointDirectory(new Path(savepointDirectory));
+        return setDefaultSavepointDirectory(savepointDirectory.getPath());
     }
 
     /**
@@ -741,7 +836,8 @@ public class StreamExecutionEnvironment {
      */
     @PublicEvolving
     public StreamExecutionEnvironment setDefaultSavepointDirectory(Path savepointDirectory) {
-        this.defaultSavepointDirectory = Preconditions.checkNotNull(savepointDirectory);
+        Preconditions.checkNotNull(savepointDirectory);
+        setDefaultSavepointDirectory(savepointDirectory.getPath());
         return this;
     }
 
@@ -753,15 +849,23 @@ public class StreamExecutionEnvironment {
     @Nullable
     @PublicEvolving
     public Path getDefaultSavepointDirectory() {
-        return defaultSavepointDirectory;
+        String path = this.configuration.get(CheckpointingOptions.SAVEPOINT_DIRECTORY);
+        return path == null ? null : new Path(path);
     }
 
     /**
      * Sets the restart strategy configuration. The configuration specifies which restart strategy
      * will be used for the execution graph in case of a restart.
      *
+     * @deprecated The method is marked as deprecated because starting from Flink 1.19, the usage of
+     *     all complex Java objects related to configuration, including their getter and setter
+     *     methods, should be replaced by ConfigOption. In a future major version of Flink, this
+     *     method will be removed entirely. It is recommended to switch to using the ConfigOptions
+     *     provided by {@link org.apache.flink.configuration.RestartStrategyOptions} for configuring
+     *     restart strategies.
      * @param restartStrategyConfiguration Restart strategy configuration to be set
      */
+    @Deprecated
     @PublicEvolving
     public void setRestartStrategy(
             RestartStrategies.RestartStrategyConfiguration restartStrategyConfiguration) {
@@ -771,8 +875,15 @@ public class StreamExecutionEnvironment {
     /**
      * Returns the specified restart strategy configuration.
      *
+     * @deprecated The method is marked as deprecated because starting from Flink 1.19, the usage of
+     *     all complex Java objects related to configuration, including their getter and setter
+     *     methods, should be replaced by ConfigOption. In a future major version of Flink, this
+     *     method will be removed entirely. It is recommended to switch to using the ConfigOptions
+     *     provided by {@link org.apache.flink.configuration.RestartStrategyOptions} for configuring
+     *     restart strategies.
      * @return The restart strategy configuration to be used
      */
+    @Deprecated
     @PublicEvolving
     public RestartStrategies.RestartStrategyConfiguration getRestartStrategy() {
         return config.getRestartStrategy();
@@ -786,7 +897,8 @@ public class StreamExecutionEnvironment {
      * @param numberOfExecutionRetries The number of times the system will try to re-execute failed
      *     tasks.
      * @deprecated This method will be replaced by {@link #setRestartStrategy}. The {@link
-     *     RestartStrategies#fixedDelayRestart(int, Time)} contains the number of execution retries.
+     *     RestartStrategies#fixedDelayRestart(int, Duration)} contains the number of execution
+     *     retries.
      */
     @Deprecated
     @PublicEvolving
@@ -820,10 +932,21 @@ public class StreamExecutionEnvironment {
      *
      * @param type The class of the types serialized with the given serializer.
      * @param serializer The serializer to use.
+     * @deprecated Register data types and serializers through hard codes is deprecated, because you
+     *     need to modify the codes when upgrading job version. Instance-type serializer definition
+     *     where serializers are serialized and written into the snapshot and deserialized for use
+     *     is deprecated as well. Use class-type serializer definition by {@link
+     *     PipelineOptions#SERIALIZATION_CONFIG} instead, where only the class name is written into
+     *     the snapshot and new instance of the serializer is created for use. This is a breaking
+     *     change, and it will be removed in Flink 2.0.
+     * @see <a
+     *     href="https://cwiki.apache.org/confluence/display/FLINK/FLIP-398:+Improve+Serialization+Configuration+And+Usage+In+Flink">
+     *     FLIP-398: Improve Serialization Configuration And Usage In Flink</a>
      */
+    @Deprecated
     public <T extends Serializer<?> & Serializable> void addDefaultKryoSerializer(
             Class<?> type, T serializer) {
-        config.addDefaultKryoSerializer(type, serializer);
+        config.getSerializerConfig().addDefaultKryoSerializer(type, serializer);
     }
 
     /**
@@ -831,10 +954,17 @@ public class StreamExecutionEnvironment {
      *
      * @param type The class of the types serialized with the given serializer.
      * @param serializerClass The class of the serializer to use.
+     * @deprecated Register data types and serializers through hard codes is deprecated, because you
+     *     need to modify the codes when upgrading job version. You should configure this by config
+     *     option {@link PipelineOptions#SERIALIZATION_CONFIG}.
+     * @see <a
+     *     href="https://cwiki.apache.org/confluence/display/FLINK/FLIP-398:+Improve+Serialization+Configuration+And+Usage+In+Flink">
+     *     FLIP-398: Improve Serialization Configuration And Usage In Flink</a>
      */
+    @Deprecated
     public void addDefaultKryoSerializer(
             Class<?> type, Class<? extends Serializer<?>> serializerClass) {
-        config.addDefaultKryoSerializer(type, serializerClass);
+        config.getSerializerConfig().addDefaultKryoSerializer(type, serializerClass);
     }
 
     /**
@@ -846,10 +976,21 @@ public class StreamExecutionEnvironment {
      *
      * @param type The class of the types serialized with the given serializer.
      * @param serializer The serializer to use.
+     * @deprecated Register data types and serializers through hard codes is deprecated, because you
+     *     need to modify the codes when upgrading job version. Instance-type serializer definition
+     *     where serializers are serialized and written into the snapshot and deserialized for use
+     *     is deprecated as well. Use class-type serializer definition by {@link
+     *     PipelineOptions#SERIALIZATION_CONFIG} instead, where only the class name is written into
+     *     the snapshot and new instance of the serializer is created for use. This is a breaking
+     *     change, and it will be removed in Flink 2.0.
+     * @see <a
+     *     href="https://cwiki.apache.org/confluence/display/FLINK/FLIP-398:+Improve+Serialization+Configuration+And+Usage+In+Flink">
+     *     FLIP-398: Improve Serialization Configuration And Usage In Flink</a>
      */
+    @Deprecated
     public <T extends Serializer<?> & Serializable> void registerTypeWithKryoSerializer(
             Class<?> type, T serializer) {
-        config.registerTypeWithKryoSerializer(type, serializer);
+        config.getSerializerConfig().registerTypeWithKryoSerializer(type, serializer);
     }
 
     /**
@@ -858,11 +999,18 @@ public class StreamExecutionEnvironment {
      *
      * @param type The class of the types serialized with the given serializer.
      * @param serializerClass The class of the serializer to use.
+     * @deprecated Register data types and serializers through hard codes is deprecated, because you
+     *     need to modify the codes when upgrading job version. You should configure this by config
+     *     option {@link PipelineOptions#SERIALIZATION_CONFIG}.
+     * @see <a
+     *     href="https://cwiki.apache.org/confluence/display/FLINK/FLIP-398:+Improve+Serialization+Configuration+And+Usage+In+Flink">
+     *     FLIP-398: Improve Serialization Configuration And Usage In Flink</a>
      */
+    @Deprecated
     @SuppressWarnings("rawtypes")
     public void registerTypeWithKryoSerializer(
             Class<?> type, Class<? extends Serializer> serializerClass) {
-        config.registerTypeWithKryoSerializer(type, serializerClass);
+        config.getSerializerConfig().registerTypeWithKryoSerializer(type, serializerClass);
     }
 
     /**
@@ -872,7 +1020,14 @@ public class StreamExecutionEnvironment {
      * written.
      *
      * @param type The class of the type to register.
+     * @deprecated Register data types and serializers through hard codes is deprecated, because you
+     *     need to modify the codes when upgrading job version. You should configure this by config
+     *     option {@link PipelineOptions#SERIALIZATION_CONFIG}.
+     * @see <a
+     *     href="https://cwiki.apache.org/confluence/display/FLINK/FLIP-398:+Improve+Serialization+Configuration+And+Usage+In+Flink">
+     *     FLIP-398: Improve Serialization Configuration And Usage In Flink</a>
      */
+    @Deprecated
     public void registerType(Class<?> type) {
         if (type == null) {
             throw new NullPointerException("Cannot register null type class.");
@@ -881,9 +1036,9 @@ public class StreamExecutionEnvironment {
         TypeInformation<?> typeInfo = TypeExtractor.createTypeInfo(type);
 
         if (typeInfo instanceof PojoTypeInfo) {
-            config.registerPojoType(type);
+            config.getSerializerConfig().registerPojoType(type);
         } else {
-            config.registerKryoType(type);
+            config.getSerializerConfig().registerKryoType(type);
         }
     }
 
@@ -906,10 +1061,11 @@ public class StreamExecutionEnvironment {
      *     event-time mode. If you need to disable watermarks, please use {@link
      *     ExecutionConfig#setAutoWatermarkInterval(long)}. If you are using {@link
      *     TimeCharacteristic#IngestionTime}, please manually set an appropriate {@link
-     *     WatermarkStrategy}. If you are using generic "time window" operations (for example {@link
-     *     org.apache.flink.streaming.api.datastream.KeyedStream#timeWindow(org.apache.flink.streaming.api.windowing.time.Time)}
-     *     that change behaviour based on the time characteristic, please use equivalent operations
-     *     that explicitly specify processing time or event time.
+     *     WatermarkStrategy}. If you are using generic "time window" operations (for example
+     *     through {@link
+     *     org.apache.flink.streaming.api.datastream.KeyedStream#window(WindowAssigner)} that change
+     *     behaviour based on the time characteristic, please use equivalent operations that
+     *     explicitly specify processing time or event time.
      */
     @PublicEvolving
     @Deprecated
@@ -962,20 +1118,10 @@ public class StreamExecutionEnvironment {
      */
     @PublicEvolving
     public void configure(ReadableConfig configuration, ClassLoader classLoader) {
+        this.configuration.addAll(Configuration.fromMap(configuration.toMap()));
         configuration
                 .getOptional(StreamPipelineOptions.TIME_CHARACTERISTIC)
                 .ifPresent(this::setStreamTimeCharacteristic);
-        configuration
-                .getOptional(StateChangelogOptions.ENABLE_STATE_CHANGE_LOG)
-                .ifPresent(this::enableChangelogStateBackend);
-        Optional.ofNullable(loadStateBackend(configuration, classLoader))
-                .ifPresent(this::setStateBackend);
-        configuration
-                .getOptional(PipelineOptions.OPERATOR_CHAINING)
-                .ifPresent(c -> this.isChainingEnabled = c);
-        configuration
-                .getOptional(ExecutionOptions.BUFFER_TIMEOUT)
-                .ifPresent(t -> this.setBufferTimeout(t.toMillis()));
         configuration
                 .getOptional(DeploymentOptions.JOB_LISTENERS)
                 .ifPresent(listeners -> registerCustomListeners(classLoader, listeners));
@@ -986,45 +1132,14 @@ public class StreamExecutionEnvironment {
                             this.cacheFile.clear();
                             this.cacheFile.addAll(DistributedCache.parseCachedFilesFromString(f));
                         });
-        configuration
-                .getOptional(ExecutionOptions.RUNTIME_MODE)
-                .ifPresent(
-                        runtimeMode ->
-                                this.configuration.set(ExecutionOptions.RUNTIME_MODE, runtimeMode));
-
-        configuration
-                .getOptional(ExecutionOptions.BATCH_SHUFFLE_MODE)
-                .ifPresent(
-                        shuffleMode ->
-                                this.configuration.set(
-                                        ExecutionOptions.BATCH_SHUFFLE_MODE, shuffleMode));
-
-        configuration
-                .getOptional(ExecutionOptions.SORT_INPUTS)
-                .ifPresent(
-                        sortInputs ->
-                                this.configuration.set(ExecutionOptions.SORT_INPUTS, sortInputs));
-        configuration
-                .getOptional(ExecutionOptions.USE_BATCH_STATE_BACKEND)
-                .ifPresent(
-                        sortInputs ->
-                                this.configuration.set(
-                                        ExecutionOptions.USE_BATCH_STATE_BACKEND, sortInputs));
-        configuration
-                .getOptional(PipelineOptions.NAME)
-                .ifPresent(jobName -> this.configuration.set(PipelineOptions.NAME, jobName));
-
-        configuration
-                .getOptional(ExecutionCheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH)
-                .ifPresent(
-                        flag ->
-                                this.configuration.set(
-                                        ExecutionCheckpointingOptions
-                                                .ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH,
-                                        flag));
 
         config.configure(configuration, classLoader);
         checkpointCfg.configure(configuration);
+
+        // reset state backend for backward compatibility
+        configuration
+                .getOptional(StateBackendOptions.STATE_BACKEND)
+                .ifPresent(ignored -> this.defaultStateBackend = null);
     }
 
     private void registerCustomListeners(
@@ -1040,17 +1155,178 @@ public class StreamExecutionEnvironment {
         }
     }
 
-    private StateBackend loadStateBackend(ReadableConfig configuration, ClassLoader classLoader) {
-        try {
-            return StateBackendLoader.loadStateBackendFromConfig(configuration, classLoader, null);
-        } catch (DynamicCodeLoadingException | IOException e) {
-            throw new WrappingRuntimeException(e);
-        }
-    }
-
     // --------------------------------------------------------------------------------------------
     // Data stream creations
     // --------------------------------------------------------------------------------------------
+
+    /**
+     * Creates a new data stream that contains the given elements. The elements must all be of the
+     * same type, for example, all of the {@link String} or {@link Integer}.
+     *
+     * <p>The framework will try and determine the exact type from the elements. In case of generic
+     * elements, it may be necessary to manually supply the type information via {@link
+     * #fromData(org.apache.flink.api.common.typeinfo.TypeInformation, OUT...)}.
+     *
+     * <p>NOTE: This creates a non-parallel data stream source by default (parallelism of one).
+     * Adjustment of parallelism is supported via {@code setParallelism()} on the result.
+     *
+     * @param data The array of elements to create the data stream from.
+     * @param <OUT> The type of the returned data stream
+     * @return The data stream representing the given array of elements
+     */
+    @SafeVarargs
+    public final <OUT> DataStreamSource<OUT> fromData(OUT... data) {
+        if (data.length == 0) {
+            throw new IllegalArgumentException(
+                    "fromElements needs at least one element as argument");
+        }
+
+        TypeInformation<OUT> typeInfo;
+        try {
+            typeInfo = TypeExtractor.getForObject(data[0]);
+        } catch (Exception e) {
+            throw new RuntimeException(
+                    "Could not create TypeInformation for type "
+                            + data[0].getClass().getName()
+                            + "; please specify the TypeInformation manually via "
+                            + "StreamExecutionEnvironment#fromData(Collection, TypeInformation)",
+                    e);
+        }
+        return fromData(Arrays.asList(data), typeInfo);
+    }
+
+    /**
+     * Creates a new data stream that contains the given elements. The elements should be the same
+     * or be the subclass to the {@code typeInfo} type. The sequence of elements must not be empty.
+     *
+     * <p>NOTE: This creates a non-parallel data stream source by default (parallelism of one).
+     * Adjustment of parallelism is supported via {@code setParallelism()} on the result.
+     *
+     * @param typeInfo The type information of the elements.
+     * @param data The array of elements to create the data stream from.
+     * @param <OUT> The type of the returned data stream
+     * @return The data stream representing the given array of elements
+     */
+    @SafeVarargs
+    public final <OUT> DataStreamSource<OUT> fromData(TypeInformation<OUT> typeInfo, OUT... data) {
+        if (data.length == 0) {
+            throw new IllegalArgumentException(
+                    "fromElements needs at least one element as argument");
+        }
+        return fromData(Arrays.asList(data), typeInfo);
+    }
+
+    /**
+     * Creates a new data stream that contains the given elements. The elements must all be of the
+     * same type, for example, all of the {@link String} or {@link Integer}.
+     *
+     * <p>The framework will try and determine the exact type from the elements. In case of generic
+     * elements, it may be necessary to manually supply the type information via {@link
+     * #fromData(org.apache.flink.api.common.typeinfo.TypeInformation, OUT...)}.
+     *
+     * <p>NOTE: This creates a non-parallel data stream source by default (parallelism of one).
+     * Adjustment of parallelism is supported via {@code setParallelism()} on the result.
+     *
+     * @param data The collection of elements to create the data stream from.
+     * @param typeInfo The type information of the elements.
+     * @param <OUT> The generic type of the returned data stream.
+     * @return The data stream representing the given collection
+     */
+    public <OUT> DataStreamSource<OUT> fromData(
+            Collection<OUT> data, TypeInformation<OUT> typeInfo) {
+        Preconditions.checkNotNull(data, "Collection must not be null");
+
+        FromElementsGeneratorFunction<OUT> generatorFunction =
+                new FromElementsGeneratorFunction<>(typeInfo, getConfig(), data);
+
+        DataGeneratorSource<OUT> generatorSource =
+                new DataGeneratorSource<>(generatorFunction, data.size(), typeInfo);
+
+        return fromSource(
+                        generatorSource,
+                        WatermarkStrategy.forMonotonousTimestamps(),
+                        "Collection Source")
+                .setParallelism(1);
+    }
+
+    /**
+     * Creates a new data stream that contains the given elements. The framework will determine the
+     * type according to the based type user supplied. The elements should be the same or be the
+     * subclass to the based type. The sequence of elements must not be empty.
+     *
+     * <p>NOTE: This creates a non-parallel data stream source by default (parallelism of one).
+     * Adjustment of parallelism is supported via {@code setParallelism()} on the result.
+     *
+     * @param type The based class type in the collection.
+     * @param data The array of elements to create the data stream from.
+     * @param <OUT> The type of the returned data stream
+     * @return The data stream representing the given array of elements
+     */
+    @SafeVarargs
+    public final <OUT> DataStreamSource<OUT> fromData(Class<OUT> type, OUT... data) {
+        if (data.length == 0) {
+            throw new IllegalArgumentException(
+                    "fromElements needs at least one element as argument");
+        }
+
+        TypeInformation<OUT> typeInfo;
+        try {
+            typeInfo = TypeExtractor.getForClass(type);
+        } catch (Exception e) {
+            throw new RuntimeException(
+                    "Could not create TypeInformation for type "
+                            + type.getName()
+                            + "; please specify the TypeInformation manually via "
+                            + "StreamExecutionEnvironment#fromData(Collection, TypeInformation)",
+                    e);
+        }
+        return fromData(Arrays.asList(data), typeInfo);
+    }
+
+    /**
+     * Creates a new data stream that contains the given elements.The type of the data stream is
+     * that of the elements in the collection.
+     *
+     * <p>The framework will try and determine the exact type from the collection elements. In case
+     * of generic elements, it may be necessary to manually supply the type information via {@link
+     * #fromData(java.util.Collection, org.apache.flink.api.common.typeinfo.TypeInformation)}.
+     *
+     * <p>NOTE: This creates a non-parallel data stream source by default (parallelism of one).
+     * Adjustment of parallelism is supported via {@code setParallelism()} on the result.
+     *
+     * @param data The collection of elements to create the data stream from.
+     * @param <OUT> The generic type of the returned data stream.
+     * @return The data stream representing the given collection
+     */
+    public <OUT> DataStreamSource<OUT> fromData(Collection<OUT> data) {
+        TypeInformation<OUT> typeInfo = extractTypeInfoFromCollection(data);
+        return fromData(data, typeInfo);
+    }
+
+    private static <OUT> TypeInformation<OUT> extractTypeInfoFromCollection(Collection<OUT> data) {
+        Preconditions.checkNotNull(data, "Collection must not be null");
+        if (data.isEmpty()) {
+            throw new IllegalArgumentException("Collection must not be empty");
+        }
+
+        OUT first = data.iterator().next();
+        if (first == null) {
+            throw new IllegalArgumentException("Collection must not contain null elements");
+        }
+
+        TypeInformation<OUT> typeInfo;
+        try {
+            typeInfo = TypeExtractor.getForObject(first);
+        } catch (Exception e) {
+            throw new RuntimeException(
+                    "Could not create TypeInformation for type "
+                            + first.getClass()
+                            + "; please specify the TypeInformation manually via the version of the "
+                            + "method that explicitly accepts it as an argument.",
+                    e);
+        }
+        return typeInfo;
+    }
 
     /**
      * Creates a new data stream that contains a sequence of numbers. This is a parallel source, if
@@ -1117,8 +1393,11 @@ public class StreamExecutionEnvironment {
      * @param data The array of elements to create the data stream from.
      * @param <OUT> The type of the returned data stream
      * @return The data stream representing the given array of elements
+     * @deprecated This method will be removed a future release, possibly as early as version 2.0.
+     *     Use {@link #fromData(OUT...)} instead.
      */
     @SafeVarargs
+    @Deprecated
     public final <OUT> DataStreamSource<OUT> fromElements(OUT... data) {
         if (data.length == 0) {
             throw new IllegalArgumentException(
@@ -1140,7 +1419,7 @@ public class StreamExecutionEnvironment {
     }
 
     /**
-     * Creates a new data set that contains the given elements. The framework will determine the
+     * Creates a new data stream that contains the given elements. The framework will determine the
      * type according to the based type user supplied. The elements should be the same or be the
      * subclass to the based type. The sequence of elements must not be empty. Note that this
      * operation will result in a non-parallel data stream source, i.e. a data stream source with a
@@ -1150,8 +1429,11 @@ public class StreamExecutionEnvironment {
      * @param data The array of elements to create the data stream from.
      * @param <OUT> The type of the returned data stream
      * @return The data stream representing the given array of elements
+     * @deprecated This method will be removed a future release, possibly as early as version 2.0.
+     *     Use {@link #fromData(OUT...)} instead.
      */
     @SafeVarargs
+    @Deprecated
     public final <OUT> DataStreamSource<OUT> fromElements(Class<OUT> type, OUT... data) {
         if (data.length == 0) {
             throw new IllegalArgumentException(
@@ -1186,29 +1468,11 @@ public class StreamExecutionEnvironment {
      * @param data The collection of elements to create the data stream from.
      * @param <OUT> The generic type of the returned data stream.
      * @return The data stream representing the given collection
+     * @deprecated This method will be removed a future release, possibly as early as version 2.0.
+     *     Use {@link #fromData(Collection)} instead.
      */
     public <OUT> DataStreamSource<OUT> fromCollection(Collection<OUT> data) {
-        Preconditions.checkNotNull(data, "Collection must not be null");
-        if (data.isEmpty()) {
-            throw new IllegalArgumentException("Collection must not be empty");
-        }
-
-        OUT first = data.iterator().next();
-        if (first == null) {
-            throw new IllegalArgumentException("Collection must not contain null elements");
-        }
-
-        TypeInformation<OUT> typeInfo;
-        try {
-            typeInfo = TypeExtractor.getForObject(first);
-        } catch (Exception e) {
-            throw new RuntimeException(
-                    "Could not create TypeInformation for type "
-                            + first.getClass()
-                            + "; please specify the TypeInformation manually via "
-                            + "StreamExecutionEnvironment#fromElements(Collection, TypeInformation)",
-                    e);
-        }
+        TypeInformation<OUT> typeInfo = extractTypeInfoFromCollection(data);
         return fromCollection(data, typeInfo);
     }
 
@@ -1222,6 +1486,8 @@ public class StreamExecutionEnvironment {
      * @param typeInfo The TypeInformation for the produced data stream
      * @param <OUT> The type of the returned data stream
      * @return The data stream representing the given collection
+     * @deprecated This method will be removed a future release, possibly as early as version 2.0.
+     *     Use {@link #fromData(Collection, TypeInformation)} instead.
      */
     public <OUT> DataStreamSource<OUT> fromCollection(
             Collection<OUT> data, TypeInformation<OUT> typeInfo) {
@@ -1251,6 +1517,11 @@ public class StreamExecutionEnvironment {
      * @return The data stream representing the elements in the iterator
      * @see #fromCollection(java.util.Iterator,
      *     org.apache.flink.api.common.typeinfo.TypeInformation)
+     * @deprecated This method will be removed a future release, possibly as early as version 2.0.
+     *     Use {@link #fromData(Collection, TypeInformation)} instead. For rate-limited data
+     *     generation, use {@link DataGeneratorSource} with {@link RateLimiterStrategy}. If you need
+     *     to use a fixed set of elements in such scenario, combine it with {@link
+     *     FromElementsGeneratorFunction}.
      */
     public <OUT> DataStreamSource<OUT> fromCollection(Iterator<OUT> data, Class<OUT> type) {
         return fromCollection(data, TypeExtractor.getForClass(type));
@@ -1272,6 +1543,11 @@ public class StreamExecutionEnvironment {
      * @param typeInfo The TypeInformation for the produced data stream
      * @param <OUT> The type of the returned data stream
      * @return The data stream representing the elements in the iterator
+     * @deprecated This method will be removed a future release, possibly as early as version 2.0.
+     *     Use {@link #fromData(Collection, TypeInformation)} instead. For rate-limited data
+     *     generation, use {@link DataGeneratorSource} with {@link RateLimiterStrategy}. If you need
+     *     to use a fixed set of elements in such scenario, combine it with {@link
+     *     FromElementsGeneratorFunction}.
      */
     public <OUT> DataStreamSource<OUT> fromCollection(
             Iterator<OUT> data, TypeInformation<OUT> typeInfo) {
@@ -1345,7 +1621,17 @@ public class StreamExecutionEnvironment {
      * @param filePath The path of the file, as a URI (e.g., "file:///some/local/file" or
      *     "hdfs://host:port/file/path").
      * @return The data stream that represents the data read from the given file as text lines
+     * @deprecated Use {@code
+     *     FileSource#forRecordStreamFormat()/forBulkFileFormat()/forRecordFileFormat() instead}. An
+     *     example of reading a file using a simple {@code TextLineInputFormat}:
+     *     <pre>{@code
+     * FileSource<String> source =
+     *        FileSource.forRecordStreamFormat(
+     *           new TextLineInputFormat(), new Path("/foo/bar"))
+     *        .build();
+     * }</pre>
      */
+    @Deprecated
     public DataStreamSource<String> readTextFile(String filePath) {
         return readTextFile(filePath, "UTF-8");
     }
@@ -1365,7 +1651,17 @@ public class StreamExecutionEnvironment {
      *     "hdfs://host:port/file/path")
      * @param charsetName The name of the character set used to read the file
      * @return The data stream that represents the data read from the given file as text lines
+     * @deprecated Use {@code
+     *     FileSource#forRecordStreamFormat()/forBulkFileFormat()/forRecordFileFormat() instead}. An
+     *     example of reading a file using a simple {@code TextLineInputFormat}:
+     *     <pre>{@code
+     * FileSource<String> source =
+     *        FileSource.forRecordStreamFormat(
+     *         new TextLineInputFormat("UTF-8"), new Path("/foo/bar"))
+     *        .build();
+     * }</pre>
      */
+    @Deprecated
     public DataStreamSource<String> readTextFile(String filePath, String charsetName) {
         Preconditions.checkArgument(
                 !StringUtils.isNullOrWhitespaceOnly(filePath),
@@ -1402,7 +1698,17 @@ public class StreamExecutionEnvironment {
      * @param inputFormat The input format used to create the data stream
      * @param <OUT> The type of the returned data stream
      * @return The data stream that represents the data read from the given file
+     * @deprecated Use {@code
+     *     FileSource#forRecordStreamFormat()/forBulkFileFormat()/forRecordFileFormat() instead}. An
+     *     example of reading a file using a simple {@code TextLineInputFormat}:
+     *     <pre>{@code
+     * FileSource<String> source =
+     *        FileSource.forRecordStreamFormat(
+     *           new TextLineInputFormat(), new Path("/foo/bar"))
+     *        .build();
+     * }</pre>
      */
+    @Deprecated
     public <OUT> DataStreamSource<OUT> readFile(FileInputFormat<OUT> inputFormat, String filePath) {
         return readFile(inputFormat, filePath, FileProcessingMode.PROCESS_ONCE, -1);
     }
@@ -1482,7 +1788,18 @@ public class StreamExecutionEnvironment {
      *     millis) between consecutive path scans
      * @param <OUT> The type of the returned data stream
      * @return The data stream that represents the data read from the given file
+     * @deprecated Use {@code
+     *     FileSource#forRecordStreamFormat()/forBulkFileFormat()/forRecordFileFormat() instead}. An
+     *     example of reading a file using a simple {@code TextLineInputFormat}:
+     *     <pre>{@code
+     * FileSource<String> source =
+     *        FileSource.forRecordStreamFormat(
+     *           new TextLineInputFormat(), new Path("/foo/bar"))
+     *        .monitorContinuously(Duration.of(10, SECONDS))
+     *        .build();
+     * }</pre>
      */
+    @Deprecated
     @PublicEvolving
     public <OUT> DataStreamSource<OUT> readFile(
             FileInputFormat<OUT> inputFormat,
@@ -1557,7 +1874,18 @@ public class StreamExecutionEnvironment {
      *     millis) between consecutive path scans
      * @param <OUT> The type of the returned data stream
      * @return The data stream that represents the data read from the given file
+     * @deprecated Use {@code
+     *     FileSource#forRecordStreamFormat()/forBulkFileFormat()/forRecordFileFormat() instead}. An
+     *     example of reading a file using a simple {@code TextLineInputFormat}:
+     *     <pre>{@code
+     * FileSource<String> source =
+     *        FileSource.forRecordStreamFormat(
+     *           new TextLineInputFormat(), new Path("/foo/bar"))
+     *        .monitorContinuously(Duration.of(10, SECONDS))
+     *        .build();
+     * }</pre>
      */
+    @Deprecated
     @PublicEvolving
     public <OUT> DataStreamSource<OUT> readFile(
             FileInputFormat<OUT> inputFormat,
@@ -1786,6 +2114,10 @@ public class StreamExecutionEnvironment {
 
         SingleOutputStreamOperator<OUT> source =
                 addSource(monitoringFunction, sourceName, null, boundedness)
+                        // Set the parallelism and maximum parallelism of
+                        // ContinuousFileMonitoringFunction to 1 in
+                        // case reactive mode changes it. See FLINK-28274 for more information.
+                        .forceNonParallel()
                         .transform("Split Reader: " + sourceName, typeInfo, factory);
 
         return new DataStreamSource<>(source);
@@ -1804,7 +2136,12 @@ public class StreamExecutionEnvironment {
      * @param function the user defined function
      * @param <OUT> type of the returned stream
      * @return the data stream constructed
+     * @deprecated This method relies on the {@link
+     *     org.apache.flink.streaming.api.functions.source.SourceFunction} API, which is due to be
+     *     removed. Use the {@link #fromSource(Source, WatermarkStrategy, String)} method based on
+     *     the new {@link org.apache.flink.api.connector.source.Source} API instead.
      */
+    @Deprecated
     public <OUT> DataStreamSource<OUT> addSource(SourceFunction<OUT> function) {
         return addSource(function, "Custom Source");
     }
@@ -1818,7 +2155,12 @@ public class StreamExecutionEnvironment {
      * @param sourceName Name of the data source
      * @param <OUT> type of the returned stream
      * @return the data stream constructed
+     * @deprecated This method relies on the {@link
+     *     org.apache.flink.streaming.api.functions.source.SourceFunction} API, which is due to be
+     *     removed. Use the {@link #fromSource(Source, WatermarkStrategy, String)} method based on
+     *     the new {@link org.apache.flink.api.connector.source.Source} API instead.
      */
+    @Deprecated
     public <OUT> DataStreamSource<OUT> addSource(SourceFunction<OUT> function, String sourceName) {
         return addSource(function, sourceName, null);
     }
@@ -1832,7 +2174,12 @@ public class StreamExecutionEnvironment {
      * @param <OUT> type of the returned stream
      * @param typeInfo the user defined type information for the stream
      * @return the data stream constructed
+     * @deprecated This method relies on the {@link
+     *     org.apache.flink.streaming.api.functions.source.SourceFunction} API, which is due to be
+     *     removed. Use the {@link #fromSource(Source, WatermarkStrategy, String, TypeInformation)}
+     *     method based on the new {@link org.apache.flink.api.connector.source.Source} API instead.
      */
+    @Deprecated
     public <OUT> DataStreamSource<OUT> addSource(
             SourceFunction<OUT> function, TypeInformation<OUT> typeInfo) {
         return addSource(function, "Custom Source", typeInfo);
@@ -1848,7 +2195,12 @@ public class StreamExecutionEnvironment {
      * @param <OUT> type of the returned stream
      * @param typeInfo the user defined type information for the stream
      * @return the data stream constructed
+     * @deprecated This method relies on the {@link
+     *     org.apache.flink.streaming.api.functions.source.SourceFunction} API, which is due to be
+     *     removed. Use the {@link #fromSource(Source, WatermarkStrategy, String, TypeInformation)}
+     *     method based on the new {@link org.apache.flink.api.connector.source.Source} API instead.
      */
+    @Deprecated
     public <OUT> DataStreamSource<OUT> addSource(
             SourceFunction<OUT> function, String sourceName, TypeInformation<OUT> typeInfo) {
         return addSource(function, sourceName, typeInfo, Boundedness.CONTINUOUS_UNBOUNDED);
@@ -1948,7 +2300,7 @@ public class StreamExecutionEnvironment {
      * @throws Exception which occurs during job execution.
      */
     public JobExecutionResult execute() throws Exception {
-        return execute(getStreamGraph());
+        return execute((String) null);
     }
 
     /**
@@ -1963,10 +2315,26 @@ public class StreamExecutionEnvironment {
      * @throws Exception which occurs during job execution.
      */
     public JobExecutionResult execute(String jobName) throws Exception {
-        Preconditions.checkNotNull(jobName, "Streaming Job name should not be null.");
-        final StreamGraph streamGraph = getStreamGraph();
-        streamGraph.setJobName(jobName);
-        return execute(streamGraph);
+        final List<Transformation<?>> originalTransformations = new ArrayList<>(transformations);
+        StreamGraph streamGraph = getStreamGraph();
+        if (jobName != null) {
+            streamGraph.setJobName(jobName);
+        }
+
+        try {
+            return execute(streamGraph);
+        } catch (Throwable t) {
+            Optional<ClusterDatasetCorruptedException> clusterDatasetCorruptedException =
+                    ExceptionUtils.findThrowable(t, ClusterDatasetCorruptedException.class);
+            if (!clusterDatasetCorruptedException.isPresent()) {
+                throw t;
+            }
+
+            // Retry without cache if it is caused by corrupted cluster dataset.
+            invalidateCacheTransformations(originalTransformations);
+            streamGraph = getStreamGraph(originalTransformations);
+            return execute(streamGraph);
+        }
     }
 
     /**
@@ -1985,7 +2353,7 @@ public class StreamExecutionEnvironment {
         try {
             final JobExecutionResult jobExecutionResult;
 
-            if (configuration.getBoolean(DeploymentOptions.ATTACHED)) {
+            if (configuration.get(DeploymentOptions.ATTACHED)) {
                 jobExecutionResult = jobClient.getJobExecutionResult().get();
             } else {
                 jobExecutionResult = new DetachedJobExecutionResult(jobClient.getJobID());
@@ -2012,6 +2380,19 @@ public class StreamExecutionEnvironment {
         }
     }
 
+    private void invalidateCacheTransformations(List<Transformation<?>> transformations)
+            throws Exception {
+        for (Transformation<?> transformation : transformations) {
+            if (transformation == null) {
+                continue;
+            }
+            if (transformation instanceof CacheTransformation) {
+                invalidateClusterDataset(((CacheTransformation<?>) transformation).getDatasetId());
+            }
+            invalidateCacheTransformations(transformation.getInputs());
+        }
+    }
+
     /**
      * Register a {@link JobListener} in this environment. The {@link JobListener} will be notified
      * on specific job status changed.
@@ -2019,6 +2400,12 @@ public class StreamExecutionEnvironment {
     @PublicEvolving
     public void registerJobListener(JobListener jobListener) {
         checkNotNull(jobListener, "JobListener cannot be null");
+        List<String> listeners =
+                this.configuration
+                        .getOptional(DeploymentOptions.JOB_LISTENERS)
+                        .orElse(new ArrayList<>());
+        listeners.add(jobListener.getClass().getName());
+        this.configuration.set(DeploymentOptions.JOB_LISTENERS, listeners);
         jobListeners.add(jobListener);
     }
 
@@ -2026,6 +2413,7 @@ public class StreamExecutionEnvironment {
     @PublicEvolving
     public void clearJobListeners() {
         this.jobListeners.clear();
+        this.configuration.removeConfig(DeploymentOptions.JOB_LISTENERS);
     }
 
     /**
@@ -2058,9 +2446,10 @@ public class StreamExecutionEnvironment {
      */
     @PublicEvolving
     public JobClient executeAsync(String jobName) throws Exception {
-        Preconditions.checkNotNull(jobName, "Streaming Job name should not be null.");
         final StreamGraph streamGraph = getStreamGraph();
-        streamGraph.setJobName(jobName);
+        if (jobName != null) {
+            streamGraph.setJobName(jobName);
+        }
         return executeAsync(streamGraph);
     }
 
@@ -2077,26 +2466,16 @@ public class StreamExecutionEnvironment {
     @Internal
     public JobClient executeAsync(StreamGraph streamGraph) throws Exception {
         checkNotNull(streamGraph, "StreamGraph cannot be null.");
-        checkNotNull(
-                configuration.get(DeploymentOptions.TARGET),
-                "No execution.target specified in your configuration file.");
-
-        final PipelineExecutorFactory executorFactory =
-                executorServiceLoader.getExecutorFactory(configuration);
-
-        checkNotNull(
-                executorFactory,
-                "Cannot find compatible factory for specified execution.target (=%s)",
-                configuration.get(DeploymentOptions.TARGET));
+        final PipelineExecutor executor = getPipelineExecutor();
 
         CompletableFuture<JobClient> jobClientFuture =
-                executorFactory
-                        .getExecutor(configuration)
-                        .execute(streamGraph, configuration, userClassloader);
+                executor.execute(streamGraph, configuration, userClassloader);
 
         try {
             JobClient jobClient = jobClientFuture.get();
             jobListeners.forEach(jobListener -> jobListener.onJobSubmitted(jobClient, null));
+            collectIterators.forEach(iterator -> iterator.setJobClient(jobClient));
+            collectIterators.clear();
             return jobClient;
         } catch (ExecutionException executionException) {
             final Throwable strippedException =
@@ -2132,11 +2511,30 @@ public class StreamExecutionEnvironment {
      */
     @Internal
     public StreamGraph getStreamGraph(boolean clearTransformations) {
-        final StreamGraph streamGraph = getStreamGraphGenerator(transformations).generate();
+        final StreamGraph streamGraph = getStreamGraph(transformations);
         if (clearTransformations) {
             transformations.clear();
         }
         return streamGraph;
+    }
+
+    private StreamGraph getStreamGraph(List<Transformation<?>> transformations) {
+        synchronizeClusterDatasetStatus();
+        return getStreamGraphGenerator(transformations).generate();
+    }
+
+    private void synchronizeClusterDatasetStatus() {
+        if (cachedTransformations.isEmpty()) {
+            return;
+        }
+        Set<AbstractID> completedClusterDatasets =
+                listCompletedClusterDatasets().stream()
+                        .map(AbstractID::new)
+                        .collect(Collectors.toSet());
+        cachedTransformations.forEach(
+                (id, transformation) -> {
+                    transformation.setCached(completedClusterDatasets.contains(id));
+                });
     }
 
     /**
@@ -2159,14 +2557,20 @@ public class StreamExecutionEnvironment {
                     "No operators defined in streaming topology. Cannot execute.");
         }
 
-        return new StreamGraphGenerator(transformations, config, checkpointCfg, configuration)
+        // Synchronize the cached file to config option PipelineOptions.CACHED_FILES because the
+        // field cachedFile haven't been migrated to configuration.
+        if (!getCachedFiles().isEmpty()) {
+            configuration.set(
+                    PipelineOptions.CACHED_FILES,
+                    DistributedCache.parseStringFromCachedFiles(getCachedFiles()));
+        }
+
+        // We copy the transformation so that newly added transformations cannot intervene with the
+        // stream graph generation.
+        return new StreamGraphGenerator(
+                        new ArrayList<>(transformations), config, checkpointCfg, configuration)
                 .setStateBackend(defaultStateBackend)
-                .setChangelogStateBackendEnabled(changelogStateBackendEnabled)
-                .setSavepointDir(defaultSavepointDirectory)
-                .setChaining(isChainingEnabled)
-                .setUserArtifacts(cacheFile)
-                .setTimeCharacteristic(timeCharacteristic)
-                .setDefaultBufferTimeout(bufferTimeout)
+                .setTimeCharacteristic(getStreamTimeCharacteristic())
                 .setSlotSharingGroupResource(slotSharingGroupResources);
     }
 
@@ -2223,7 +2627,22 @@ public class StreamExecutionEnvironment {
      */
     @Internal
     public ReadableConfig getConfiguration() {
-        return new UnmodifiableConfiguration(configuration);
+        // Note to implementers:
+        // In theory, you can cast the return value of this method to Configuration and perform
+        // mutations. In practice, this could cause side effects. A better approach is to implement
+        // the ReadableConfig interface and create a layered configuration.
+        // For example:
+        //   TableConfig implements ReadableConfig {
+        //     underlyingLayer ReadableConfig
+        //     thisConfigLayer Configuration
+        //
+        //     get(configOption) {
+        //        return thisConfigLayer
+        //          .getOptional(configOption)
+        //          .orElseGet(underlyingLayer.get(configOption))
+        //     }
+        //   }
+        return configuration;
     }
 
     // --------------------------------------------------------------------------------------------
@@ -2247,7 +2666,7 @@ public class StreamExecutionEnvironment {
      * execution environment, as returned by {@link #createLocalEnvironment(Configuration)}.
      *
      * <p>When executed from the command line the given configuration is stacked on top of the
-     * global configuration which comes from the {@code flink-conf.yaml}, potentially overriding
+     * global configuration which comes from the {@code config.yaml}, potentially overriding
      * duplicated options.
      *
      * @param configuration The configuration to instantiate the environment with.
@@ -2335,7 +2754,7 @@ public class StreamExecutionEnvironment {
 
         if (!conf.contains(RestOptions.PORT)) {
             // explicitly set this option so that it's not set to 0 later
-            conf.setInteger(RestOptions.PORT, RestOptions.PORT.defaultValue());
+            conf.set(RestOptions.PORT, RestOptions.PORT.defaultValue());
         }
 
         return createLocalEnvironment(conf);
@@ -2428,7 +2847,7 @@ public class StreamExecutionEnvironment {
 
     protected static void initializeContextEnvironment(StreamExecutionEnvironmentFactory ctx) {
         contextEnvironmentFactory = ctx;
-        threadLocalContextEnvironmentFactory.set(contextEnvironmentFactory);
+        threadLocalContextEnvironmentFactory.set(ctx);
     }
 
     protected static void resetContextEnvironment() {
@@ -2477,6 +2896,19 @@ public class StreamExecutionEnvironment {
                         name, new DistributedCache.DistributedCacheEntry(filePath, executable)));
     }
 
+    /**
+     * Checks whether it is currently permitted to explicitly instantiate a LocalEnvironment or a
+     * RemoteEnvironment.
+     *
+     * @return True, if it is possible to explicitly instantiate a LocalEnvironment or a
+     *     RemoteEnvironment, false otherwise.
+     */
+    @Internal
+    public static boolean areExplicitEnvironmentsAllowed() {
+        return contextEnvironmentFactory == null
+                && threadLocalContextEnvironmentFactory.get() == null;
+    }
+
     // Private helpers.
     @SuppressWarnings("unchecked")
     private <OUT, T extends TypeInformation<OUT>> T getTypeInfo(
@@ -2498,5 +2930,75 @@ public class StreamExecutionEnvironment {
             }
         }
         return (T) resolvedTypeInfo;
+    }
+
+    @Internal
+    public List<Transformation<?>> getTransformations() {
+        return transformations;
+    }
+
+    @Internal
+    public <T> void registerCacheTransformation(
+            AbstractID intermediateDataSetID, CacheTransformation<T> t) {
+        cachedTransformations.put(intermediateDataSetID, t);
+    }
+
+    @Internal
+    public void invalidateClusterDataset(AbstractID datasetId) throws Exception {
+        if (!cachedTransformations.containsKey(datasetId)) {
+            throw new RuntimeException(
+                    String.format("IntermediateDataset %s is not found", datasetId));
+        }
+        final PipelineExecutor executor = getPipelineExecutor();
+
+        if (!(executor instanceof CacheSupportedPipelineExecutor)) {
+            return;
+        }
+
+        ((CacheSupportedPipelineExecutor) executor)
+                .invalidateClusterDataset(datasetId, configuration, userClassloader)
+                .get();
+        cachedTransformations.get(datasetId).setCached(false);
+    }
+
+    protected Set<AbstractID> listCompletedClusterDatasets() {
+        try {
+            final PipelineExecutor executor = getPipelineExecutor();
+            if (!(executor instanceof CacheSupportedPipelineExecutor)) {
+                return Collections.emptySet();
+            }
+            return ((CacheSupportedPipelineExecutor) executor)
+                    .listCompletedClusterDatasetIds(configuration, userClassloader)
+                    .get();
+        } catch (Throwable e) {
+            return Collections.emptySet();
+        }
+    }
+
+    /**
+     * Close and clean up the execution environment. All the cached intermediate results will be
+     * released physically.
+     */
+    @Override
+    public void close() throws Exception {
+        for (AbstractID id : cachedTransformations.keySet()) {
+            invalidateClusterDataset(id);
+        }
+    }
+
+    private PipelineExecutor getPipelineExecutor() throws Exception {
+        checkNotNull(
+                configuration.get(DeploymentOptions.TARGET),
+                "No execution.target specified in your configuration file.");
+
+        final PipelineExecutorFactory executorFactory =
+                executorServiceLoader.getExecutorFactory(configuration);
+
+        checkNotNull(
+                executorFactory,
+                "Cannot find compatible factory for specified execution.target (=%s)",
+                configuration.get(DeploymentOptions.TARGET));
+
+        return executorFactory.getExecutor(configuration);
     }
 }

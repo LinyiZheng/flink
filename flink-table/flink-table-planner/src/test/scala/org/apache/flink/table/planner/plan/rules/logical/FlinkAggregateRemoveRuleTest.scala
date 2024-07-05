@@ -31,27 +31,30 @@ import com.google.common.collect.ImmutableSet
 import org.apache.calcite.plan.hep.HepMatchOrder
 import org.apache.calcite.rel.rules._
 import org.apache.calcite.tools.RuleSets
-import org.junit.{Before, Test}
+import org.junit.jupiter.api.{BeforeEach, Test}
 
-/**
-  * Test for [[FlinkAggregateRemoveRule]].
-  */
+/** Test for [[FlinkAggregateRemoveRule]]. */
 class FlinkAggregateRemoveRuleTest extends TableTestBase {
   private val util = batchTestUtil()
 
-  @Before
+  @BeforeEach
   def setup(): Unit = {
     val programs = new FlinkChainedProgram[BatchOptimizeContext]()
     programs.addLast(
       // rewrite sub-queries to joins
       "subquery_rewrite",
-      FlinkGroupProgramBuilder.newBuilder[BatchOptimizeContext]
-        .addProgram(FlinkHepRuleSetProgramBuilder.newBuilder
-          .setHepRulesExecutionType(HEP_RULES_EXECUTION_TYPE.RULE_SEQUENCE)
-          .setHepMatchOrder(HepMatchOrder.BOTTOM_UP)
-          .add(FlinkBatchRuleSets.SEMI_JOIN_RULES)
-          .build(), "rewrite sub-queries to semi/anti join")
-        .build())
+      FlinkGroupProgramBuilder
+        .newBuilder[BatchOptimizeContext]
+        .addProgram(
+          FlinkHepRuleSetProgramBuilder.newBuilder
+            .setHepRulesExecutionType(HEP_RULES_EXECUTION_TYPE.RULE_SEQUENCE)
+            .setHepMatchOrder(HepMatchOrder.BOTTOM_UP)
+            .add(FlinkBatchRuleSets.SEMI_JOIN_RULES)
+            .build(),
+          "rewrite sub-queries to semi/anti join"
+        )
+        .build()
+    )
 
     programs.addLast(
       "rules",
@@ -75,18 +78,22 @@ class FlinkAggregateRemoveRuleTest extends TableTestBase {
           FlinkLogicalValues.CONVERTER,
           FlinkLogicalExpand.CONVERTER,
           FlinkLogicalLegacyTableSourceScan.CONVERTER,
-          FlinkLogicalLegacySink.CONVERTER))
+          FlinkLogicalLegacySink.CONVERTER
+        ))
         .setRequiredOutputTraits(Array(FlinkConventions.LOGICAL))
-        .build())
+        .build()
+    )
     util.replaceBatchProgram(programs)
 
     util.addTableSource[(Int, Int, String)]("MyTable1", 'a, 'b, 'c)
-    util.addTableSource("MyTable2",
+    util.addTableSource(
+      "MyTable2",
       Array[TypeInformation[_]](Types.INT, Types.INT, Types.STRING),
       Array("a", "b", "c"),
       FlinkStatistic.builder().uniqueKeys(ImmutableSet.of(ImmutableSet.of("a"))).build()
     )
-    util.addTableSource("MyTable3",
+    util.addTableSource(
+      "MyTable3",
       Array[TypeInformation[_]](Types.INT, Types.INT, Types.STRING, Types.STRING),
       Array("a", "b", "c", "d"),
       FlinkStatistic.builder().uniqueKeys(ImmutableSet.of(ImmutableSet.of("a"))).build()
@@ -101,8 +108,9 @@ class FlinkAggregateRemoveRuleTest extends TableTestBase {
 
   @Test
   def testAggRemove_WithoutFilter1(): Unit = {
-    util.verifyRelPlan("SELECT a, b + 1, c, s FROM (" +
-      "SELECT a, MIN(b) AS b, SUM(b) AS s, MAX(c) AS c FROM MyTable2 GROUP BY a)")
+    util.verifyRelPlan(
+      "SELECT a, b + 1, c, s FROM (" +
+        "SELECT a, MIN(b) AS b, SUM(b) AS s, MAX(c) AS c FROM MyTable2 GROUP BY a)")
   }
 
   @Test
@@ -123,7 +131,6 @@ class FlinkAggregateRemoveRuleTest extends TableTestBase {
 
   @Test
   def testAggRemove_WithoutGroupBy3(): Unit = {
-    // can not remove agg
     util.verifyRelPlan(
       "SELECT * FROM MyTable2 WHERE EXISTS (SELECT SUM(a) FROM MyTable1 WHERE 1=2)")
   }

@@ -17,13 +17,15 @@
  */
 package org.apache.flink.api.scala.operators
 
-import org.apache.flink.api.common.functions.RichMapFunction
+import org.apache.flink.api.common.functions.{OpenContext, RichMapFunction}
+import org.apache.flink.api.scala._
 import org.apache.flink.api.scala.util.CollectionDataSets
 import org.apache.flink.api.scala.util.CollectionDataSets.MutableTuple3
 import org.apache.flink.configuration.Configuration
 import org.apache.flink.core.fs.FileSystem.WriteMode
-import org.apache.flink.test.util.MultipleProgramsTestBase.TestExecutionMode
-import org.apache.flink.test.util.{TestBaseUtils, MultipleProgramsTestBase}
+import org.apache.flink.test.util.{MultipleProgramsTestBaseJUnit4, TestBaseUtils}
+
+import MultipleProgramsTestBaseJUnit4.TestExecutionMode
 import org.junit._
 import org.junit.rules.TemporaryFolder
 import org.junit.runner.RunWith
@@ -31,10 +33,8 @@ import org.junit.runners.Parameterized
 
 import scala.collection.JavaConverters._
 
-import org.apache.flink.api.scala._
-
 @RunWith(classOf[Parameterized])
-class MapITCase(mode: TestExecutionMode) extends MultipleProgramsTestBase(mode) {
+class MapITCase(mode: TestExecutionMode) extends MultipleProgramsTestBaseJUnit4(mode) {
   private var resultPath: String = null
   private var expected: String = null
   private val _tempFolder = new TemporaryFolder()
@@ -59,7 +59,7 @@ class MapITCase(mode: TestExecutionMode) extends MultipleProgramsTestBase(mode) 
      */
     val env = ExecutionEnvironment.getExecutionEnvironment
     val ds = CollectionDataSets.getStringDataSet(env)
-    val identityMapDs = ds.map( t => t)
+    val identityMapDs = ds.map(t => t)
     identityMapDs.writeAsText(resultPath, WriteMode.OVERWRITE)
     env.execute()
     expected = "Hi\n" + "Hello\n" + "Hello world\n" + "Hello world, how are you?\n" + "I am fine" +
@@ -73,7 +73,7 @@ class MapITCase(mode: TestExecutionMode) extends MultipleProgramsTestBase(mode) 
      */
     val env = ExecutionEnvironment.getExecutionEnvironment
     val ds = CollectionDataSets.get3TupleDataSet(env)
-    val identityMapDs = ds.map( t => t )
+    val identityMapDs = ds.map(t => t)
     identityMapDs.writeAsCsv(resultPath, writeMode = WriteMode.OVERWRITE)
     env.execute()
     expected = "1,1,Hi\n" + "2,2,Hello\n" + "3,2,Hello world\n" + "4,3,Hello world, " +
@@ -91,7 +91,7 @@ class MapITCase(mode: TestExecutionMode) extends MultipleProgramsTestBase(mode) 
      */
     val env = ExecutionEnvironment.getExecutionEnvironment
     val ds = CollectionDataSets.getCustomTypeDataSet(env)
-    val typeConversionMapDs = ds.map( c => (c.myInt, c.myLong, c.myString) )
+    val typeConversionMapDs = ds.map(c => (c.myInt, c.myLong, c.myString))
     typeConversionMapDs.writeAsCsv(resultPath, writeMode = WriteMode.OVERWRITE)
     env.execute()
     expected = "1,0,Hi\n" + "2,1,Hello\n" + "2,2,Hello world\n" + "3,3,Hello world, " +
@@ -126,7 +126,7 @@ class MapITCase(mode: TestExecutionMode) extends MultipleProgramsTestBase(mode) 
      */
     val env = ExecutionEnvironment.getExecutionEnvironment
     val ds = CollectionDataSets.get3TupleDataSet(env)
-    val tupleMapDs = ds.map( t => (t._1 + 1, t._3, t._2) )
+    val tupleMapDs = ds.map(t => (t._1 + 1, t._3, t._2))
     tupleMapDs.writeAsCsv(resultPath, writeMode = WriteMode.OVERWRITE)
     env.execute()
     expected = "2,Hi,1\n" + "3,Hello,2\n" + "4,Hello world,2\n" + "5,Hello world, how are you?," +
@@ -161,9 +161,7 @@ class MapITCase(mode: TestExecutionMode) extends MultipleProgramsTestBase(mode) 
      * Test mapper if UDF returns input object - increment first field of a tuple
      */
     val env = ExecutionEnvironment.getExecutionEnvironment
-    val ds = CollectionDataSets.get3TupleDataSet(env).map {
-      t => MutableTuple3(t._1, t._2, t._3)
-    }
+    val ds = CollectionDataSets.get3TupleDataSet(env).map(t => MutableTuple3(t._1, t._2, t._3))
     val inputObjMapDs = ds.map { t => t._1 = t._1 + 1; t }
     inputObjMapDs.writeAsCsv(resultPath, writeMode = WriteMode.OVERWRITE)
     env.execute()
@@ -183,17 +181,18 @@ class MapITCase(mode: TestExecutionMode) extends MultipleProgramsTestBase(mode) 
     val env = ExecutionEnvironment.getExecutionEnvironment
     val ints = CollectionDataSets.getIntDataSet(env)
     val ds = CollectionDataSets.get3TupleDataSet(env)
-    val bcMapDs = ds.map(
-      new RichMapFunction[(Int, Long, String), (Int, Long, String)] {
+    val bcMapDs = ds
+      .map(new RichMapFunction[(Int, Long, String), (Int, Long, String)] {
         var f2Replace = 0
-        override def open(config: Configuration): Unit = {
+        override def open(openContext: OpenContext): Unit = {
           val ints = getRuntimeContext.getBroadcastVariable[Int]("ints").asScala
           f2Replace = ints.sum
         }
         override def map(in: (Int, Long, String)): (Int, Long, String) = {
           in.copy(_1 = f2Replace)
         }
-      }).withBroadcastSet(ints, "ints")
+      })
+      .withBroadcastSet(ints, "ints")
     bcMapDs.writeAsCsv(resultPath, writeMode = WriteMode.OVERWRITE)
     env.execute()
     expected = "55,1,Hi\n" + "55,2,Hello\n" + "55,2,Hello world\n" + "55,3,Hello world, " +
@@ -202,31 +201,5 @@ class MapITCase(mode: TestExecutionMode) extends MultipleProgramsTestBase(mode) 
       "Comment#5\n" + "55,5,Comment#6\n" + "55,5,Comment#7\n" + "55,5,Comment#8\n" + "55,5," +
       "Comment#9\n" + "55,6,Comment#10\n" + "55,6,Comment#11\n" + "55,6,Comment#12\n" + "55," +
       "6,Comment#13\n" + "55,6,Comment#14\n" + "55,6,Comment#15\n"
-  }
-
-  @Test
-  def testPassingConfigurationObject(): Unit = {
-    /*
-     * Test passing configuration object.
-     */
-    val env = ExecutionEnvironment.getExecutionEnvironment
-    val ds = CollectionDataSets.getSmall3TupleDataSet(env)
-    val conf = new Configuration
-    val testKey = "testVariable"
-    val testValue = 666
-    conf.setInteger(testKey, testValue)
-    val bcMapDs = ds.map(
-      new RichMapFunction[(Int, Long, String), (Int, Long, String)] {
-        override def open(config: Configuration): Unit = {
-          val fromConfig = config.getInteger(testKey, -1)
-          Assert.assertEquals(testValue, fromConfig)
-        }
-        override def map(in: (Int, Long, String)): (Int, Long, String) = {
-          in
-        }
-      }).withParameters(conf)
-    bcMapDs.writeAsCsv(resultPath, writeMode = WriteMode.OVERWRITE)
-    env.execute()
-    expected = "1,1,Hi\n" + "2,2,Hello\n" + "3,2,Hello world"
   }
 }

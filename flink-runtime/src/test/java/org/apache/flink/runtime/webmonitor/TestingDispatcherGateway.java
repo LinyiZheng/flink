@@ -22,6 +22,9 @@ import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.core.execution.CheckpointType;
+import org.apache.flink.core.execution.SavepointFormatType;
+import org.apache.flink.runtime.checkpoint.CheckpointStatsSnapshot;
 import org.apache.flink.runtime.clusterframework.ApplicationStatus;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.dispatcher.DispatcherGateway;
@@ -58,6 +61,10 @@ public final class TestingDispatcherGateway extends TestingRestfulGateway
 
     static final Function<JobGraph, CompletableFuture<Acknowledge>> DEFAULT_SUBMIT_FUNCTION =
             jobGraph -> CompletableFuture.completedFuture(Acknowledge.get());
+    static final TriFunction<JobID, String, Throwable, CompletableFuture<Acknowledge>>
+            DEFAULT_SUBMIT_FAILED_FUNCTION =
+                    (jobId, jobName, Throwable) ->
+                            CompletableFuture.completedFuture(Acknowledge.get());
     static final Supplier<CompletableFuture<Collection<JobID>>> DEFAULT_LIST_FUNCTION =
             () -> CompletableFuture.completedFuture(Collections.emptyList());
     static final int DEFAULT_BLOB_SERVER_PORT = 1234;
@@ -68,16 +75,23 @@ public final class TestingDispatcherGateway extends TestingRestfulGateway
     static final Function<ApplicationStatus, CompletableFuture<Acknowledge>>
             DEFAULT_SHUTDOWN_WITH_STATUS_FUNCTION =
                     status -> CompletableFuture.completedFuture(Acknowledge.get());
-    static final BiFunction<JobID, String, CompletableFuture<String>>
+    static final TriFunction<JobID, String, SavepointFormatType, CompletableFuture<String>>
             DEFAULT_TRIGGER_SAVEPOINT_AND_GET_LOCATION_FUNCTION =
-                    (JobID jobId, String targetDirectory) ->
+                    (JobID jobId, String targetDirectory, SavepointFormatType formatType) ->
                             FutureUtils.completedExceptionally(new UnsupportedOperationException());
-    static final BiFunction<JobID, String, CompletableFuture<String>>
+    static final TriFunction<JobID, String, SavepointFormatType, CompletableFuture<String>>
             DEFAULT_STOP_WITH_SAVEPOINT_AND_GET_LOCATION_FUNCTION =
-                    (JobID jobId, String targetDirectory) ->
+                    (JobID jobId, String targetDirectory, SavepointFormatType formatType) ->
+                            FutureUtils.completedExceptionally(new UnsupportedOperationException());
+
+    static final BiFunction<JobID, CheckpointType, CompletableFuture<Long>>
+            DEFAULT_TRIGGER_CHECHPOINT_AND_GET_CHECKPOINT_ID_FUNCTION =
+                    (JobID jobId, CheckpointType checkpointType) ->
                             FutureUtils.completedExceptionally(new UnsupportedOperationException());
 
     private final Function<JobGraph, CompletableFuture<Acknowledge>> submitFunction;
+    private final TriFunction<JobID, String, Throwable, CompletableFuture<Acknowledge>>
+            submitFailedFunction;
     private final Supplier<CompletableFuture<Collection<JobID>>> listFunction;
     private final int blobServerPort;
     private final DispatcherId fencingToken;
@@ -85,14 +99,18 @@ public final class TestingDispatcherGateway extends TestingRestfulGateway
             requestArchivedJobFunction;
     private final Function<ApplicationStatus, CompletableFuture<Acknowledge>>
             clusterShutdownWithStatusFunction;
-    private final BiFunction<JobID, String, CompletableFuture<String>>
+    private final TriFunction<JobID, String, SavepointFormatType, CompletableFuture<String>>
             triggerSavepointAndGetLocationFunction;
-    private final BiFunction<JobID, String, CompletableFuture<String>>
+    private final TriFunction<JobID, String, SavepointFormatType, CompletableFuture<String>>
             stopWithSavepointAndGetLocationFunction;
+
+    private final BiFunction<JobID, CheckpointType, CompletableFuture<Long>>
+            triggerCheckpointAndGetCheckpointIdFunction;
 
     public TestingDispatcherGateway() {
         super();
         submitFunction = DEFAULT_SUBMIT_FUNCTION;
+        submitFailedFunction = DEFAULT_SUBMIT_FAILED_FUNCTION;
         listFunction = DEFAULT_LIST_FUNCTION;
         blobServerPort = DEFAULT_BLOB_SERVER_PORT;
         fencingToken = DEFAULT_FENCING_TOKEN;
@@ -102,6 +120,8 @@ public final class TestingDispatcherGateway extends TestingRestfulGateway
                 DEFAULT_TRIGGER_SAVEPOINT_AND_GET_LOCATION_FUNCTION;
         stopWithSavepointAndGetLocationFunction =
                 DEFAULT_STOP_WITH_SAVEPOINT_AND_GET_LOCATION_FUNCTION;
+        triggerCheckpointAndGetCheckpointIdFunction =
+                DEFAULT_TRIGGER_CHECHPOINT_AND_GET_CHECKPOINT_ID_FUNCTION;
     }
 
     public TestingDispatcherGateway(
@@ -111,6 +131,8 @@ public final class TestingDispatcherGateway extends TestingRestfulGateway
             Function<JobID, CompletableFuture<ArchivedExecutionGraph>> requestJobFunction,
             Function<JobID, CompletableFuture<ExecutionGraphInfo>>
                     requestExecutionGraphInfoFunction,
+            Function<JobID, CompletableFuture<CheckpointStatsSnapshot>>
+                    requestCheckpointStatsSnapshotFunction,
             Function<JobID, CompletableFuture<JobResult>> requestJobResultFunction,
             Function<JobID, CompletableFuture<JobStatus>> requestJobStatusFunction,
             Supplier<CompletableFuture<MultipleJobsDetails>> requestMultipleJobDetailsSupplier,
@@ -120,17 +142,33 @@ public final class TestingDispatcherGateway extends TestingRestfulGateway
             Supplier<CompletableFuture<Collection<Tuple2<ResourceID, String>>>>
                     requestTaskManagerMetricQueryServiceGatewaysSupplier,
             Supplier<CompletableFuture<ThreadDumpInfo>> requestThreadDumpSupplier,
-            BiFunction<AsynchronousJobOperationKey, String, CompletableFuture<Acknowledge>>
+            BiFunction<AsynchronousJobOperationKey, CheckpointType, CompletableFuture<Acknowledge>>
+                    triggerCheckpointFunction,
+            Function<AsynchronousJobOperationKey, CompletableFuture<OperationResult<Long>>>
+                    getCheckpointStatusFunction,
+            TriFunction<
+                            AsynchronousJobOperationKey,
+                            String,
+                            SavepointFormatType,
+                            CompletableFuture<Acknowledge>>
                     triggerSavepointFunction,
-            BiFunction<JobID, String, CompletableFuture<String>>
+            TriFunction<JobID, String, SavepointFormatType, CompletableFuture<String>>
                     triggerSavepointAndGetLocationFunction,
-            BiFunction<AsynchronousJobOperationKey, String, CompletableFuture<Acknowledge>>
+            TriFunction<
+                            AsynchronousJobOperationKey,
+                            String,
+                            SavepointFormatType,
+                            CompletableFuture<Acknowledge>>
                     stopWithSavepointFunction,
-            BiFunction<JobID, String, CompletableFuture<String>>
+            TriFunction<JobID, String, SavepointFormatType, CompletableFuture<String>>
                     stopWithSavepointAndGetLocationFunction,
             Function<AsynchronousJobOperationKey, CompletableFuture<OperationResult<String>>>
                     getSavepointStatusFunction,
+            BiFunction<JobID, CheckpointType, CompletableFuture<Long>>
+                    triggerCheckpointAndGetCheckpointIdFunction,
             Function<JobGraph, CompletableFuture<Acknowledge>> submitFunction,
+            TriFunction<JobID, String, Throwable, CompletableFuture<Acknowledge>>
+                    submitFailedFunction,
             Supplier<CompletableFuture<Collection<JobID>>> listFunction,
             int blobServerPort,
             DispatcherId fencingToken,
@@ -150,6 +188,7 @@ public final class TestingDispatcherGateway extends TestingRestfulGateway
                 cancelJobFunction,
                 requestJobFunction,
                 requestExecutionGraphInfoFunction,
+                requestCheckpointStatsSnapshotFunction,
                 requestJobResultFunction,
                 requestJobStatusFunction,
                 requestMultipleJobDetailsSupplier,
@@ -157,12 +196,15 @@ public final class TestingDispatcherGateway extends TestingRestfulGateway
                 requestMetricQueryServiceAddressesSupplier,
                 requestTaskManagerMetricQueryServiceGatewaysSupplier,
                 requestThreadDumpSupplier,
+                triggerCheckpointFunction,
+                getCheckpointStatusFunction,
                 triggerSavepointFunction,
                 stopWithSavepointFunction,
                 getSavepointStatusFunction,
                 clusterShutdownSupplier,
                 deliverCoordinationRequestToCoordinatorFunction);
         this.submitFunction = submitFunction;
+        this.submitFailedFunction = submitFailedFunction;
         this.listFunction = listFunction;
         this.blobServerPort = blobServerPort;
         this.fencingToken = fencingToken;
@@ -170,11 +212,19 @@ public final class TestingDispatcherGateway extends TestingRestfulGateway
         this.clusterShutdownWithStatusFunction = clusterShutdownWithStatusFunction;
         this.triggerSavepointAndGetLocationFunction = triggerSavepointAndGetLocationFunction;
         this.stopWithSavepointAndGetLocationFunction = stopWithSavepointAndGetLocationFunction;
+        this.triggerCheckpointAndGetCheckpointIdFunction =
+                triggerCheckpointAndGetCheckpointIdFunction;
     }
 
     @Override
     public CompletableFuture<Acknowledge> submitJob(JobGraph jobGraph, Time timeout) {
         return submitFunction.apply(jobGraph);
+    }
+
+    @Override
+    public CompletableFuture<Acknowledge> submitFailedJob(
+            JobID jobId, String jobName, Throwable exception) {
+        return submitFailedFunction.apply(jobId, jobName, exception);
     }
 
     @Override
@@ -204,20 +254,40 @@ public final class TestingDispatcherGateway extends TestingRestfulGateway
 
     @Override
     public CompletableFuture<String> triggerSavepointAndGetLocation(
-            JobID jobId, String targetDirectory, TriggerSavepointMode savepointMode, Time timeout) {
-        return triggerSavepointAndGetLocationFunction.apply(jobId, targetDirectory);
+            JobID jobId,
+            String targetDirectory,
+            SavepointFormatType formatType,
+            TriggerSavepointMode savepointMode,
+            Time timeout) {
+        return triggerSavepointAndGetLocationFunction.apply(jobId, targetDirectory, formatType);
     }
 
     @Override
     public CompletableFuture<String> stopWithSavepointAndGetLocation(
-            JobID jobId, String targetDirectory, TriggerSavepointMode savepointMode, Time timeout) {
-        return stopWithSavepointAndGetLocationFunction.apply(jobId, targetDirectory);
+            JobID jobId,
+            String targetDirectory,
+            SavepointFormatType formatType,
+            TriggerSavepointMode savepointMode,
+            Time timeout) {
+        return stopWithSavepointAndGetLocationFunction.apply(jobId, targetDirectory, formatType);
+    }
+
+    @Override
+    public CompletableFuture<Long> triggerCheckpointAndGetCheckpointID(
+            final JobID jobId, final CheckpointType checkpointType, final Time timeout) {
+        return triggerCheckpointAndGetCheckpointIdFunction.apply(jobId, checkpointType);
+    }
+
+    public static Builder newBuilder() {
+        return new Builder();
     }
 
     /** Builder for the {@link TestingDispatcherGateway}. */
     public static final class Builder extends TestingRestfulGateway.AbstractBuilder<Builder> {
 
         private Function<JobGraph, CompletableFuture<Acknowledge>> submitFunction;
+        private TriFunction<JobID, String, Throwable, CompletableFuture<Acknowledge>>
+                submitFailedFunction;
         private Supplier<CompletableFuture<Collection<JobID>>> listFunction;
         private int blobServerPort;
         private DispatcherId fencingToken;
@@ -225,14 +295,28 @@ public final class TestingDispatcherGateway extends TestingRestfulGateway
                 requestArchivedJobFunction;
         private Function<ApplicationStatus, CompletableFuture<Acknowledge>>
                 clusterShutdownWithStatusFunction = DEFAULT_SHUTDOWN_WITH_STATUS_FUNCTION;
-        private BiFunction<JobID, String, CompletableFuture<String>>
+        private TriFunction<JobID, String, SavepointFormatType, CompletableFuture<String>>
                 triggerSavepointAndGetLocationFunction;
-        private BiFunction<JobID, String, CompletableFuture<String>>
+        private TriFunction<JobID, String, SavepointFormatType, CompletableFuture<String>>
                 stopWithSavepointAndGetLocationFunction;
+
+        private BiFunction<JobID, CheckpointType, CompletableFuture<Long>>
+                triggerCheckpointAndGetCheckpointIdFunction;
+
+        private Builder() {
+            // No-op.
+        }
 
         public Builder setSubmitFunction(
                 Function<JobGraph, CompletableFuture<Acknowledge>> submitFunction) {
             this.submitFunction = submitFunction;
+            return this;
+        }
+
+        public Builder setSubmitFailedFunction(
+                TriFunction<JobID, String, Throwable, CompletableFuture<Acknowledge>>
+                        submitFailedFunction) {
+            this.submitFailedFunction = submitFailedFunction;
             return this;
         }
 
@@ -263,16 +347,24 @@ public final class TestingDispatcherGateway extends TestingRestfulGateway
         }
 
         public Builder setTriggerSavepointAndGetLocationFunction(
-                BiFunction<JobID, String, CompletableFuture<String>>
+                TriFunction<JobID, String, SavepointFormatType, CompletableFuture<String>>
                         triggerSavepointAndGetLocationFunction) {
             this.triggerSavepointAndGetLocationFunction = triggerSavepointAndGetLocationFunction;
             return this;
         }
 
         public Builder setStopWithSavepointAndGetLocationFunction(
-                BiFunction<JobID, String, CompletableFuture<String>>
+                TriFunction<JobID, String, SavepointFormatType, CompletableFuture<String>>
                         stopWithSavepointAndGetLocationFunction) {
             this.stopWithSavepointAndGetLocationFunction = stopWithSavepointAndGetLocationFunction;
+            return this;
+        }
+
+        public Builder setTriggerCheckpointAndGetCheckpointIdFunction(
+                BiFunction<JobID, CheckpointType, CompletableFuture<Long>>
+                        triggerCheckpointAndGetCheckpointIdFunction) {
+            this.triggerCheckpointAndGetCheckpointIdFunction =
+                    triggerCheckpointAndGetCheckpointIdFunction;
             return this;
         }
 
@@ -298,6 +390,7 @@ public final class TestingDispatcherGateway extends TestingRestfulGateway
                     cancelJobFunction,
                     requestJobFunction,
                     requestExecutionGraphInfoFunction,
+                    requestCheckpointStatsSnapshotFunction,
                     requestJobResultFunction,
                     requestJobStatusFunction,
                     requestMultipleJobDetailsSupplier,
@@ -305,12 +398,16 @@ public final class TestingDispatcherGateway extends TestingRestfulGateway
                     requestMetricQueryServiceGatewaysSupplier,
                     requestTaskManagerMetricQueryServiceGatewaysSupplier,
                     requestThreadDumpSupplier,
+                    triggerCheckpointFunction,
+                    getCheckpointStatusFunction,
                     triggerSavepointFunction,
                     triggerSavepointAndGetLocationFunction,
                     stopWithSavepointFunction,
                     stopWithSavepointAndGetLocationFunction,
                     getSavepointStatusFunction,
+                    triggerCheckpointAndGetCheckpointIdFunction,
                     submitFunction,
+                    submitFailedFunction,
                     listFunction,
                     blobServerPort,
                     fencingToken,

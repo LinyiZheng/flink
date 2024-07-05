@@ -22,21 +22,33 @@ import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.streaming.api.scala.{DataStream, KeyedStream}
 
 /**
-  * Wraps a keyed data stream, allowing to use anonymous partial functions to
-  * perform extraction of items in a tuple, case class instance or collection
-  *
-  * @param stream The wrapped data stream
-  * @tparam T The type of the data stream items
-  * @tparam K The type of key
-  */
+ * Wraps a keyed data stream, allowing to use anonymous partial functions to perform extraction of
+ * items in a tuple, case class instance or collection
+ *
+ * @param stream
+ *   The wrapped data stream
+ * @tparam T
+ *   The type of the data stream items
+ * @tparam K
+ *   The type of key
+ * @deprecated
+ *   All Flink Scala APIs are deprecated and will be removed in a future Flink major version. You
+ *   can still build your application in Scala, but you should move to the Java version of either
+ *   the DataStream and/or Table API.
+ * @see
+ *   <a href="https://s.apache.org/flip-265">FLIP-265 Deprecate and remove Scala API support</a>
+ */
+@deprecated(org.apache.flink.api.scala.FLIP_265_WARNING, since = "1.18.0")
 class OnKeyedStream[T, K](stream: KeyedStream[T, K]) {
 
   /**
-    * Applies a reducer `fun` to the stream
-    *
-    * @param fun The reducing function to be applied on the keyed stream
-    * @return A data set of Ts
-    */
+   * Applies a reducer `fun` to the stream
+   *
+   * @param fun
+   *   The reducing function to be applied on the keyed stream
+   * @return
+   *   A data set of Ts
+   */
   @PublicEvolving
   def reduceWith(fun: (T, T) => T): DataStream[T] =
     stream.reduce(fun)

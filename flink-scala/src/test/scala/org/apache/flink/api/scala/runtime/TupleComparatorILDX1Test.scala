@@ -18,11 +18,11 @@
 package org.apache.flink.api.scala.runtime
 
 import org.apache.flink.api.common.ExecutionConfig
-import org.apache.flink.api.common.typeutils.{TypeSerializer, TypeComparator}
+import org.apache.flink.api.common.serialization.SerializerConfigImpl
+import org.apache.flink.api.common.typeutils.{TypeComparator, TypeSerializer}
 import org.apache.flink.api.java.typeutils.TupleTypeInfoBase
-import org.apache.flink.api.scala.runtime.tuple.base.TupleComparatorTestBase
-
 import org.apache.flink.api.scala._
+import org.apache.flink.api.scala.runtime.tuple.base.TupleComparatorTestBase
 
 class TupleComparatorILDX1Test extends TupleComparatorTestBase[(Int, Long, Double)] {
 
@@ -34,7 +34,7 @@ class TupleComparatorILDX1Test extends TupleComparatorTestBase[(Int, Long, Doubl
 
   protected def createSerializer: TypeSerializer[(Int, Long, Double)] = {
     val ti = createTypeInformation[(Int, Long, Double)]
-    ti.createSerializer(new ExecutionConfig)
+    ti.createSerializer(new SerializerConfigImpl)
   }
 
   protected def getSortedTestData: Array[(Int, Long, Double)] = {
@@ -52,4 +52,3 @@ class TupleComparatorILDX1Test extends TupleComparatorTestBase[(Int, Long, Doubl
     (4, 25L, 23.2)
   )
 }
-

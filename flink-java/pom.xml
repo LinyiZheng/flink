@@ -25,14 +25,22 @@ under the License.
 	<parent>
 		<groupId>org.apache.flink</groupId>
 		<artifactId>flink-parent</artifactId>
-		<version>1.15-SNAPSHOT</version>
-		<relativePath>..</relativePath>
+		<version>2.0-SNAPSHOT</version>
 	</parent>
 
 	<artifactId>flink-java</artifactId>
 	<name>Flink : Java</name>
 
 	<packaging>jar</packaging>
+
+	<properties>
+		<surefire.module.config> <!--
+			JoinOperatorTest / chill ArraysAsListSerializer
+			-->--add-opens=java.base/java.util=ALL-UNNAMED <!--
+			CollectionInputFormatTest
+			-->--add-opens=java.base/java.lang=ALL-UNNAMED
+		</surefire.module.config>
+	</properties>
 
 	<dependencies>
 		<dependency>
@@ -70,12 +78,6 @@ under the License.
 
 	<build>
 		<plugins>
-			<!-- activate API compatibility checks -->
-			<plugin>
-				<groupId>com.github.siom79.japicmp</groupId>
-				<artifactId>japicmp-maven-plugin</artifactId>
-			</plugin>
-
 			<!-- Because flink-scala, flink-avro and flink-hadoop-compatibility uses it in tests -->
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>

@@ -19,6 +19,8 @@
 package org.apache.flink.streaming.api.operators.sorted.state;
 
 import org.apache.flink.api.common.typeutils.TypeSerializer;
+import org.apache.flink.runtime.asyncprocessing.AsyncExecutionController;
+import org.apache.flink.runtime.metrics.groups.TaskIOMetricGroup;
 import org.apache.flink.runtime.state.CheckpointableKeyedStateBackend;
 import org.apache.flink.runtime.state.KeyGroupStatePartitionStreamProvider;
 import org.apache.flink.runtime.state.KeyedStateBackend;
@@ -29,6 +31,7 @@ import org.apache.flink.streaming.api.operators.KeyContext;
 import org.apache.flink.streaming.api.operators.Triggerable;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.runtime.tasks.ProcessingTimeService;
+import org.apache.flink.streaming.runtime.tasks.StreamTaskCancellationContext;
 import org.apache.flink.util.WrappingRuntimeException;
 
 import java.util.HashMap;
@@ -71,10 +74,28 @@ public class BatchExecutionInternalTimeServiceManager<K>
     }
 
     @Override
+    public <N> InternalTimerService<N> getAsyncInternalTimerService(
+            String name,
+            TypeSerializer<K> keySerializer,
+            TypeSerializer<N> namespaceSerializer,
+            Triggerable<K, N> triggerable,
+            AsyncExecutionController<K> asyncExecutionController) {
+        throw new UnsupportedOperationException(
+                "Async timer service is not supported in BATCH execution mode.");
+    }
+
+    @Override
     public void advanceWatermark(Watermark watermark) {
         if (watermark.getTimestamp() == Long.MAX_VALUE) {
             keySelected(null);
         }
+    }
+
+    @Override
+    public boolean tryAdvanceWatermark(
+            Watermark watermark, ShouldStopAdvancingFn shouldStopAdvancingFn) {
+        advanceWatermark(watermark);
+        return true;
     }
 
     @Override
@@ -84,11 +105,13 @@ public class BatchExecutionInternalTimeServiceManager<K>
     }
 
     public static <K> InternalTimeServiceManager<K> create(
+            TaskIOMetricGroup taskIOMetricGroup,
             CheckpointableKeyedStateBackend<K> keyedStatedBackend,
             ClassLoader userClassloader,
             KeyContext keyContext, // the operator
             ProcessingTimeService processingTimeService,
-            Iterable<KeyGroupStatePartitionStreamProvider> rawKeyedStates) {
+            Iterable<KeyGroupStatePartitionStreamProvider> rawKeyedStates,
+            StreamTaskCancellationContext cancellationContext) {
         checkState(
                 keyedStatedBackend instanceof BatchExecutionKeyedStateBackend,
                 "Batch execution specific time service can work only with BatchExecutionKeyedStateBackend");

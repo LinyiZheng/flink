@@ -24,13 +24,13 @@ import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
 import org.apache.flink.api.java.ExecutionEnvironment;
 import org.apache.flink.runtime.client.JobExecutionException;
-import org.apache.flink.test.util.JavaProgramTestBase;
-import org.apache.flink.test.util.MultipleProgramsTestBase;
+import org.apache.flink.test.util.JavaProgramTestBaseJUnit4;
 
 import org.junit.Assert;
 
 import java.util.List;
 
+import static org.apache.flink.test.util.TestBaseUtils.compareResultAsText;
 import static org.apache.flink.util.ExceptionUtils.findThrowableWithMessage;
 import static org.junit.Assert.assertTrue;
 
@@ -39,7 +39,7 @@ import static org.junit.Assert.assertTrue;
  * job must be canceled and the client must report the failure. The second (working) job must finish
  * successfully and compute the correct result.
  */
-public class TaskFailureITCase extends JavaProgramTestBase {
+public class TaskFailureITCase extends JavaProgramTestBaseJUnit4 {
 
     private static final String EXCEPTION_STRING = "This is an expected Test Exception";
 
@@ -70,7 +70,7 @@ public class TaskFailureITCase extends JavaProgramTestBase {
         env.setParallelism(1);
         env.setRestartStrategy(RestartStrategies.fixedDelayRestart(retries, 0));
         List<Long> result = env.generateSequence(1, 9).map(mapper).collect();
-        MultipleProgramsTestBase.compareResultAsText(result, "1\n2\n3\n4\n5\n6\n7\n8\n9");
+        compareResultAsText(result, "1\n2\n3\n4\n5\n6\n7\n8\n9");
     }
 
     /** Working map function. */
@@ -90,7 +90,7 @@ public class TaskFailureITCase extends JavaProgramTestBase {
         @Override
         public Long map(Long value) throws Exception {
             throw new RuntimeException(
-                    EXCEPTION_STRING + ":" + getRuntimeContext().getAttemptNumber());
+                    EXCEPTION_STRING + ":" + getRuntimeContext().getTaskInfo().getAttemptNumber());
         }
     }
 }

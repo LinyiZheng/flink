@@ -18,7 +18,6 @@
 
 package org.apache.flink.runtime.checkpoint;
 
-import org.apache.flink.runtime.checkpoint.CheckpointStatsTracker.PendingCheckpointStatsCallback;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 
 import javax.annotation.Nullable;
@@ -51,9 +50,12 @@ public class FailedCheckpointStats extends PendingCheckpointStats {
      * @param totalSubtaskCount Total number of subtasks for the checkpoint.
      * @param taskStats Task stats for each involved operator.
      * @param numAcknowledgedSubtasks Number of acknowledged subtasks.
+     * @param checkpointedSize Total persisted data size over all subtasks during the sync and async
+     *     phases of this checkpoint.
      * @param stateSize Total checkpoint state size over all subtasks.
      * @param processedData Processed data during the checkpoint.
      * @param persistedData Persisted data during the checkpoint.
+     * @param unalignedCheckpoint Whether the checkpoint is unaligned.
      * @param failureTimestamp Timestamp when this checkpoint failed.
      * @param latestAcknowledgedSubtask The latest acknowledged subtask stats or <code>null</code>.
      * @param cause Cause of the checkpoint failure or <code>null</code>.
@@ -65,9 +67,11 @@ public class FailedCheckpointStats extends PendingCheckpointStats {
             int totalSubtaskCount,
             Map<JobVertexID, TaskStateStats> taskStats,
             int numAcknowledgedSubtasks,
+            long checkpointedSize,
             long stateSize,
             long processedData,
             long persistedData,
+            boolean unalignedCheckpoint,
             long failureTimestamp,
             @Nullable SubtaskStateStats latestAcknowledgedSubtask,
             @Nullable Throwable cause) {
@@ -79,10 +83,11 @@ public class FailedCheckpointStats extends PendingCheckpointStats {
                 totalSubtaskCount,
                 numAcknowledgedSubtasks,
                 taskStats,
-                FAILING_REPORT_CALLBACK,
+                checkpointedSize,
                 stateSize,
                 processedData,
                 persistedData,
+                unalignedCheckpoint,
                 latestAcknowledgedSubtask);
         checkArgument(numAcknowledgedSubtasks >= 0, "Negative number of ACKs");
         this.failureTimestamp = failureTimestamp;
@@ -118,19 +123,4 @@ public class FailedCheckpointStats extends PendingCheckpointStats {
     public String getFailureMessage() {
         return failureMsg;
     }
-
-    private static final PendingCheckpointStatsCallback FAILING_REPORT_CALLBACK =
-            new PendingCheckpointStatsCallback() {
-                @Override
-                public void reportCompletedCheckpoint(CompletedCheckpointStats completed) {
-                    throw new UnsupportedOperationException(
-                            "Failed checkpoint stats can't be completed");
-                }
-
-                @Override
-                public void reportFailedCheckpoint(FailedCheckpointStats failed) {
-                    throw new UnsupportedOperationException(
-                            "Failed checkpoint stats can't be failed");
-                }
-            };
 }

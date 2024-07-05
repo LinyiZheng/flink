@@ -21,12 +21,14 @@ package org.apache.flink.table.catalog;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.factories.DynamicTableFactory;
+import org.apache.flink.util.Preconditions;
 
 import javax.annotation.Nullable;
 
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Represents the unresolved metadata of a table in a {@link Catalog}.
@@ -38,9 +40,21 @@ import java.util.Map;
  * <p>A catalog implementer can either use {@link #of(Schema, String, List, Map)} for a basic
  * implementation of this interface or create a custom class that allows passing catalog-specific
  * objects all the way down to the connector creation (if necessary).
+ *
+ * <p>Note: The default implementation that is available via {@link #of(Schema, String, List, Map)}
+ * is always serializable. For example, it can be used for implementing a catalog that uses {@link
+ * ResolvedCatalogTable#toProperties()} or for persisting compiled plans. An implementation of this
+ * interface determines whether a catalog table can be serialized by providing a proper {@link
+ * #getOptions()} method.
  */
 @PublicEvolving
 public interface CatalogTable extends CatalogBaseTable {
+
+    /** Builder for configuring and creating instances of {@link CatalogTable}. */
+    @PublicEvolving
+    static CatalogTable.Builder newBuilder() {
+        return new CatalogTable.Builder();
+    }
 
     /**
      * Creates a basic implementation of this interface.
@@ -51,7 +65,9 @@ public interface CatalogTable extends CatalogBaseTable {
      * @param comment optional comment
      * @param partitionKeys list of partition keys or an empty list if not partitioned
      * @param options options to configure the connector
+     * @deprecated Use the builder {@link CatalogTable#newBuilder()} instead.
      */
+    @Deprecated
     static CatalogTable of(
             Schema schema,
             @Nullable String comment,
@@ -61,8 +77,32 @@ public interface CatalogTable extends CatalogBaseTable {
     }
 
     /**
+     * Creates an instance of {@link CatalogTable} with a specific snapshot.
+     *
+     * @param schema unresolved schema
+     * @param comment optional comment
+     * @param partitionKeys list of partition keys or an empty list if not partitioned
+     * @param options options to configure the connector
+     * @param snapshot table snapshot of the table
+     * @deprecated Use the builder {@link CatalogTable#newBuilder()} instead.
+     */
+    @Deprecated
+    static CatalogTable of(
+            Schema schema,
+            @Nullable String comment,
+            List<String> partitionKeys,
+            Map<String, String> options,
+            @Nullable Long snapshot) {
+        return new DefaultCatalogTable(schema, comment, partitionKeys, options, snapshot, null);
+    }
+
+    /**
      * Creates an instance of {@link CatalogTable} from a map of string properties that were
      * previously created with {@link ResolvedCatalogTable#toProperties()}.
+     *
+     * <p>Note that the serialization and deserialization of catalog tables are not symmetric. The
+     * framework will resolve functions and perform other validation tasks. A catalog implementation
+     * must not deal with this during a read operation.
      *
      * @param properties serialized version of a {@link CatalogTable} that includes schema,
      *     partition keys, and connector options
@@ -109,5 +149,66 @@ public interface CatalogTable extends CatalogBaseTable {
     @Deprecated
     default Map<String, String> toProperties() {
         return Collections.emptyMap();
+    }
+
+    /** Return the snapshot specified for the table. Return Optional.empty() if not specified. */
+    default Optional<Long> getSnapshot() {
+        return Optional.empty();
+    }
+
+    /** Returns the distribution of the table if the {@code DISTRIBUTED} clause is defined. */
+    default Optional<TableDistribution> getDistribution() {
+        return Optional.empty();
+    }
+
+    // --------------------------------------------------------------------------------------------
+
+    /** Builder for configuring and creating instances of {@link CatalogTable}. */
+    @PublicEvolving
+    class Builder {
+        private @Nullable Schema schema;
+        private @Nullable String comment;
+        private List<String> partitionKeys = Collections.emptyList();
+        private Map<String, String> options = Collections.emptyMap();
+        private @Nullable Long snapshot;
+        private @Nullable TableDistribution distribution;
+
+        private Builder() {}
+
+        public Builder schema(Schema schema) {
+            this.schema = Preconditions.checkNotNull(schema, "Schema must not be null.");
+            return this;
+        }
+
+        public Builder comment(@Nullable String comment) {
+            this.comment = comment;
+            return this;
+        }
+
+        public Builder partitionKeys(List<String> partitionKeys) {
+            this.partitionKeys =
+                    Preconditions.checkNotNull(partitionKeys, "Partition keys must not be null.");
+            return this;
+        }
+
+        public Builder options(Map<String, String> options) {
+            this.options = Preconditions.checkNotNull(options, "Options must not be null.");
+            return this;
+        }
+
+        public Builder snapshot(@Nullable Long snapshot) {
+            this.snapshot = snapshot;
+            return this;
+        }
+
+        public Builder distribution(@Nullable TableDistribution distribution) {
+            this.distribution = distribution;
+            return this;
+        }
+
+        public CatalogTable build() {
+            return new DefaultCatalogTable(
+                    schema, comment, partitionKeys, options, snapshot, distribution);
+        }
     }
 }

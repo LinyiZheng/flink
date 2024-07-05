@@ -40,8 +40,8 @@ public class CheckpointMetricsBuilder {
     private long syncDurationMillis = -1L;
     private long asyncDurationMillis = -1L;
     private long checkpointStartDelayNanos = -1L;
-    private boolean unalignedCheckpoint = false;
     private long totalBytesPersisted = -1L;
+    private long bytesPersistedOfThisCheckpoint = -1L;
 
     public CheckpointMetricsBuilder setBytesProcessedDuringAlignment(
             long bytesProcessedDuringAlignment) {
@@ -118,13 +118,18 @@ public class CheckpointMetricsBuilder {
         return checkpointStartDelayNanos;
     }
 
-    public CheckpointMetricsBuilder setUnalignedCheckpoint(boolean unalignedCheckpoint) {
-        this.unalignedCheckpoint = unalignedCheckpoint;
+    public CheckpointMetricsBuilder setTotalBytesPersisted(long totalBytesPersisted) {
+        this.totalBytesPersisted = totalBytesPersisted;
         return this;
     }
 
-    public CheckpointMetricsBuilder setTotalBytesPersisted(long totalBytesPersisted) {
-        this.totalBytesPersisted = totalBytesPersisted;
+    public long getBytesPersistedOfThisCheckpoint() {
+        return bytesPersistedOfThisCheckpoint;
+    }
+
+    public CheckpointMetricsBuilder setBytesPersistedOfThisCheckpoint(
+            long bytesPersistedOfThisCheckpoint) {
+        this.bytesPersistedOfThisCheckpoint = bytesPersistedOfThisCheckpoint;
         return this;
     }
 
@@ -136,7 +141,8 @@ public class CheckpointMetricsBuilder {
                 syncDurationMillis,
                 asyncDurationMillis,
                 checkpointStartDelayNanos,
-                unalignedCheckpoint,
+                bytesPersistedDuringAlignment > 0,
+                bytesPersistedOfThisCheckpoint,
                 totalBytesPersisted);
     }
 
@@ -148,7 +154,8 @@ public class CheckpointMetricsBuilder {
                 syncDurationMillis,
                 asyncDurationMillis,
                 checkpointStartDelayNanos,
-                unalignedCheckpoint,
+                bytesPersistedDuringAlignment > 0,
+                bytesPersistedOfThisCheckpoint,
                 totalBytesPersisted);
     }
 }

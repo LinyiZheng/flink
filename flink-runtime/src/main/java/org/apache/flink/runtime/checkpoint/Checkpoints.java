@@ -24,7 +24,7 @@ import org.apache.flink.runtime.OperatorIDPair;
 import org.apache.flink.runtime.checkpoint.metadata.CheckpointMetadata;
 import org.apache.flink.runtime.checkpoint.metadata.MetadataSerializer;
 import org.apache.flink.runtime.checkpoint.metadata.MetadataSerializers;
-import org.apache.flink.runtime.checkpoint.metadata.MetadataV3Serializer;
+import org.apache.flink.runtime.checkpoint.metadata.MetadataV4Serializer;
 import org.apache.flink.runtime.executiongraph.ExecutionJobVertex;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.jobgraph.OperatorID;
@@ -36,6 +36,7 @@ import org.apache.flink.runtime.state.StateBackendLoader;
 import org.apache.flink.runtime.state.StreamStateHandle;
 import org.apache.flink.runtime.state.hashmap.HashMapStateBackend;
 import org.apache.flink.runtime.state.storage.JobManagerCheckpointStorage;
+import org.apache.flink.util.CollectionUtil;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FlinkException;
 
@@ -84,12 +85,20 @@ public class Checkpoints {
 
     public static void storeCheckpointMetadata(
             CheckpointMetadata checkpointMetadata, DataOutputStream out) throws IOException {
+        storeCheckpointMetadata(checkpointMetadata, out, MetadataV4Serializer.INSTANCE);
+    }
+
+    public static void storeCheckpointMetadata(
+            CheckpointMetadata checkpointMetadata,
+            DataOutputStream out,
+            MetadataSerializer serializer)
+            throws IOException {
 
         // write generic header
         out.writeInt(HEADER_MAGIC_NUMBER);
 
-        out.writeInt(MetadataV3Serializer.VERSION);
-        MetadataV3Serializer.serialize(checkpointMetadata, out);
+        out.writeInt(serializer.getVersion());
+        serializer.serialize(checkpointMetadata, out);
     }
 
     // ------------------------------------------------------------------------
@@ -154,7 +163,8 @@ public class Checkpoints {
 
         // (2) validate it (parallelism, etc)
         HashMap<OperatorID, OperatorState> operatorStates =
-                new HashMap<>(checkpointMetadata.getOperatorStates().size());
+                CollectionUtil.newHashMapWithExpectedSize(
+                        checkpointMetadata.getOperatorStates().size());
         for (OperatorState operatorState : checkpointMetadata.getOperatorStates()) {
 
             ExecutionJobVertex executionJobVertex =
@@ -211,7 +221,9 @@ public class Checkpoints {
                 operatorStates,
                 checkpointMetadata.getMasterStates(),
                 checkpointProperties,
-                location);
+                location,
+                null,
+                checkpointMetadata.getCheckpointProperties());
     }
 
     private static void throwNonRestoredStateException(
@@ -295,49 +307,46 @@ public class Checkpoints {
         checkNotNull(configuration, "configuration");
         checkNotNull(classLoader, "classLoader");
 
-        CheckpointStorage storage = loadCheckpointStorage(configuration, classLoader, logger);
+        // An empty job configuration is utilized here because `disposeSavepoint` is intended
+        // for cluster-wide operations, which do not require job-specific configuration.
+        CheckpointStorage storage =
+                loadCheckpointStorage(new Configuration(), configuration, classLoader, logger);
 
         disposeSavepoint(pointer, storage, classLoader);
     }
 
     @Nonnull
     public static StateBackend loadStateBackend(
-            Configuration configuration, ClassLoader classLoader, @Nullable Logger logger) {
+            Configuration jobConfig,
+            Configuration clusterConfig,
+            ClassLoader classLoader,
+            @Nullable Logger logger) {
         if (logger != null) {
             logger.info("Attempting to load configured state backend for savepoint disposal");
         }
 
-        StateBackend backend = null;
+        // Job level config can override the cluster level config.
+        Configuration mergedConfig = new Configuration(clusterConfig);
+        mergedConfig.addAll(jobConfig);
         try {
-            backend =
-                    StateBackendLoader.loadStateBackendFromConfig(configuration, classLoader, null);
-
-            if (backend == null && logger != null) {
-                logger.debug(
-                        "No state backend configured, attempting to dispose savepoint "
-                                + "with configured checkpoint storage");
-            }
+            return StateBackendLoader.loadStateBackendFromConfig(mergedConfig, classLoader, null);
         } catch (Throwable t) {
             // catches exceptions and errors (like linking errors)
             if (logger != null) {
                 logger.info("Could not load configured state backend.");
                 logger.debug("Detailed exception:", t);
             }
+            return new HashMapStateBackend();
         }
-
-        if (backend == null) {
-            // We use the hashmap state backend by default. This will
-            // force the checkpoint storage loader to load
-            // the configured storage backend.
-            backend = new HashMapStateBackend();
-        }
-        return backend;
     }
 
     @Nonnull
     public static CheckpointStorage loadCheckpointStorage(
-            Configuration configuration, ClassLoader classLoader, @Nullable Logger logger) {
-        StateBackend backend = loadStateBackend(configuration, classLoader, logger);
+            Configuration jobConfig,
+            Configuration clusterConfig,
+            ClassLoader classLoader,
+            @Nullable Logger logger) {
+        StateBackend backend = loadStateBackend(jobConfig, clusterConfig, classLoader, logger);
 
         if (logger != null) {
             logger.info("Attempting to load configured checkpoint storage for savepoint disposal");
@@ -347,7 +356,7 @@ public class Checkpoints {
         try {
             checkpointStorage =
                     CheckpointStorageLoader.load(
-                            null, null, backend, configuration, classLoader, null);
+                            null, backend, jobConfig, clusterConfig, classLoader, null);
         } catch (Throwable t) {
             // catches exceptions and errors (like linking errors)
             if (logger != null) {

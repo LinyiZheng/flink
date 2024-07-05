@@ -15,29 +15,26 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.rules.logical
 
 import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.api.java.typeutils.RowTypeInfo
-import org.apache.flink.table.api.internal.TableEnvironmentInternal
 import org.apache.flink.table.api.{TableSchema, Types}
+import org.apache.flink.table.api.internal.TableEnvironmentInternal
 import org.apache.flink.table.planner.expressions.utils.Func0
 import org.apache.flink.table.planner.plan.optimize.program.{FlinkBatchProgram, FlinkHepRuleSetProgramBuilder, HEP_RULES_EXECUTION_TYPE}
 import org.apache.flink.table.planner.utils.{BatchTableTestUtil, TableConfigUtils, TableTestBase, TestNestedProjectableTableSource}
 
 import org.apache.calcite.plan.hep.HepMatchOrder
 import org.apache.calcite.tools.RuleSets
-import org.junit.{Before, Test}
+import org.junit.jupiter.api.{BeforeEach, Test}
 
-/**
-  * Test for [[PushProjectIntoLegacyTableSourceScanRule]].
-  */
+/** Test for [[PushProjectIntoLegacyTableSourceScanRule]]. */
 class PushProjectIntoLegacyTableSourceScanRuleTest extends TableTestBase {
 
   protected val util: BatchTableTestUtil = batchTestUtil()
 
-  @Before
+  @BeforeEach
   def setup(): Unit = {
     util.buildBatchProgram(FlinkBatchProgram.DEFAULT_REWRITE)
     val calciteConfig = TableConfigUtils.getCalciteConfig(util.tableEnv.getConfig)
@@ -105,7 +102,7 @@ class PushProjectIntoLegacyTableSourceScanRuleTest extends TableTestBase {
 
   @Test
   def testProjectWithUdfWithVirtualColumn(): Unit = {
-    util.tableEnv.registerFunction("my_udf", Func0)
+    util.addTemporarySystemFunction("my_udf", Func0)
     util.verifyRelPlan("SELECT a, my_udf(d) FROM VirtualTable")
   }
 
@@ -142,9 +139,11 @@ class PushProjectIntoLegacyTableSourceScanRuleTest extends TableTestBase {
       Array(Types.INT, deepNested, nested1, Types.STRING).asInstanceOf[Array[TypeInformation[_]]],
       Array("id", "deepNested", "nested", "name"))
 
-    util.tableEnv.asInstanceOf[TableEnvironmentInternal].registerTableSourceInternal(
-      "T",
-      new TestNestedProjectableTableSource(true, tableSchema, returnType, Seq()))
+    util.tableEnv
+      .asInstanceOf[TableEnvironmentInternal]
+      .registerTableSourceInternal(
+        "T",
+        new TestNestedProjectableTableSource(true, tableSchema, returnType, Seq()))
 
     val sqlQuery =
       """

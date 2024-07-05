@@ -29,6 +29,7 @@ import org.apache.flink.table.api.JsonQueryWrapper;
 import org.apache.flink.table.api.JsonType;
 import org.apache.flink.table.api.JsonValueOnEmptyOrError;
 import org.apache.flink.table.api.Table;
+import org.apache.flink.table.api.config.ExecutionConfigOptions;
 import org.apache.flink.table.expressions.ApiExpressionUtils;
 import org.apache.flink.table.expressions.Expression;
 import org.apache.flink.table.expressions.TimeIntervalUnit;
@@ -52,7 +53,23 @@ import static org.apache.flink.table.expressions.ApiExpressionUtils.valueLiteral
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ABS;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ACOS;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.AND;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ARRAY_AGG;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ARRAY_APPEND;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ARRAY_CONCAT;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ARRAY_CONTAINS;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ARRAY_DISTINCT;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ARRAY_ELEMENT;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ARRAY_EXCEPT;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ARRAY_INTERSECT;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ARRAY_MAX;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ARRAY_MIN;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ARRAY_POSITION;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ARRAY_PREPEND;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ARRAY_REMOVE;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ARRAY_REVERSE;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ARRAY_SLICE;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ARRAY_UNION;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ASCII;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ASIN;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.AT;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ATAN;
@@ -63,17 +80,21 @@ import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.CARDIN
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.CAST;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.CEIL;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.CHAR_LENGTH;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.CHR;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.COLLECT;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.COS;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.COSH;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.COT;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.COUNT;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.DECODE;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.DEGREES;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.DISTINCT;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.DIVIDE;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ENCODE;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.EQUALS;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.EXP;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.EXTRACT;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.FIRST_VALUE;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.FLATTEN;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.FLOOR;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.FROM_BASE64;
@@ -85,6 +106,7 @@ import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.IF;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.IF_NULL;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.IN;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.INIT_CAP;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.INSTR;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.IS_FALSE;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.IS_JSON;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.IS_NOT_FALSE;
@@ -95,16 +117,24 @@ import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.IS_TRU
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.JSON_EXISTS;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.JSON_QUERY;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.JSON_VALUE;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.LAST_VALUE;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.LEFT;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.LESS_THAN;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.LESS_THAN_OR_EQUAL;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.LIKE;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.LISTAGG;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.LN;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.LOCATE;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.LOG;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.LOG10;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.LOG2;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.LOWER;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.LPAD;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.LTRIM;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.MAP_ENTRIES;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.MAP_KEYS;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.MAP_UNION;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.MAP_VALUES;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.MAX;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.MD5;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.MIN;
@@ -118,15 +148,19 @@ import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ORDER_
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ORDER_DESC;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.OVER;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.OVERLAY;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.PARSE_URL;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.PLUS;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.POSITION;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.POWER;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.PROCTIME;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.RADIANS;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.REGEXP;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.REGEXP_EXTRACT;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.REGEXP_REPLACE;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.REPEAT;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.REPLACE;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.REVERSE;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.RIGHT;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ROUND;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.ROWTIME;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.RPAD;
@@ -141,9 +175,13 @@ import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.SIGN;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.SIMILAR;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.SIN;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.SINH;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.SPLIT;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.SPLIT_INDEX;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.SQRT;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.STDDEV_POP;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.STDDEV_SAMP;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.STR_TO_MAP;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.SUBSTR;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.SUBSTRING;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.SUM;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.SUM0;
@@ -153,6 +191,7 @@ import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.TIMES;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.TO_BASE64;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.TRIM;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.TRUNCATE;
+import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.TRY_CAST;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.UPPER;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.VAR_POP;
 import static org.apache.flink.table.functions.BuiltInFunctionDefinitions.VAR_SAMP;
@@ -193,6 +232,32 @@ public abstract class BaseExpressions<InType, OutType> {
                                         Stream.of(toExpr(), ApiExpressionUtils.valueLiteral(name)),
                                         Stream.of(extraNames).map(ApiExpressionUtils::valueLiteral))
                                 .toArray(Expression[]::new)));
+    }
+
+    /**
+     * Returns an ARRAY that contains the elements from array1 that are not in array2. If no
+     * elements remain after excluding the elements in array2 from array1, the function returns an
+     * empty ARRAY.
+     *
+     * <p>If one or both arguments are NULL, the function returns NULL. The order of the elements
+     * from array1 is kept.
+     */
+    public OutType arrayExcept(InType array) {
+        return toApiSpecificExpression(
+                unresolvedCall(ARRAY_EXCEPT, toExpr(), objectToExpression(array)));
+    }
+
+    /**
+     * Returns an ARRAY that contains the elements from array1 that are also in array2, without
+     * duplicates. If no elements that are both in array1 and array2, the function returns an empty
+     * ARRAY.
+     *
+     * <p>If one or both arguments are NULL, the function returns NULL. The order of the elements
+     * from array1 is kept.
+     */
+    public OutType arrayIntersect(InType array) {
+        return toApiSpecificExpression(
+                unresolvedCall(ARRAY_INTERSECT, toExpr(), objectToExpression(array)));
     }
 
     /**
@@ -442,6 +507,34 @@ public abstract class BaseExpressions<InType, OutType> {
         return toApiSpecificExpression(unresolvedCall(AVG, toExpr()));
     }
 
+    /** Returns the first value of field across all input values. */
+    public OutType firstValue() {
+        return toApiSpecificExpression(unresolvedCall(FIRST_VALUE, toExpr()));
+    }
+
+    /** Returns the last value of field across all input values. */
+    public OutType lastValue() {
+        return toApiSpecificExpression(unresolvedCall(LAST_VALUE, toExpr()));
+    }
+
+    /**
+     * Concatenates the values of string expressions and places separator(,) values between them.
+     * The separator is not added at the end of string.
+     */
+    public OutType listAgg() {
+        return toApiSpecificExpression(unresolvedCall(LISTAGG, toExpr(), valueLiteral(",")));
+    }
+
+    /**
+     * Concatenates the values of string expressions and places separator values between them. The
+     * separator is not added at the end of string. The default value of separator is ‘,’.
+     *
+     * @param separator string containing the character
+     */
+    public OutType listAgg(String separator) {
+        return toApiSpecificExpression(unresolvedCall(LISTAGG, toExpr(), valueLiteral(separator)));
+    }
+
     /** Returns the population standard deviation of an expression (the square root of varPop()). */
     public OutType stddevPop() {
         return toApiSpecificExpression(unresolvedCall(STDDEV_POP, toExpr()));
@@ -467,13 +560,38 @@ public abstract class BaseExpressions<InType, OutType> {
         return toApiSpecificExpression(unresolvedCall(COLLECT, toExpr()));
     }
 
+    /** Returns array aggregate of a given expression. */
+    public OutType arrayAgg() {
+        return toApiSpecificExpression(unresolvedCall(ARRAY_AGG, toExpr()));
+    }
+
     /**
-     * Converts a value to a given data type.
+     * Returns a new value being cast to {@code toType}. A cast error throws an exception and fails
+     * the job. When performing a cast operation that may fail, like {@link DataTypes#STRING()} to
+     * {@link DataTypes#INT()}, one should rather use {@link #tryCast(DataType)}, in order to handle
+     * errors. If {@link ExecutionConfigOptions#TABLE_EXEC_LEGACY_CAST_BEHAVIOUR} is enabled, this
+     * function behaves like {@link #tryCast(DataType)}.
      *
-     * <p>e.g. "42".cast(DataTypes.INT()) leads to 42.
+     * <p>E.g. {@code "42".cast(DataTypes.INT())} returns {@code 42}; {@code
+     * null.cast(DataTypes.STRING())} returns {@code null} of type {@link DataTypes#STRING()};
+     * {@code "non-number".cast(DataTypes.INT())} throws an exception and fails the job.
      */
     public OutType cast(DataType toType) {
         return toApiSpecificExpression(unresolvedCall(CAST, toExpr(), typeLiteral(toType)));
+    }
+
+    /**
+     * Like {@link #cast(DataType)}, but in case of error, returns {@code null} rather than failing
+     * the job.
+     *
+     * <p>E.g. {@code "42".tryCast(DataTypes.INT())} returns {@code 42}; {@code
+     * null.tryCast(DataTypes.STRING())} returns {@code null} of type {@link DataTypes#STRING()};
+     * {@code "non-number".tryCast(DataTypes.INT())} returns {@code null} of type {@link
+     * DataTypes#INT()}; {@code coalesce("non-number".tryCast(DataTypes.INT()), 0)} returns {@code
+     * 0} of type {@link DataTypes#INT()}.
+     */
+    public OutType tryCast(DataType toType) {
+        return toApiSpecificExpression(unresolvedCall(TRY_CAST, toExpr(), typeLiteral(toType)));
     }
 
     /**
@@ -733,6 +851,31 @@ public abstract class BaseExpressions<InType, OutType> {
                 unresolvedCall(SUBSTRING, toExpr(), objectToExpression(beginIndex)));
     }
 
+    /**
+     * Creates a substring of the given string at given index for a given length.
+     *
+     * @param beginIndex first character of the substring (starting at 1, inclusive)
+     * @param length number of characters of the substring
+     */
+    public OutType substr(InType beginIndex, InType length) {
+        return toApiSpecificExpression(
+                unresolvedCall(
+                        SUBSTR,
+                        toExpr(),
+                        objectToExpression(beginIndex),
+                        objectToExpression(length)));
+    }
+
+    /**
+     * Creates a substring of the given string beginning at the given index to the end.
+     *
+     * @param beginIndex first character of the substring (starting at 1, inclusive)
+     */
+    public OutType substr(InType beginIndex) {
+        return toApiSpecificExpression(
+                unresolvedCall(SUBSTR, toExpr(), objectToExpression(beginIndex)));
+    }
+
     /** Removes leading space characters from the given string. */
     public OutType trimLeading() {
         return toApiSpecificExpression(
@@ -947,6 +1090,14 @@ public abstract class BaseExpressions<InType, OutType> {
     }
 
     /**
+     * Returns TRUE if any (possibly empty) substring matches the Java regular expression, otherwise
+     * FALSE. Returns NULL if any of arguments is NULL.
+     */
+    public OutType regexp(InType regex) {
+        return toApiSpecificExpression(unresolvedCall(REGEXP, toExpr(), objectToExpression(regex)));
+    }
+
+    /**
      * Returns a string with all substrings that match the regular expression consecutively being
      * replaced.
      */
@@ -987,6 +1138,74 @@ public abstract class BaseExpressions<InType, OutType> {
         return toApiSpecificExpression(unresolvedCall(TO_BASE64, toExpr()));
     }
 
+    /** Returns the numeric value of the first character of the input string. */
+    public OutType ascii() {
+        return toApiSpecificExpression(unresolvedCall(ASCII, toExpr()));
+    }
+
+    /** Returns the ASCII character result of the input integer. */
+    public OutType chr() {
+        return toApiSpecificExpression(unresolvedCall(CHR, toExpr()));
+    }
+
+    /** Decodes the first argument into a String using the provided character set. */
+    public OutType decode(InType charset) {
+        return toApiSpecificExpression(
+                unresolvedCall(DECODE, toExpr(), objectToExpression(charset)));
+    }
+
+    /** Encodes the string into a BINARY using the provided character set. */
+    public OutType encode(InType charset) {
+        return toApiSpecificExpression(
+                unresolvedCall(ENCODE, toExpr(), objectToExpression(charset)));
+    }
+
+    /** Returns the leftmost integer characters from the input string. */
+    public OutType left(InType len) {
+        return toApiSpecificExpression(unresolvedCall(LEFT, toExpr(), objectToExpression(len)));
+    }
+
+    /** Returns the rightmost integer characters from the input string. */
+    public OutType right(InType len) {
+        return toApiSpecificExpression(unresolvedCall(RIGHT, toExpr(), objectToExpression(len)));
+    }
+
+    /** Returns the position of the first occurrence of the input string. */
+    public OutType instr(InType str) {
+        return toApiSpecificExpression(unresolvedCall(INSTR, toExpr(), objectToExpression(str)));
+    }
+
+    /** Returns the position of the first occurrence in the input string. */
+    public OutType locate(InType str) {
+        return toApiSpecificExpression(unresolvedCall(LOCATE, toExpr(), objectToExpression(str)));
+    }
+
+    /** Returns the position of the first occurrence in the input string after position integer. */
+    public OutType locate(InType str, InType pos) {
+        return toApiSpecificExpression(
+                unresolvedCall(LOCATE, toExpr(), objectToExpression(str), objectToExpression(pos)));
+    }
+
+    /**
+     * Parse url and return various parameter of the URL. If accept any null arguments, return null.
+     */
+    public OutType parseUrl(InType partToExtract) {
+        return toApiSpecificExpression(
+                unresolvedCall(PARSE_URL, toExpr(), objectToExpression(partToExtract)));
+    }
+
+    /**
+     * Parse url and return various parameter of the URL. If accept any null arguments, return null.
+     */
+    public OutType parseUrl(InType partToExtract, InType key) {
+        return toApiSpecificExpression(
+                unresolvedCall(
+                        PARSE_URL,
+                        toExpr(),
+                        objectToExpression(partToExtract),
+                        objectToExpression(key)));
+    }
+
     /** Returns a string that removes the left whitespaces from the given string. */
     public OutType ltrim() {
         return toApiSpecificExpression(unresolvedCall(LTRIM, toExpr()));
@@ -1000,6 +1219,61 @@ public abstract class BaseExpressions<InType, OutType> {
     /** Returns a string that repeats the base string n times. */
     public OutType repeat(InType n) {
         return toApiSpecificExpression(unresolvedCall(REPEAT, toExpr(), objectToExpression(n)));
+    }
+
+    /**
+     * Reverse each character in current string.
+     *
+     * @return a new string which character order is reverse to current string.
+     */
+    public OutType reverse() {
+        return toApiSpecificExpression(unresolvedCall(REVERSE, toExpr()));
+    }
+
+    /**
+     * Split target string with custom separator and pick the index-th(start with 0) result.
+     *
+     * @param separator custom separator.
+     * @param index index of the result which you want.
+     * @return the string at the index of split results.
+     */
+    public OutType splitIndex(InType separator, InType index) {
+        return toApiSpecificExpression(
+                unresolvedCall(
+                        SPLIT_INDEX,
+                        toExpr(),
+                        objectToExpression(separator),
+                        objectToExpression(index)));
+    }
+
+    /**
+     * Creates a map by parsing text. Split text into key-value pairs using two delimiters. The
+     * first delimiter separates pairs, and the second delimiter separates key and value. If only
+     * one parameter is given, default delimiters are used: ',' as delimiter1 and '=' as delimiter2.
+     * Both delimiters are treated as regular expressions.
+     *
+     * @return the map
+     */
+    public OutType strToMap() {
+        return toApiSpecificExpression(unresolvedCall(STR_TO_MAP, toExpr()));
+    }
+
+    /**
+     * Creates a map by parsing text. Split text into key-value pairs using two delimiters. The
+     * first delimiter separates pairs, and the second delimiter separates key and value. Both
+     * {@code listDelimiter} and {@code keyValueDelimiter} are treated as regular expressions.
+     *
+     * @param listDelimiter the delimiter to separates pairs
+     * @param keyValueDelimiter the delimiter to separates key and value
+     * @return the map
+     */
+    public OutType strToMap(InType listDelimiter, InType keyValueDelimiter) {
+        return toApiSpecificExpression(
+                unresolvedCall(
+                        STR_TO_MAP,
+                        toExpr(),
+                        objectToExpression(listDelimiter),
+                        objectToExpression(keyValueDelimiter)));
     }
 
     // Temporal operations
@@ -1111,6 +1385,212 @@ public abstract class BaseExpressions<InType, OutType> {
      */
     public OutType element() {
         return toApiSpecificExpression(unresolvedCall(ARRAY_ELEMENT, toExpr()));
+    }
+
+    /**
+     * Appends an element to the end of the array and returns the result.
+     *
+     * <p>If the array itself is null, the function will return null. If an element to add is null,
+     * the null element will be added to the end of the array. The given element is cast implicitly
+     * to the array's element type if necessary.
+     */
+    public OutType arrayAppend(InType element) {
+        return toApiSpecificExpression(
+                unresolvedCall(ARRAY_APPEND, toExpr(), objectToExpression(element)));
+    }
+
+    /**
+     * Returns whether the given element exists in an array.
+     *
+     * <p>Checking for null elements in the array is supported. If the array itself is null, the
+     * function will return null. The given element is cast implicitly to the array's element type
+     * if necessary.
+     */
+    public OutType arrayContains(InType needle) {
+        return toApiSpecificExpression(
+                unresolvedCall(ARRAY_CONTAINS, toExpr(), objectToExpression(needle)));
+    }
+
+    /**
+     * Returns an array with unique elements.
+     *
+     * <p>If the array itself is null, the function will return null. Keeps ordering of elements.
+     */
+    public OutType arrayDistinct() {
+        return toApiSpecificExpression(unresolvedCall(ARRAY_DISTINCT, toExpr()));
+    }
+
+    /**
+     * Returns the position of the first occurrence of element in the given array as int. Returns 0
+     * if the given value could not be found in the array. Returns null if either of the arguments
+     * are null
+     *
+     * <p>NOTE: that this is not zero based, but 1-based index. The first element in the array has
+     * index 1.
+     */
+    public OutType arrayPosition(InType needle) {
+        return toApiSpecificExpression(
+                unresolvedCall(ARRAY_POSITION, toExpr(), objectToExpression(needle)));
+    }
+
+    /**
+     * Appends an element to the beginning of the array and returns the result.
+     *
+     * <p>If the array itself is null, the function will return null. If an element to add is null,
+     * the null element will be added to the beginning of the array. The given element is cast
+     * implicitly to the array's element type if necessary.
+     */
+    public OutType arrayPrepend(InType element) {
+        return toApiSpecificExpression(
+                unresolvedCall(ARRAY_PREPEND, toExpr(), objectToExpression(element)));
+    }
+
+    /**
+     * Removes all elements that equal to element from array.
+     *
+     * <p>If the array itself is null, the function will return null. Keeps ordering of elements.
+     */
+    public OutType arrayRemove(InType needle) {
+        return toApiSpecificExpression(
+                unresolvedCall(ARRAY_REMOVE, toExpr(), objectToExpression(needle)));
+    }
+
+    /**
+     * Returns an array in reverse order.
+     *
+     * <p>If the array itself is null, the function will return null.
+     */
+    public OutType arrayReverse() {
+        return toApiSpecificExpression(unresolvedCall(ARRAY_REVERSE, toExpr()));
+    }
+
+    /**
+     * Returns a subarray of the input array between 'start_offset' and 'end_offset' inclusive. The
+     * offsets are 1-based however 0 is also treated as the beginning of the array. Positive values
+     * are counted from the beginning of the array while negative from the end. If 'end_offset' is
+     * omitted then this offset is treated as the length of the array. If 'start_offset' is after
+     * 'end_offset' or both are out of array bounds an empty array will be returned.
+     *
+     * <p>Returns null if any input is null.
+     */
+    public OutType arraySlice(InType startOffset, InType endOffset) {
+        return toApiSpecificExpression(
+                unresolvedCall(
+                        ARRAY_SLICE,
+                        toExpr(),
+                        objectToExpression(startOffset),
+                        objectToExpression(endOffset)));
+    }
+
+    public OutType arraySlice(InType startOffset) {
+        return toApiSpecificExpression(
+                unresolvedCall(ARRAY_SLICE, toExpr(), objectToExpression(startOffset)));
+    }
+
+    /**
+     * Returns an array of the elements in the union of array1 and array2, without duplicates.
+     *
+     * <p>If any of the array is null, the function will return null.
+     */
+    public OutType arrayUnion(InType array) {
+        return toApiSpecificExpression(
+                unresolvedCall(ARRAY_UNION, toExpr(), objectToExpression(array)));
+    }
+
+    /**
+     * Returns an array that is the result of concatenating at least one array. This array contains
+     * all the elements in the first array, followed by all the elements in the second array, and so
+     * forth, up to the Nth array.
+     *
+     * <p>If any input array is NULL, the function returns NULL.
+     */
+    public OutType arrayConcat(InType... arrays) {
+        arrays = convertToArrays(arrays);
+        Expression[] args =
+                Stream.concat(
+                                Stream.of(toExpr()),
+                                Arrays.stream(arrays).map(ApiExpressionUtils::objectToExpression))
+                        .toArray(Expression[]::new);
+        return toApiSpecificExpression(unresolvedCall(ARRAY_CONCAT, args));
+    }
+
+    private InType[] convertToArrays(InType[] arrays) {
+        if (arrays == null || arrays.length == 0) {
+            return arrays;
+        }
+        InType notNullArray = null;
+        for (int i = 0; i < arrays.length; ++i) {
+            if (arrays[i] != null) {
+                notNullArray = arrays[i];
+            }
+        }
+        if (!(notNullArray instanceof Object[])) {
+            return (InType[]) new Object[] {arrays};
+        } else {
+            return arrays;
+        }
+    }
+
+    /**
+     * Returns the maximum value from the array.
+     *
+     * <p>if array itself is null, the function returns null.
+     */
+    public OutType arrayMax() {
+        return toApiSpecificExpression(unresolvedCall(ARRAY_MAX, toExpr()));
+    }
+
+    /**
+     * Returns the minimum value from the array.
+     *
+     * <p>if array itself is null, the function returns null.
+     */
+    public OutType arrayMin() {
+        return toApiSpecificExpression(unresolvedCall(ARRAY_MIN, toExpr()));
+    }
+
+    /**
+     * Returns an array of substrings by splitting the input string based on a given delimiter.
+     *
+     * <p>If the delimiter is not found in the string, the original string is returned as the only
+     * element in the array. If the delimiter is empty, every character in the string is split. If
+     * the string or delimiter is null, a null value is returned. If the delimiter is found at the
+     * beginning or end of the string, or there are contiguous delimiters, then an empty string is
+     * added to the array.
+     */
+    public OutType split(InType delimiter) {
+        return toApiSpecificExpression(
+                unresolvedCall(SPLIT, toExpr(), objectToExpression(delimiter)));
+    }
+
+    /** Returns the keys of the map as an array. */
+    public OutType mapKeys() {
+        return toApiSpecificExpression(unresolvedCall(MAP_KEYS, toExpr()));
+    }
+
+    /** Returns the values of the map as an array. */
+    public OutType mapValues() {
+        return toApiSpecificExpression(unresolvedCall(MAP_VALUES, toExpr()));
+    }
+
+    /** Returns an array of all entries in the given map. */
+    public OutType mapEntries() {
+        return toApiSpecificExpression(unresolvedCall(MAP_ENTRIES, toExpr()));
+    }
+
+    /**
+     * Returns a map created by merging at least one map. These maps should have a common map type.
+     * If there are overlapping keys, the value from 'map2' will overwrite the value from 'map1',
+     * the value from 'map3' will overwrite the value from 'map2', the value from 'mapn' will
+     * overwrite the value from 'map(n-1)'. If any of maps is null, return null.
+     */
+    public OutType mapUnion(InType... inputs) {
+        Expression[] args =
+                Stream.concat(
+                                Stream.of(toExpr()),
+                                Arrays.stream(inputs).map(ApiExpressionUtils::objectToExpression))
+                        .toArray(Expression[]::new);
+        return toApiSpecificExpression(unresolvedCall(MAP_UNION, args));
     }
 
     // Time definition
@@ -1582,7 +2062,46 @@ public abstract class BaseExpressions<InType, OutType> {
      * // "[]"
      * lit("{}").jsonQuery("strict $.invalid", JsonQueryWrapper.WITHOUT_ARRAY,
      *     JsonQueryOnEmptyOrError.NULL, JsonQueryOnEmptyOrError.EMPTY_ARRAY)
+     *
+     * // Return results as an array instead of a string
+     * lit("[1, 2]").jsonQuery("$", DataTypes.ARRAY(DataTypes.STRING()),
+     *     JsonQueryWrapper.CONDITIONAL_ARRAY) // ["1", "2"]
+     * lit("[1, 2]").jsonQuery("$", DataTypes.ARRAY(DataTypes.STRING()),
+     *     JsonQueryWrapper.UNCONDITIONAL_ARRAY) // ["[1, 2]"]
      * }</pre>
+     *
+     * @param path JSON path to search for.
+     * @param returnType Type to convert the extracted array to, otherwise defaults to {@link
+     *     DataTypes#STRING()}.
+     * @param wrappingBehavior Determine if and when to wrap the resulting value into an array.
+     * @param onEmpty Behavior in case the path expression is empty.
+     * @param onError Behavior in case of an error.
+     * @return The extracted JSON value.
+     */
+    public OutType jsonQuery(
+            String path,
+            DataType returnType,
+            JsonQueryWrapper wrappingBehavior,
+            JsonQueryOnEmptyOrError onEmpty,
+            JsonQueryOnEmptyOrError onError) {
+        return toApiSpecificExpression(
+                unresolvedCall(
+                        JSON_QUERY,
+                        toExpr(),
+                        valueLiteral(path),
+                        typeLiteral(returnType),
+                        valueLiteral(wrappingBehavior),
+                        valueLiteral(onEmpty),
+                        valueLiteral(onError)));
+    }
+
+    /**
+     * Extracts JSON values from a JSON string.
+     *
+     * <p>The result is returned as a {@link DataTypes#STRING()}.
+     *
+     * <p>See also {@link #jsonQuery(String, DataType, JsonQueryWrapper, JsonQueryOnEmptyOrError,
+     * JsonQueryOnEmptyOrError)}.
      *
      * @param path JSON path to search for.
      * @param wrappingBehavior Determine if and when to wrap the resulting value into an array.
@@ -1595,14 +2114,7 @@ public abstract class BaseExpressions<InType, OutType> {
             JsonQueryWrapper wrappingBehavior,
             JsonQueryOnEmptyOrError onEmpty,
             JsonQueryOnEmptyOrError onError) {
-        return toApiSpecificExpression(
-                unresolvedCall(
-                        JSON_QUERY,
-                        toExpr(),
-                        valueLiteral(path),
-                        valueLiteral(wrappingBehavior),
-                        valueLiteral(onEmpty),
-                        valueLiteral(onError)));
+        return jsonQuery(path, DataTypes.STRING(), wrappingBehavior, onEmpty, onError);
     }
 
     /**
@@ -1627,6 +2139,31 @@ public abstract class BaseExpressions<InType, OutType> {
     /**
      * Extracts JSON values from a JSON string.
      *
+     * <p>The {@param wrappingBehavior} determines whether the extracted value should be wrapped
+     * into an array, and whether to do so unconditionally or only if the value itself isn't an
+     * array already.
+     *
+     * <p>See also {@link #jsonQuery(String, JsonQueryWrapper, JsonQueryOnEmptyOrError,
+     * JsonQueryOnEmptyOrError)}.
+     *
+     * @param path JSON path to search for.
+     * @param returnType Type to convert the extracted array to, otherwise defaults to {@link
+     *     DataTypes#STRING()}.
+     * @param wrappingBehavior Determine if and when to wrap the resulting value into an array.
+     * @return The extracted JSON value.
+     */
+    public OutType jsonQuery(String path, DataType returnType, JsonQueryWrapper wrappingBehavior) {
+        return jsonQuery(
+                path,
+                returnType,
+                wrappingBehavior,
+                JsonQueryOnEmptyOrError.NULL,
+                JsonQueryOnEmptyOrError.NULL);
+    }
+
+    /**
+     * Extracts JSON values from a JSON string.
+     *
      * <p>See also {@link #jsonQuery(String, JsonQueryWrapper, JsonQueryOnEmptyOrError,
      * JsonQueryOnEmptyOrError)}.
      *
@@ -1635,5 +2172,20 @@ public abstract class BaseExpressions<InType, OutType> {
      */
     public OutType jsonQuery(String path) {
         return jsonQuery(path, JsonQueryWrapper.WITHOUT_ARRAY);
+    }
+
+    /**
+     * Extracts JSON values from a JSON string.
+     *
+     * <p>See also {@link #jsonQuery(String, JsonQueryWrapper, JsonQueryOnEmptyOrError,
+     * JsonQueryOnEmptyOrError)}.
+     *
+     * @param path JSON path to search for.
+     * @param returnType Type to convert the extracted array to, otherwise defaults to {@link
+     *     DataTypes#STRING()}.
+     * @return The extracted JSON value.
+     */
+    public OutType jsonQuery(String path, DataType returnType) {
+        return jsonQuery(path, returnType, JsonQueryWrapper.WITHOUT_ARRAY);
     }
 }

@@ -24,17 +24,13 @@ import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.functions.CoGroupFunction;
 import org.apache.flink.api.common.functions.MapFunction;
+import org.apache.flink.api.common.serialization.SerializerConfig;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
-import org.apache.flink.api.common.typeutils.CompositeTypeSerializerConfigSnapshot;
 import org.apache.flink.api.common.typeutils.CompositeTypeSerializerSnapshot;
-import org.apache.flink.api.common.typeutils.CompositeTypeSerializerUtil;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
-import org.apache.flink.api.common.typeutils.TypeSerializerConfigSnapshot;
-import org.apache.flink.api.common.typeutils.TypeSerializerSchemaCompatibility;
 import org.apache.flink.api.common.typeutils.TypeSerializerSnapshot;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.operators.translation.WrappingFunction;
-import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.TypeExtractor;
 import org.apache.flink.core.memory.DataInputView;
 import org.apache.flink.core.memory.DataOutputView;
@@ -47,10 +43,14 @@ import org.apache.flink.streaming.api.windowing.windows.Window;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.Preconditions;
 
+import javax.annotation.Nullable;
+
 import java.io.IOException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 import static java.util.Objects.requireNonNull;
 
@@ -73,7 +73,7 @@ import static java.util.Objects.requireNonNull;
  * DataStream<T> result = one.coGroup(two)
  *     .where(new MyFirstKeySelector())
  *     .equalTo(new MyFirstKeySelector())
- *     .window(TumblingEventTimeWindows.of(Time.of(5, TimeUnit.SECONDS)))
+ *     .window(TumblingEventTimeWindows.of(Duration.ofSeconds(5)))
  *     .apply(new MyCoGroupFunction());
  * }</pre>
  */
@@ -206,7 +206,7 @@ public class CoGroupedStreams<T1, T2> {
                         assigner,
                         null,
                         null,
-                        null);
+                        (Duration) null);
             }
         }
     }
@@ -238,9 +238,36 @@ public class CoGroupedStreams<T1, T2> {
 
         private final Evictor<? super TaggedUnion<T1, T2>, ? super W> evictor;
 
-        private final Time allowedLateness;
+        @Nullable private final Duration allowedLateness;
 
         private WindowedStream<TaggedUnion<T1, T2>, KEY, W> windowedStream;
+
+        /**
+         * @deprecated Use {@link WithWindow#WithWindow(DataStream, DataStream, KeySelector,
+         *     KeySelector, TypeInformation, WindowAssigner, Trigger, Evictor, Duration)}
+         */
+        @Deprecated
+        protected WithWindow(
+                DataStream<T1> input1,
+                DataStream<T2> input2,
+                KeySelector<T1, KEY> keySelector1,
+                KeySelector<T2, KEY> keySelector2,
+                TypeInformation<KEY> keyType,
+                WindowAssigner<? super TaggedUnion<T1, T2>, W> windowAssigner,
+                Trigger<? super TaggedUnion<T1, T2>, ? super W> trigger,
+                Evictor<? super TaggedUnion<T1, T2>, ? super W> evictor,
+                @Nullable Time allowedLateness) {
+            this(
+                    input1,
+                    input2,
+                    keySelector1,
+                    keySelector2,
+                    keyType,
+                    windowAssigner,
+                    trigger,
+                    evictor,
+                    Time.toDuration(allowedLateness));
+        }
 
         protected WithWindow(
                 DataStream<T1> input1,
@@ -251,7 +278,7 @@ public class CoGroupedStreams<T1, T2> {
                 WindowAssigner<? super TaggedUnion<T1, T2>, W> windowAssigner,
                 Trigger<? super TaggedUnion<T1, T2>, ? super W> trigger,
                 Evictor<? super TaggedUnion<T1, T2>, ? super W> evictor,
-                Time allowedLateness) {
+                @Nullable Duration allowedLateness) {
             this.input1 = input1;
             this.input2 = input2;
 
@@ -308,9 +335,21 @@ public class CoGroupedStreams<T1, T2> {
          * Sets the time by which elements are allowed to be late.
          *
          * @see WindowedStream#allowedLateness(Time)
+         * @deprecated Use {@link #allowedLateness(Duration)}
+         */
+        @Deprecated
+        @PublicEvolving
+        public WithWindow<T1, T2, KEY, W> allowedLateness(@Nullable Time newLateness) {
+            return allowedLateness(Time.toDuration(newLateness));
+        }
+
+        /**
+         * Sets the time by which elements are allowed to be late.
+         *
+         * @see WindowedStream#allowedLateness(Duration)
          */
         @PublicEvolving
-        public WithWindow<T1, T2, KEY, W> allowedLateness(Time newLateness) {
+        public WithWindow<T1, T2, KEY, W> allowedLateness(@Nullable Duration newLateness) {
             return new WithWindow<>(
                     input1,
                     input2,
@@ -376,14 +415,15 @@ public class CoGroupedStreams<T1, T2> {
             UnionKeySelector<T1, T2, KEY> unionKeySelector =
                     new UnionKeySelector<>(keySelector1, keySelector2);
 
-            DataStream<TaggedUnion<T1, T2>> taggedInput1 =
-                    input1.map(new Input1Tagger<T1, T2>())
-                            .setParallelism(input1.getParallelism())
-                            .returns(unionType);
-            DataStream<TaggedUnion<T1, T2>> taggedInput2 =
-                    input2.map(new Input2Tagger<T1, T2>())
-                            .setParallelism(input2.getParallelism())
-                            .returns(unionType);
+            SingleOutputStreamOperator<TaggedUnion<T1, T2>> taggedInput1 =
+                    input1.map(new Input1Tagger<T1, T2>());
+            taggedInput1.getTransformation().setParallelism(input1.getParallelism(), false);
+            taggedInput1.returns(unionType);
+
+            SingleOutputStreamOperator<TaggedUnion<T1, T2>> taggedInput2 =
+                    input2.map(new Input2Tagger<T1, T2>());
+            taggedInput2.getTransformation().setParallelism(input2.getParallelism(), false);
+            taggedInput2.returns(unionType);
 
             DataStream<TaggedUnion<T1, T2>> unionStream = taggedInput1.union(taggedInput2);
 
@@ -425,9 +465,17 @@ public class CoGroupedStreams<T1, T2> {
             return (SingleOutputStreamOperator<T>) apply(function, resultType);
         }
 
+        /** @deprecated Use {@link #getAllowedLatenessDuration()} */
+        @Deprecated
         @VisibleForTesting
+        @Nullable
         Time getAllowedLateness() {
-            return allowedLateness;
+            return getAllowedLatenessDuration().map(Time::of).orElse(null);
+        }
+
+        @VisibleForTesting
+        Optional<Duration> getAllowedLatenessDuration() {
+            return Optional.ofNullable(allowedLateness);
         }
 
         @VisibleForTesting
@@ -533,9 +581,14 @@ public class CoGroupedStreams<T1, T2> {
         }
 
         @Override
-        public TypeSerializer<TaggedUnion<T1, T2>> createSerializer(ExecutionConfig config) {
+        public TypeSerializer<TaggedUnion<T1, T2>> createSerializer(SerializerConfig config) {
             return new UnionSerializer<>(
                     oneType.createSerializer(config), twoType.createSerializer(config));
+        }
+
+        @Override
+        public TypeSerializer<TaggedUnion<T1, T2>> createSerializer(ExecutionConfig config) {
+            return createSerializer(config.getSerializerConfig());
         }
 
         @Override
@@ -698,45 +751,6 @@ public class CoGroupedStreams<T1, T2> {
         }
     }
 
-    /**
-     * The {@link TypeSerializerConfigSnapshot} for the {@link UnionSerializer}.
-     *
-     * @deprecated this snapshot class is no longer in use, and is maintained only for backwards
-     *     compatibility. It is fully replaced by {@link UnionSerializerSnapshot}.
-     */
-    @Deprecated
-    public static class UnionSerializerConfigSnapshot<T1, T2>
-            extends CompositeTypeSerializerConfigSnapshot<TaggedUnion<T1, T2>> {
-
-        private static final int VERSION = 1;
-
-        /** This empty nullary constructor is required for deserializing the configuration. */
-        public UnionSerializerConfigSnapshot() {}
-
-        public UnionSerializerConfigSnapshot(
-                TypeSerializer<T1> oneSerializer, TypeSerializer<T2> twoSerializer) {
-            super(oneSerializer, twoSerializer);
-        }
-
-        @Override
-        public TypeSerializerSchemaCompatibility<TaggedUnion<T1, T2>> resolveSchemaCompatibility(
-                TypeSerializer<TaggedUnion<T1, T2>> newSerializer) {
-            List<Tuple2<TypeSerializer<?>, TypeSerializerSnapshot<?>>> nestedSerializersAndConfigs =
-                    getNestedSerializersAndConfigs();
-
-            return CompositeTypeSerializerUtil.delegateCompatibilityCheckToNewSnapshot(
-                    newSerializer,
-                    new UnionSerializerSnapshot<>(),
-                    nestedSerializersAndConfigs.get(0).f1,
-                    nestedSerializersAndConfigs.get(1).f1);
-        }
-
-        @Override
-        public int getVersion() {
-            return VERSION;
-        }
-    }
-
     /** The {@link TypeSerializerSnapshot} for the {@link UnionSerializer}. */
     public static class UnionSerializerSnapshot<T1, T2>
             extends CompositeTypeSerializerSnapshot<TaggedUnion<T1, T2>, UnionSerializer<T1, T2>> {
@@ -744,9 +758,7 @@ public class CoGroupedStreams<T1, T2> {
         private static final int VERSION = 2;
 
         @SuppressWarnings("WeakerAccess")
-        public UnionSerializerSnapshot() {
-            super(UnionSerializer.class);
-        }
+        public UnionSerializerSnapshot() {}
 
         UnionSerializerSnapshot(UnionSerializer<T1, T2> serializerInstance) {
             super(serializerInstance);

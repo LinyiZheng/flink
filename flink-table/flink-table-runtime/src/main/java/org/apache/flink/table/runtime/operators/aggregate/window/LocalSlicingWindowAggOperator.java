@@ -21,6 +21,7 @@ package org.apache.flink.table.runtime.operators.aggregate.window;
 import org.apache.flink.core.memory.ManagedMemoryUseCase;
 import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
+import org.apache.flink.streaming.api.operators.ChainingStrategy;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.operators.TimestampedCollector;
 import org.apache.flink.streaming.api.watermark.Watermark;
@@ -28,8 +29,8 @@ import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.runtime.keyselector.RowDataKeySelector;
 import org.apache.flink.table.runtime.operators.aggregate.window.buffers.WindowBuffer;
-import org.apache.flink.table.runtime.operators.window.slicing.ClockService;
-import org.apache.flink.table.runtime.operators.window.slicing.SliceAssigner;
+import org.apache.flink.table.runtime.operators.window.tvf.common.ClockService;
+import org.apache.flink.table.runtime.operators.window.tvf.slicing.SliceAssigner;
 
 import java.time.ZoneId;
 import java.util.TimeZone;
@@ -80,6 +81,7 @@ public class LocalSlicingWindowAggOperator extends AbstractStreamOperator<RowDat
             SliceAssigner sliceAssigner,
             WindowBuffer.LocalFactory windowBufferFactory,
             ZoneId shiftTimezone) {
+        chainingStrategy = ChainingStrategy.ALWAYS;
         this.keySelector = keySelector;
         this.sliceAssigner = sliceAssigner;
         this.windowInterval = sliceAssigner.getSliceEndInterval();
@@ -152,6 +154,7 @@ public class LocalSlicingWindowAggOperator extends AbstractStreamOperator<RowDat
                         getOperatorConfig()
                                 .getManagedMemoryFractionOperatorUseCaseOfSlot(
                                         ManagedMemoryUseCase.OPERATOR,
+                                        environment.getJobConfiguration(),
                                         environment.getTaskManagerInfo().getConfiguration(),
                                         environment.getUserCodeClassLoader().asClassLoader()));
     }

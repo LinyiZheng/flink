@@ -30,6 +30,7 @@ import org.apache.flink.runtime.util.ResourceCounter;
 import org.apache.flink.util.function.QuadFunction;
 import org.apache.flink.util.function.TriFunction;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.function.BiFunction;
@@ -53,10 +54,11 @@ public class TestingDeclarativeSlotPoolBuilder {
                     Collection<SlotOffer>>
             offerSlotsFunction =
                     (ignoredA, ignoredB, ignoredC, ignoredD) -> Collections.emptyList();
-    private Supplier<Collection<SlotInfoWithUtilization>> getFreeSlotsInformationSupplier =
-            Collections::emptyList;
+    private Supplier<Collection<SlotInfo>> getFreeSlotsInformationSupplier = Collections::emptyList;
     private Supplier<Collection<? extends SlotInfo>> getAllSlotsInformationSupplier =
             Collections::emptyList;
+    private Supplier<FreeSlotInfoTracker> getFreeSlotInfoTrackerSupplier =
+            () -> TestingFreeSlotInfoTracker.newBuilder().build();
     private BiFunction<ResourceID, Exception, ResourceCounter> releaseSlotsFunction =
             (ignoredA, ignoredB) -> ResourceCounter.empty();
     private BiFunction<AllocationID, Exception, ResourceCounter> releaseSlotFunction =
@@ -69,6 +71,14 @@ public class TestingDeclarativeSlotPoolBuilder {
     private LongConsumer returnIdleSlotsConsumer = ignored -> {};
     private Consumer<ResourceCounter> setResourceRequirementsConsumer = ignored -> {};
     private Function<AllocationID, Boolean> containsFreeSlotFunction = ignored -> false;
+    private QuadFunction<
+                    Collection<? extends SlotOffer>,
+                    TaskManagerLocation,
+                    TaskManagerGateway,
+                    Long,
+                    Collection<SlotOffer>>
+            registerSlotsFunction =
+                    (slotOffers, ignoredB, ignoredC, ignoredD) -> new ArrayList<>(slotOffers);
 
     public TestingDeclarativeSlotPoolBuilder setIncreaseResourceRequirementsByConsumer(
             Consumer<ResourceCounter> increaseResourceRequirementsByConsumer) {
@@ -106,9 +116,27 @@ public class TestingDeclarativeSlotPoolBuilder {
         return this;
     }
 
+    public TestingDeclarativeSlotPoolBuilder setRegisterSlotsFunction(
+            QuadFunction<
+                            Collection<? extends SlotOffer>,
+                            TaskManagerLocation,
+                            TaskManagerGateway,
+                            Long,
+                            Collection<SlotOffer>>
+                    registerSlotsFunction) {
+        this.registerSlotsFunction = registerSlotsFunction;
+        return this;
+    }
+
     public TestingDeclarativeSlotPoolBuilder setGetFreeSlotsInformationSupplier(
-            Supplier<Collection<SlotInfoWithUtilization>> getFreeSlotsInformationSupplier) {
+            Supplier<Collection<SlotInfo>> getFreeSlotsInformationSupplier) {
         this.getFreeSlotsInformationSupplier = getFreeSlotsInformationSupplier;
+        return this;
+    }
+
+    public TestingDeclarativeSlotPoolBuilder setGetFreeSlotInfoTrackerSupplier(
+            Supplier<FreeSlotInfoTracker> getFreeSlotInfoTrackerSupplier) {
+        this.getFreeSlotInfoTrackerSupplier = getFreeSlotInfoTrackerSupplier;
         return this;
     }
 
@@ -167,7 +195,9 @@ public class TestingDeclarativeSlotPoolBuilder {
                 decreaseResourceRequirementsByConsumer,
                 getResourceRequirementsSupplier,
                 offerSlotsFunction,
+                registerSlotsFunction,
                 getFreeSlotsInformationSupplier,
+                getFreeSlotInfoTrackerSupplier,
                 getAllSlotsInformationSupplier,
                 releaseSlotsFunction,
                 releaseSlotFunction,

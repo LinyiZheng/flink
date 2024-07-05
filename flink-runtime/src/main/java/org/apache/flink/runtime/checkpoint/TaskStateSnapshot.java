@@ -21,19 +21,25 @@ package org.apache.flink.runtime.checkpoint;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.state.CompositeStateHandle;
 import org.apache.flink.runtime.state.SharedStateRegistry;
+import org.apache.flink.runtime.state.StateObject;
 import org.apache.flink.runtime.state.StateUtil;
+import org.apache.flink.util.CollectionUtil;
+import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.Preconditions;
+import org.apache.flink.util.SerializedValue;
 
-import org.apache.flink.shaded.guava30.com.google.common.collect.Iterators;
+import org.apache.flink.shaded.guava31.com.google.common.collect.Iterators;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
+import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.stream.Stream;
 
 import static org.apache.flink.runtime.checkpoint.InflightDataRescalingDescriptor.NO_RESCALE;
 
@@ -72,7 +78,7 @@ public class TaskStateSnapshot implements CompositeStateHandle {
     }
 
     public TaskStateSnapshot(int size, boolean isTaskFinished) {
-        this(new HashMap<>(size), false, isTaskFinished);
+        this(CollectionUtil.newHashMapWithExpectedSize(size), false, isTaskFinished);
     }
 
     public TaskStateSnapshot(Map<OperatorID, OperatorSubtaskState> subtaskStatesByOperatorID) {
@@ -155,11 +161,25 @@ public class TaskStateSnapshot implements CompositeStateHandle {
 
     @Override
     public long getStateSize() {
+        return streamOperatorSubtaskStates().mapToLong(StateObject::getStateSize).sum();
+    }
+
+    @Override
+    public void collectSizeStats(StateObjectSizeStatsCollector collector) {
+        streamOperatorSubtaskStates().forEach(oss -> oss.collectSizeStats(collector));
+    }
+
+    private Stream<OperatorSubtaskState> streamOperatorSubtaskStates() {
+        return subtaskStatesByOperatorID.values().stream().filter(Objects::nonNull);
+    }
+
+    @Override
+    public long getCheckpointedSize() {
         long size = 0L;
 
         for (OperatorSubtaskState subtaskState : subtaskStatesByOperatorID.values()) {
             if (subtaskState != null) {
-                size += subtaskState.getStateSize();
+                size += subtaskState.getCheckpointedSize();
             }
         }
 
@@ -217,5 +237,25 @@ public class TaskStateSnapshot implements CompositeStateHandle {
                         .filter(mapping -> !mapping.equals(NO_RESCALE))
                         .iterator(),
                 NO_RESCALE);
+    }
+
+    @Nullable
+    public static SerializedValue<TaskStateSnapshot> serializeTaskStateSnapshot(
+            TaskStateSnapshot subtaskState) {
+        try {
+            return subtaskState == null ? null : new SerializedValue<>(subtaskState);
+        } catch (IOException e) {
+            throw new FlinkRuntimeException(e);
+        }
+    }
+
+    @Nullable
+    public static TaskStateSnapshot deserializeTaskStateSnapshot(
+            SerializedValue<TaskStateSnapshot> subtaskState, ClassLoader classLoader) {
+        try {
+            return subtaskState == null ? null : subtaskState.deserializeValue(classLoader);
+        } catch (IOException | ClassNotFoundException e) {
+            throw new FlinkRuntimeException(e);
+        }
     }
 }

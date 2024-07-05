@@ -42,7 +42,7 @@ import org.apache.flink.api.common.typeinfo.BasicArrayTypeInfo;
 import org.apache.flink.api.common.typeinfo.PrimitiveArrayTypeInfo;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
-import org.apache.flink.api.connector.sink.Sink;
+import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.dag.Transformation;
 import org.apache.flink.api.java.Utils;
 import org.apache.flink.api.java.functions.KeySelector;
@@ -51,6 +51,7 @@ import org.apache.flink.api.java.io.TextOutputFormat;
 import org.apache.flink.api.java.tuple.Tuple;
 import org.apache.flink.api.java.typeutils.InputTypeConfigurable;
 import org.apache.flink.api.java.typeutils.TypeExtractor;
+import org.apache.flink.configuration.RpcOptions;
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.core.fs.FileSystem.WriteMode;
 import org.apache.flink.core.fs.Path;
@@ -71,7 +72,6 @@ import org.apache.flink.streaming.api.operators.StreamFilter;
 import org.apache.flink.streaming.api.operators.StreamFlatMap;
 import org.apache.flink.streaming.api.operators.StreamMap;
 import org.apache.flink.streaming.api.operators.StreamOperatorFactory;
-import org.apache.flink.streaming.api.operators.StreamSink;
 import org.apache.flink.streaming.api.operators.collect.ClientAndIterator;
 import org.apache.flink.streaming.api.operators.collect.CollectResultIterator;
 import org.apache.flink.streaming.api.operators.collect.CollectSinkOperator;
@@ -526,8 +526,17 @@ public class DataStream<T> {
      * in the set time, the stream terminates.
      *
      * @return The iterative data stream created.
+     * @deprecated This method is deprecated since Flink 1.19. The only known use case of this
+     *     Iteration API comes from Flink ML, which already has its own implementation of iteration
+     *     and no longer uses this API. If there's any use cases other than Flink ML that needs
+     *     iteration support, please reach out to dev@flink.apache.org and we can consider making
+     *     the Flink ML iteration implementation a separate common library.
+     * @see <a
+     *     href="https://cwiki.apache.org/confluence/display/FLINK/FLIP-357%3A+Deprecate+Iteration+API+of+DataStream">
+     *     FLIP-357: Deprecate Iteration API of DataStream </a>
+     * @see <a href="https://nightlies.apache.org/flink/flink-ml-docs-stable/">Flink ML </a>
      */
-    @PublicEvolving
+    @Deprecated
     public IterativeStream<T> iterate() {
         return new IterativeStream<>(this, 0);
     }
@@ -554,8 +563,17 @@ public class DataStream<T> {
      *
      * @param maxWaitTimeMillis Number of milliseconds to wait between inputs before shutting down
      * @return The iterative data stream created.
+     * @deprecated This method is deprecated since Flink 1.19. The only known use case of this
+     *     Iteration API comes from Flink ML, which already has its own implementation of iteration
+     *     and no longer uses this API. If there's any use cases other than Flink ML that needs
+     *     iteration support, please reach out to dev@flink.apache.org and we can consider making
+     *     the Flink ML iteration implementation a separate common library.
+     * @see <a
+     *     href="https://cwiki.apache.org/confluence/display/FLINK/FLIP-357%3A+Deprecate+Iteration+API+of+DataStream">
+     *     FLIP-357: Deprecate Iteration API of DataStream </a>
+     * @see <a href="https://nightlies.apache.org/flink/flink-ml-docs-stable/">Flink ML </a>
      */
-    @PublicEvolving
+    @Deprecated
     public IterativeStream<T> iterate(long maxWaitTimeMillis) {
         return new IterativeStream<>(this, maxWaitTimeMillis);
     }
@@ -840,7 +858,7 @@ public class DataStream<T> {
      * event time progress. The given {@link WatermarkStrategy} is used to create a {@link
      * TimestampAssigner} and {@link WatermarkGenerator}.
      *
-     * <p>For each event in the data stream, the {@link TimestampAssigner#extractTimestamp(Object,
+     * <p>For each element in the data stream, the {@link TimestampAssigner#extractTimestamp(Object,
      * long)} method is called to assign an event timestamp.
      *
      * <p>For each event in the data stream, the {@link WatermarkGenerator#onEvent(Object, long,
@@ -866,7 +884,8 @@ public class DataStream<T> {
                         "Timestamps/Watermarks",
                         inputParallelism,
                         getTransformation(),
-                        cleanedStrategy);
+                        cleanedStrategy,
+                        false);
         getExecutionEnvironment().addOperator(transformation);
         return new SingleOutputStreamOperator<>(getExecutionEnvironment(), transformation);
     }
@@ -1200,7 +1219,8 @@ public class DataStream<T> {
                         operatorName,
                         operatorFactory,
                         outTypeInfo,
-                        environment.getParallelism());
+                        environment.getParallelism(),
+                        false);
 
         @SuppressWarnings({"unchecked", "rawtypes"})
         SingleOutputStreamOperator<R> returnStream =
@@ -1240,12 +1260,7 @@ public class DataStream<T> {
             ((InputTypeConfigurable) sinkFunction).setInputType(getType(), getExecutionConfig());
         }
 
-        StreamSink<T> sinkOperator = new StreamSink<>(clean(sinkFunction));
-
-        DataStreamSink<T> sink = new DataStreamSink<>(this, sinkOperator);
-
-        getExecutionEnvironment().addOperator(sink.getLegacyTransformation());
-        return sink;
+        return DataStreamSink.forSinkFunction(this, clean(sinkFunction));
     }
 
     /**
@@ -1255,12 +1270,61 @@ public class DataStream<T> {
      * @param sink The user defined sink.
      * @return The closed DataStream.
      */
-    @Experimental
-    public DataStreamSink<T> sinkTo(Sink<T, ?, ?, ?> sink) {
+    @PublicEvolving
+    public DataStreamSink<T> sinkTo(org.apache.flink.api.connector.sink.Sink<T, ?, ?, ?> sink) {
+        return this.sinkTo(sink, CustomSinkOperatorUidHashes.DEFAULT);
+    }
+
+    /**
+     * Adds the given {@link Sink} to this DataStream. Only streams with sinks added will be
+     * executed once the {@link StreamExecutionEnvironment#execute()} method is called.
+     *
+     * <p>This method is intended to be used only to recover a snapshot where no uids have been set
+     * before taking the snapshot.
+     *
+     * @param sink The user defined sink.
+     * @return The closed DataStream.
+     */
+    @PublicEvolving
+    public DataStreamSink<T> sinkTo(
+            org.apache.flink.api.connector.sink.Sink<T, ?, ?, ?> sink,
+            CustomSinkOperatorUidHashes customSinkOperatorUidHashes) {
         // read the output type of the input Transform to coax out errors about MissingTypeInfo
         transformation.getOutputType();
 
-        return new DataStreamSink<>(this, sink);
+        return DataStreamSink.forSinkV1(this, sink, customSinkOperatorUidHashes);
+    }
+
+    /**
+     * Adds the given {@link Sink} to this DataStream. Only streams with sinks added will be
+     * executed once the {@link StreamExecutionEnvironment#execute()} method is called.
+     *
+     * @param sink The user defined sink.
+     * @return The closed DataStream.
+     */
+    @PublicEvolving
+    public DataStreamSink<T> sinkTo(Sink<T> sink) {
+        return this.sinkTo(sink, CustomSinkOperatorUidHashes.DEFAULT);
+    }
+
+    /**
+     * Adds the given {@link Sink} to this DataStream. Only streams with sinks added will be
+     * executed once the {@link StreamExecutionEnvironment#execute()} method is called.
+     *
+     * <p>This method is intended to be used only to recover a snapshot where no uids have been set
+     * before taking the snapshot.
+     *
+     * @param customSinkOperatorUidHashes operator hashes to support state binding
+     * @param sink The user defined sink.
+     * @return The closed DataStream.
+     */
+    @PublicEvolving
+    public DataStreamSink<T> sinkTo(
+            Sink<T> sink, CustomSinkOperatorUidHashes customSinkOperatorUidHashes) {
+        // read the output type of the input Transform to coax out errors about MissingTypeInfo
+        transformation.getOutputType();
+
+        return DataStreamSink.forSink(this, sink, customSinkOperatorUidHashes);
     }
 
     /**
@@ -1326,27 +1390,121 @@ public class DataStream<T> {
         }
     }
 
-    ClientAndIterator<T> executeAndCollectWithClient(String jobExecutionName) throws Exception {
+    /**
+     * Sets up the collection of the elements in this {@link DataStream}, and returns an iterator
+     * over the collected elements that can be used to retrieve elements once the job execution has
+     * started.
+     *
+     * <p>Caution: When multiple streams are being collected it is recommended to consume all
+     * streams in parallel to not back-pressure the job.
+     *
+     * <p>Caution: Closing the returned iterator cancels the job! It is recommended to close all
+     * iterators once you are no longer interested in any of the collected streams.
+     *
+     * <p>This method is functionally equivalent to {@link #collectAsync(Collector)}.
+     *
+     * @return iterator over the contained elements
+     */
+    @Experimental
+    public CloseableIterator<T> collectAsync() {
+        final Collector<T> collector = new Collector<>();
+        collectAsync(collector);
+        return collector.getOutput();
+    }
+
+    /**
+     * Sets up the collection of the elements in this {@link DataStream}, which can be retrieved
+     * later via the given {@link Collector}.
+     *
+     * <p>Caution: When multiple streams are being collected it is recommended to consume all
+     * streams in parallel to not back-pressure the job.
+     *
+     * <p>Caution: Closing the iterator from the collector cancels the job! It is recommended to
+     * close all iterators once you are no longer interested in any of the collected streams.
+     *
+     * <p>This method is functionally equivalent to {@link #collectAsync()}.
+     *
+     * <p>This method is meant to support use-cases where the application of a sink is done via a
+     * {@code Consumer<DataStream<T>>}, where it wouldn't be possible (or inconvenient) to return an
+     * iterator.
+     *
+     * @param collector a collector that can be used to retrieve the elements
+     */
+    @Experimental
+    public void collectAsync(Collector<T> collector) {
         TypeSerializer<T> serializer =
-                getType().createSerializer(getExecutionEnvironment().getConfig());
+                getType()
+                        .createSerializer(
+                                getExecutionEnvironment().getConfig().getSerializerConfig());
         String accumulatorName = "dataStreamCollect_" + UUID.randomUUID().toString();
 
         StreamExecutionEnvironment env = getExecutionEnvironment();
         CollectSinkOperatorFactory<T> factory =
                 new CollectSinkOperatorFactory<>(serializer, accumulatorName);
         CollectSinkOperator<T> operator = (CollectSinkOperator<T>) factory.getOperator();
+        long resultFetchTimeout =
+                env.getConfiguration().get(RpcOptions.ASK_TIMEOUT_DURATION).toMillis();
         CollectResultIterator<T> iterator =
                 new CollectResultIterator<>(
                         operator.getOperatorIdFuture(),
                         serializer,
                         accumulatorName,
-                        env.getCheckpointConfig());
+                        env.getCheckpointConfig(),
+                        resultFetchTimeout);
         CollectStreamSink<T> sink = new CollectStreamSink<>(this, factory);
         sink.name("Data stream collect sink");
         env.addOperator(sink.getTransformation());
 
-        final JobClient jobClient = env.executeAsync(jobExecutionName);
-        iterator.setJobClient(jobClient);
+        env.registerCollectIterator(iterator);
+        collector.setIterator(iterator);
+    }
+
+    /**
+     * Collect records from each partition into a separate full window. The window emission will be
+     * triggered at the end of inputs. For this non-keyed data stream(each record has no key), a
+     * partition contains all records of a subtask.
+     *
+     * @return The full windowed data stream on partition.
+     */
+    @PublicEvolving
+    public PartitionWindowedStream<T> fullWindowPartition() {
+        return new NonKeyedPartitionWindowedStream<>(environment, this);
+    }
+
+    /**
+     * This class acts as an accessor to elements collected via {@link #collectAsync(Collector)}.
+     *
+     * @param <T> the element type
+     */
+    @Experimental
+    public static class Collector<T> {
+        private CloseableIterator<T> iterator;
+
+        @Internal
+        void setIterator(CloseableIterator<T> iterator) {
+            this.iterator = iterator;
+        }
+
+        /**
+         * Returns an iterator over the collected elements. The returned iterator must only be used
+         * once the job execution was triggered.
+         *
+         * <p>This method will always return the same iterator instance.
+         *
+         * @return iterator over collected elements
+         */
+        public CloseableIterator<T> getOutput() {
+            // we intentionally fail here instead of waiting, because it indicates a
+            // misunderstanding on the user and would usually just block the application
+            Preconditions.checkNotNull(iterator, "The job execution was not yet started.");
+            return iterator;
+        }
+    }
+
+    ClientAndIterator<T> executeAndCollectWithClient(String jobExecutionName) throws Exception {
+        final CloseableIterator<T> iterator = collectAsync();
+
+        final JobClient jobClient = getExecutionEnvironment().executeAsync(jobExecutionName);
 
         return new ClientAndIterator<>(jobClient, iterator);
     }

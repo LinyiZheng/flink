@@ -26,6 +26,7 @@ import org.apache.flink.util.Preconditions;
 import javax.annotation.Nullable;
 
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -51,7 +52,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * ResolvedCatalogBaseTable} can be temporary for one catalog, but permanent for another one.
  */
 @Internal
-public class ContextResolvedTable {
+public final class ContextResolvedTable {
 
     private static final AtomicInteger uniqueId = new AtomicInteger(0);
 
@@ -142,12 +143,32 @@ public class ContextResolvedTable {
     }
 
     /**
+     * Convert the {@link ResolvedCatalogMaterializedTable} in {@link ContextResolvedTable} to
+     * {@link ResolvedCatalogTable }.
+     */
+    public ContextResolvedTable toCatalogTable() {
+        if (resolvedTable.getTableKind() == CatalogBaseTable.TableKind.MATERIALIZED_TABLE) {
+            return ContextResolvedTable.permanent(
+                    objectIdentifier,
+                    catalog,
+                    ((ResolvedCatalogMaterializedTable) resolvedTable).toResolvedCatalogTable());
+        }
+        return this;
+    }
+
+    /**
      * Copy the {@link ContextResolvedTable}, replacing the underlying {@link CatalogTable} options.
      */
     public ContextResolvedTable copy(Map<String, String> newOptions) {
         if (resolvedTable.getTableKind() == CatalogBaseTable.TableKind.VIEW) {
             throw new ValidationException(
                     String.format("View '%s' cannot be enriched with new options.", this));
+        }
+        if (resolvedTable.getTableKind() == CatalogBaseTable.TableKind.MATERIALIZED_TABLE) {
+            return ContextResolvedTable.permanent(
+                    objectIdentifier,
+                    catalog,
+                    ((ResolvedCatalogMaterializedTable) resolvedTable).copy(newOptions));
         }
         return new ContextResolvedTable(
                 objectIdentifier,
@@ -156,9 +177,19 @@ public class ContextResolvedTable {
                 false);
     }
 
-    @Override
-    public String toString() {
-        return objectIdentifier.asSummaryString();
+    /** Copy the {@link ContextResolvedTable}, replacing the underlying {@link ResolvedSchema}. */
+    public ContextResolvedTable copy(ResolvedSchema newSchema) {
+        if (resolvedTable.getTableKind() == CatalogBaseTable.TableKind.MATERIALIZED_TABLE) {
+            throw new ValidationException(
+                    String.format(
+                            "Materialized table '%s' cannot be copied with new schema %s.",
+                            this, newSchema));
+        }
+        return new ContextResolvedTable(
+                objectIdentifier,
+                catalog,
+                new ResolvedCatalogTable((CatalogTable) resolvedTable.getOrigin(), newSchema),
+                false);
     }
 
     /**
@@ -184,5 +215,30 @@ public class ContextResolvedTable {
         }
 
         return "*anonymous_" + hint + "$" + id + "*";
+    }
+
+    @Override
+    public String toString() {
+        return objectIdentifier.asSummaryString();
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+        ContextResolvedTable that = (ContextResolvedTable) o;
+        return anonymous == that.anonymous
+                && Objects.equals(objectIdentifier, that.objectIdentifier)
+                && Objects.equals(catalog, that.catalog)
+                && Objects.equals(resolvedTable, that.resolvedTable);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(objectIdentifier, catalog, resolvedTable, anonymous);
     }
 }

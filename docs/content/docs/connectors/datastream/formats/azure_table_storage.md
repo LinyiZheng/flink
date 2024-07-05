@@ -1,5 +1,5 @@
 ---
-title:  "Microsoft Azure table"
+title:  "Azure Table storage"
 weight: 4
 type: docs
 aliases:
@@ -25,7 +25,7 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Microsoft Azure Table Storage format
+# Azure Table Storage
 
 This example is using the `HadoopInputFormat` wrapper to use an existing Hadoop input format implementation for accessing [Azure's Table Storage](https://docs.microsoft.com/en-us/azure/storage/tables/table-storage-overview).
 

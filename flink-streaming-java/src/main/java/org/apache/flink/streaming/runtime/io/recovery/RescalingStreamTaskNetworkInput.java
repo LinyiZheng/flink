@@ -41,15 +41,16 @@ import org.apache.flink.streaming.runtime.partitioner.ConfigurableStreamPartitio
 import org.apache.flink.streaming.runtime.partitioner.StreamPartitioner;
 import org.apache.flink.streaming.runtime.streamrecord.StreamElement;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+import org.apache.flink.streaming.runtime.tasks.StreamTask.CanEmitBatchOfRecordsChecker;
 import org.apache.flink.streaming.runtime.watermarkstatus.StatusWatermarkValve;
+import org.apache.flink.util.CollectionUtil;
 
-import org.apache.flink.shaded.guava30.com.google.common.collect.Maps;
+import org.apache.flink.shaded.guava31.com.google.common.collect.Maps;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Function;
@@ -94,7 +95,8 @@ public final class RescalingStreamTaskNetworkInput<T>
             int inputIndex,
             InflightDataRescalingDescriptor inflightDataRescalingDescriptor,
             Function<Integer, StreamPartitioner<?>> gatePartitioners,
-            TaskInfo taskInfo) {
+            TaskInfo taskInfo,
+            CanEmitBatchOfRecordsChecker canEmitBatchOfRecords) {
         super(
                 checkpointedInputGate,
                 inputSerializer,
@@ -106,7 +108,8 @@ public final class RescalingStreamTaskNetworkInput<T>
                         ioManager,
                         inflightDataRescalingDescriptor,
                         gatePartitioners,
-                        taskInfo));
+                        taskInfo),
+                canEmitBatchOfRecords);
         this.ioManager = ioManager;
 
         LOG.info(
@@ -159,7 +162,8 @@ public final class RescalingStreamTaskNetworkInput<T>
                 inputSerializer,
                 ioManager,
                 statusWatermarkValve,
-                inputIndex);
+                inputIndex,
+                canEmitBatchOfRecords);
     }
 
     protected DemultiplexingRecordDeserializer<T> getActiveSerializer(
@@ -199,7 +203,8 @@ public final class RescalingStreamTaskNetworkInput<T>
      */
     static class RecordFilterFactory<T>
             implements Function<InputChannelInfo, Predicate<StreamRecord<T>>> {
-        private final Map<Integer, StreamPartitioner<T>> partitionerCache = new HashMap<>(1);
+        private final Map<Integer, StreamPartitioner<T>> partitionerCache =
+                CollectionUtil.newHashMapWithExpectedSize(1);
         private final Function<Integer, StreamPartitioner<?>> gatePartitioners;
         private final TypeSerializer<T> inputSerializer;
         private final int numberOfChannels;
@@ -227,7 +232,9 @@ public final class RescalingStreamTaskNetworkInput<T>
                             channelInfo.getGateIdx(), this::createPartitioner);
             // use a copy of partitioner to ensure that the filter of ambiguous virtual channels
             // have the same state across several subtasks
-            return new RecordFilter<>(partitioner.copy(), inputSerializer, subtaskIndex);
+            StreamPartitioner<T> partitionerCopy = partitioner.copy();
+            partitionerCopy.setup(numberOfChannels);
+            return new RecordFilter<>(partitionerCopy, inputSerializer, subtaskIndex);
         }
 
         private StreamPartitioner<T> createPartitioner(Integer index) {

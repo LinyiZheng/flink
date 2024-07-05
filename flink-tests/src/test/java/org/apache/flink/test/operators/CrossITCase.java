@@ -19,6 +19,7 @@
 package org.apache.flink.test.operators;
 
 import org.apache.flink.api.common.functions.CrossFunction;
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.functions.RichCrossFunction;
 import org.apache.flink.api.java.DataSet;
 import org.apache.flink.api.java.ExecutionEnvironment;
@@ -26,10 +27,9 @@ import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.api.java.tuple.Tuple5;
 import org.apache.flink.api.java.tuple.Tuple6;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.test.operators.util.CollectionDataSets;
 import org.apache.flink.test.operators.util.CollectionDataSets.CustomType;
-import org.apache.flink.test.util.MultipleProgramsTestBase;
+import org.apache.flink.test.util.MultipleProgramsTestBaseJUnit4;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -38,9 +38,12 @@ import org.junit.runners.Parameterized;
 import java.util.Collection;
 import java.util.List;
 
+import static org.apache.flink.test.util.TestBaseUtils.compareResultAsText;
+import static org.apache.flink.test.util.TestBaseUtils.compareResultAsTuples;
+
 /** Integration tests for {@link CrossFunction} and {@link RichCrossFunction}. */
 @RunWith(Parameterized.class)
-public class CrossITCase extends MultipleProgramsTestBase {
+public class CrossITCase extends MultipleProgramsTestBaseJUnit4 {
 
     public CrossITCase(TestExecutionMode mode) {
         super(mode);
@@ -482,7 +485,7 @@ public class CrossITCase extends MultipleProgramsTestBase {
         private int broadcast = 42;
 
         @Override
-        public void open(Configuration config) {
+        public void open(OpenContext openContext) {
 
             Collection<Integer> ints = this.getRuntimeContext().getBroadcastVariable("ints");
             int sum = 0;

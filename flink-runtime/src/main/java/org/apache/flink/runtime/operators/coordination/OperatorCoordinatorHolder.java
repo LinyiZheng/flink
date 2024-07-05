@@ -19,11 +19,19 @@
 package org.apache.flink.runtime.operators.coordination;
 
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.api.common.ExecutionConfig;
+import org.apache.flink.metrics.MetricGroup;
+import org.apache.flink.metrics.groups.OperatorCoordinatorMetricGroup;
+import org.apache.flink.runtime.checkpoint.CheckpointCoordinator;
 import org.apache.flink.runtime.checkpoint.OperatorCoordinatorCheckpointContext;
 import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutor;
 import org.apache.flink.runtime.executiongraph.ExecutionJobVertex;
+import org.apache.flink.runtime.executiongraph.TaskInformation;
 import org.apache.flink.runtime.jobgraph.OperatorID;
+import org.apache.flink.runtime.metrics.groups.InternalOperatorCoordinatorMetricGroup;
+import org.apache.flink.runtime.metrics.groups.JobManagerJobMetricGroup;
 import org.apache.flink.runtime.operators.coordination.util.IncompleteFuturesTracker;
+import org.apache.flink.runtime.scheduler.GlobalFailureHandler;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.SerializedValue;
@@ -36,9 +44,11 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nullable;
 
 import java.util.Collection;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
-import java.util.function.Consumer;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 import static org.apache.flink.util.Preconditions.checkState;
@@ -55,24 +65,20 @@ import static org.apache.flink.util.Preconditions.checkState;
  *
  * <h3>Exactly-one Mechanism</h3>
  *
- * <p>This implementation can handle one checkpoint being triggered at a time. If another checkpoint
- * is triggered while the triggering of the first one was not completed or aborted, this class will
- * throw an exception. That is in line with the capabilities of the Checkpoint Coordinator, which
- * can handle multiple concurrent checkpoints on the TaskManagers, but only one concurrent
- * triggering phase.
- *
  * <p>The mechanism for exactly once semantics is as follows:
  *
  * <ul>
- *   <li>Events pass through a special channel, the {@link OperatorEventValve}. If we are not
+ *   <li>Events pass through a special channel, the {@link SubtaskGatewayImpl}. If we are not
  *       currently triggering a checkpoint, then events simply pass through.
- *   <li>With the completion of the checkpoint future for the coordinator, this operator event valve
- *       is closed. Events coming after that are held back (buffered), because they belong to the
- *       epoch after the checkpoint.
+ *   <li>With the completion of the checkpoint future for the coordinator, this subtask gateway is
+ *       closed. Events coming after that are held back (buffered), because they belong to the epoch
+ *       after the checkpoint.
  *   <li>Once all coordinators in the job have completed the checkpoint, the barriers to the sources
- *       are injected. After that (see {@link #afterSourceBarrierInjection(long)}) the valves are
- *       opened again and the events are sent.
- *   <li>If a task fails in the meantime, the events are dropped from the valve. From the
+ *       are injected. If a coordinator receives an {@link AcknowledgeCheckpointEvent} from one of
+ *       its subtasks, which denotes that the subtask has received the checkpoint barrier and
+ *       completed checkpoint, the coordinator reopens the corresponding subtask gateway and sends
+ *       out buffered events.
+ *   <li>If a task fails in the meantime, the events are dropped from the gateways. From the
  *       coordinator's perspective, these events are lost, because they were sent to a failed
  *       subtask after it's latest complete checkpoint.
  * </ul>
@@ -81,25 +87,6 @@ import static org.apache.flink.util.Preconditions.checkState;
  * transported strictly in order. Events being sent from the coordinator after the checkpoint
  * barrier was injected must not overtake the checkpoint barrier. This is currently guaranteed by
  * Flink's RPC mechanism.
- *
- * <p>Consider this example:
- *
- * <pre>
- * Coordinator one events: => a . . b . |trigger| . . |complete| . . c . . d . |barrier| . e . f
- * Coordinator two events: => . . x . . |trigger| . . . . . . . . . .|complete||barrier| . . y . . z
- * </pre>
- *
- * <p>Two coordinators trigger checkpoints at the same time. 'Coordinator Two' takes longer to
- * complete, and in the meantime 'Coordinator One' sends more events.
- *
- * <p>'Coordinator One' emits events 'c' and 'd' after it finished its checkpoint, meaning the
- * events must take place after the checkpoint. But they are before the barrier injection, meaning
- * the runtime task would see them before the checkpoint, if they were immediately transported.
- *
- * <p>'Coordinator One' closes its valve as soon as the checkpoint future completes. Events 'c' and
- * 'd' get held back in the valve. Once 'Coordinator Two' completes its checkpoint, the barriers are
- * sent to the sources. Then the valves are opened, and events 'c' and 'd' can flow to the tasks
- * where they are received after the barrier.
  *
  * <h3>Concurrency and Threading Model</h3>
  *
@@ -120,14 +107,22 @@ public class OperatorCoordinatorHolder
     private final OperatorID operatorId;
     private final LazyInitializedCoordinatorContext context;
     private final SubtaskAccess.SubtaskAccessFactory taskAccesses;
-    private final OperatorEventValve eventValve;
+
+    /**
+     * A map that manages subtask gateways. It is used to control the opening/closing of each
+     * gateway during checkpoints. This map should only be read or modified in Streaming mode. Given
+     * that the CheckpointCoordinator is guaranteed to be non-null in Streaming mode, construction
+     * of this map can be skipped if the CheckpointCoordinator is null.
+     */
+    private final Map<Integer, SubtaskGatewayImpl> subtaskGatewayMap;
+
     private final IncompleteFuturesTracker unconfirmedEvents;
 
-    private final int operatorParallelism;
     private final int operatorMaxParallelism;
 
-    private Consumer<Throwable> globalFailureHandler;
+    private GlobalFailureHandler globalFailureHandler;
     private ComponentMainThreadExecutor mainThreadExecutor;
+    private int operatorParallelism;
 
     private OperatorCoordinatorHolder(
             final OperatorID operatorId,
@@ -144,20 +139,35 @@ public class OperatorCoordinatorHolder
         this.operatorParallelism = operatorParallelism;
         this.operatorMaxParallelism = operatorMaxParallelism;
 
+        this.subtaskGatewayMap = new HashMap<>();
         this.unconfirmedEvents = new IncompleteFuturesTracker();
-        this.eventValve = new OperatorEventValve();
     }
 
     public void lazyInitialize(
-            Consumer<Throwable> globalFailureHandler,
-            ComponentMainThreadExecutor mainThreadExecutor) {
+            GlobalFailureHandler globalFailureHandler,
+            ComponentMainThreadExecutor mainThreadExecutor,
+            @Nullable CheckpointCoordinator checkpointCoordinator) {
+        lazyInitialize(
+                globalFailureHandler,
+                mainThreadExecutor,
+                checkpointCoordinator,
+                operatorParallelism);
+    }
 
+    public void lazyInitialize(
+            GlobalFailureHandler globalFailureHandler,
+            ComponentMainThreadExecutor mainThreadExecutor,
+            @Nullable CheckpointCoordinator checkpointCoordinator,
+            final int operatorParallelism) {
         this.globalFailureHandler = globalFailureHandler;
         this.mainThreadExecutor = mainThreadExecutor;
-
-        eventValve.setMainThreadExecutorForValidation(mainThreadExecutor);
-        context.lazyInitialize(globalFailureHandler, mainThreadExecutor);
-
+        checkState(operatorParallelism != ExecutionConfig.PARALLELISM_DEFAULT);
+        this.operatorParallelism = operatorParallelism;
+        context.lazyInitialize(
+                globalFailureHandler,
+                mainThreadExecutor,
+                checkpointCoordinator,
+                operatorParallelism);
         setupAllSubtaskGateways();
     }
 
@@ -200,14 +210,22 @@ public class OperatorCoordinatorHolder
         context.unInitialize();
     }
 
-    public void handleEventFromOperator(int subtask, OperatorEvent event) throws Exception {
+    public void handleEventFromOperator(int subtask, int attemptNumber, OperatorEvent event)
+            throws Exception {
         mainThreadExecutor.assertRunningInMainThread();
-        coordinator.handleEventFromOperator(subtask, event);
+        if (event instanceof AcknowledgeCheckpointEvent) {
+            subtaskGatewayMap
+                    .get(subtask)
+                    .openGatewayAndUnmarkCheckpoint(
+                            ((AcknowledgeCheckpointEvent) event).getCheckpointID());
+            return;
+        }
+        coordinator.handleEventFromOperator(subtask, attemptNumber, event);
     }
 
-    public void subtaskFailed(int subtask, @Nullable Throwable reason) {
+    public void executionAttemptFailed(int subtask, int attemptNumber, @Nullable Throwable reason) {
         mainThreadExecutor.assertRunningInMainThread();
-        coordinator.subtaskFailed(subtask, reason);
+        coordinator.executionAttemptFailed(subtask, attemptNumber, reason);
     }
 
     @Override
@@ -236,7 +254,13 @@ public class OperatorCoordinatorHolder
         // checkpoint coordinator time thread.
         // we can remove the delegation once the checkpoint coordinator runs fully in the
         // scheduler's main thread executor
-        mainThreadExecutor.execute(() -> coordinator.notifyCheckpointComplete(checkpointId));
+        mainThreadExecutor.execute(
+                () -> {
+                    subtaskGatewayMap
+                            .values()
+                            .forEach(x -> x.openGatewayAndUnmarkCheckpoint(checkpointId));
+                    coordinator.notifyCheckpointComplete(checkpointId);
+                });
     }
 
     @Override
@@ -245,7 +269,13 @@ public class OperatorCoordinatorHolder
         // checkpoint coordinator time thread.
         // we can remove the delegation once the checkpoint coordinator runs fully in the
         // scheduler's main thread executor
-        mainThreadExecutor.execute(() -> coordinator.notifyCheckpointAborted(checkpointId));
+        mainThreadExecutor.execute(
+                () -> {
+                    subtaskGatewayMap
+                            .values()
+                            .forEach(x -> x.openGatewayAndUnmarkCheckpoint(checkpointId));
+                    coordinator.notifyCheckpointAborted(checkpointId);
+                });
     }
 
     @Override
@@ -257,7 +287,7 @@ public class OperatorCoordinatorHolder
             mainThreadExecutor.assertRunningInMainThread();
         }
 
-        eventValve.openValveAndUnmarkCheckpoint();
+        subtaskGatewayMap.values().forEach(SubtaskGatewayImpl::openGatewayAndUnmarkAllCheckpoint);
         context.resetFailed();
 
         // when initial savepoints are restored, this call comes before the mainThreadExecutor
@@ -284,28 +314,46 @@ public class OperatorCoordinatorHolder
                         (success, failure) -> {
                             if (failure != null) {
                                 result.completeExceptionally(failure);
-                            } else if (eventValve.tryShutValve(checkpointId)) {
+                            } else if (checkpointId == OperatorCoordinator.BATCH_CHECKPOINT_ID
+                                    || closeGateways(checkpointId)) {
                                 completeCheckpointOnceEventsAreDone(checkpointId, result, success);
                             } else {
-                                // if we cannot shut the valve, this means the checkpoint
+                                // if we cannot close the gateway, this means the checkpoint
                                 // has been aborted before, so the future is already
                                 // completed exceptionally. but we try to complete it here
                                 // again, just in case, as a safety net.
                                 result.completeExceptionally(
-                                        new FlinkException("Cannot shut event valve"));
+                                        new FlinkException("Cannot close gateway"));
                             }
                             return null;
                         },
                         mainThreadExecutor));
 
         try {
-            eventValve.markForCheckpoint(checkpointId);
+            subtaskGatewayMap.forEach(
+                    (subtask, gateway) -> gateway.markForCheckpoint(checkpointId));
             coordinator.checkpointCoordinator(checkpointId, coordinatorCheckpoint);
         } catch (Throwable t) {
             ExceptionUtils.rethrowIfFatalErrorOrOOM(t);
             result.completeExceptionally(t);
-            globalFailureHandler.accept(t);
+            globalFailureHandler.handleGlobalFailure(t);
         }
+    }
+
+    private boolean closeGateways(final long checkpointId) {
+        int closedGateways = 0;
+        for (SubtaskGatewayImpl gateway : subtaskGatewayMap.values()) {
+            if (gateway.tryCloseGateway(checkpointId)) {
+                closedGateways++;
+            }
+        }
+
+        if (closedGateways != 0 && closedGateways != subtaskGatewayMap.values().size()) {
+            throw new IllegalStateException(
+                    "Some subtask gateway can be closed while others cannot. There might be a bug here.");
+        }
+
+        return closedGateways != 0;
     }
 
     private void completeCheckpointOnceEventsAreDone(
@@ -332,7 +380,7 @@ public class OperatorCoordinatorHolder
                     if (failure == null) {
                         checkpointFuture.complete(checkpointResult);
                     } else {
-                        // if we reach this situation, then anyways the checkpoint cannot
+                        // if we reach this situation, then anyway the checkpoint cannot
                         // complete because
                         // (a) the target task really is down
                         // (b) we have a potentially lost RPC message and need to
@@ -350,21 +398,18 @@ public class OperatorCoordinatorHolder
     // ------------------------------------------------------------------------
 
     @Override
-    public void afterSourceBarrierInjection(long checkpointId) {
-        // unfortunately, this method does not run in the scheduler executor, but in the
-        // checkpoint coordinator time thread.
-        // we can remove the delegation once the checkpoint coordinator runs fully in the
-        // scheduler's main thread executor
-        mainThreadExecutor.execute(() -> eventValve.openValveAndUnmarkCheckpoint(checkpointId));
-    }
-
-    @Override
     public void abortCurrentTriggering() {
         // unfortunately, this method does not run in the scheduler executor, but in the
         // checkpoint coordinator time thread.
         // we can remove the delegation once the checkpoint coordinator runs fully in the
         // scheduler's main thread executor
-        mainThreadExecutor.execute(eventValve::openValveAndUnmarkCheckpoint);
+        mainThreadExecutor.execute(
+                () ->
+                        subtaskGatewayMap
+                                .values()
+                                .forEach(
+                                        SubtaskGatewayImpl
+                                                ::openGatewayAndUnmarkLastCheckpointIfAny));
     }
 
     // ------------------------------------------------------------------------
@@ -378,11 +423,25 @@ public class OperatorCoordinatorHolder
     }
 
     private void setupSubtaskGateway(int subtask) {
-        // this gets an access to the latest task execution attempt.
-        final SubtaskAccess sta = taskAccesses.getAccessForSubtask(subtask);
+        for (SubtaskAccess sta : taskAccesses.getAccessesForSubtask(subtask)) {
+            setupSubtaskGateway(sta);
+        }
+    }
 
-        final OperatorCoordinator.SubtaskGateway gateway =
-                new SubtaskGatewayImpl(sta, eventValve, mainThreadExecutor, unconfirmedEvents);
+    public void setupSubtaskGatewayForAttempts(int subtask, Set<Integer> attemptNumbers) {
+        for (int attemptNumber : attemptNumbers) {
+            setupSubtaskGateway(taskAccesses.getAccessForAttempt(subtask, attemptNumber));
+        }
+    }
+
+    private void setupSubtaskGateway(final SubtaskAccess sta) {
+        final SubtaskGatewayImpl gateway =
+                new SubtaskGatewayImpl(sta, mainThreadExecutor, unconfirmedEvents);
+
+        // We don't need to maintain subtaskGatewayMap when checkpoint coordinator is null.
+        if (context.getCheckpointCoordinator() != null) {
+            subtaskGatewayMap.put(gateway.getSubtask(), gateway);
+        }
 
         // We need to do this synchronously here, otherwise we violate the contract that
         // 'subtaskFailed()' will never overtake 'subtaskReady()'.
@@ -402,17 +461,19 @@ public class OperatorCoordinatorHolder
 
                                     // see bigger comment above
                                     if (sta.isStillRunning()) {
-                                        notifySubtaskReady(subtask, gateway);
+                                        notifySubtaskReady(gateway);
                                     }
                                 }));
     }
 
-    private void notifySubtaskReady(int subtask, OperatorCoordinator.SubtaskGateway gateway) {
+    private void notifySubtaskReady(OperatorCoordinator.SubtaskGateway gateway) {
         try {
-            coordinator.subtaskReady(subtask, gateway);
+            coordinator.executionAttemptReady(
+                    gateway.getSubtask(), gateway.getExecution().getAttemptNumber(), gateway);
         } catch (Throwable t) {
             ExceptionUtils.rethrowIfFatalErrorOrOOM(t);
-            globalFailureHandler.accept(new FlinkException("Error from OperatorCoordinator", t));
+            globalFailureHandler.handleGlobalFailure(
+                    new FlinkException("Error from OperatorCoordinator", t));
         }
     }
 
@@ -423,7 +484,11 @@ public class OperatorCoordinatorHolder
     public static OperatorCoordinatorHolder create(
             SerializedValue<OperatorCoordinator.Provider> serializedProvider,
             ExecutionJobVertex jobVertex,
-            ClassLoader classLoader)
+            ClassLoader classLoader,
+            CoordinatorStore coordinatorStore,
+            boolean supportsConcurrentExecutionAttempts,
+            TaskInformation taskInformation,
+            JobManagerJobMetricGroup metricGroup)
             throws Exception {
 
         try (TemporaryClassLoaderContext ignored = TemporaryClassLoaderContext.of(classLoader)) {
@@ -437,11 +502,15 @@ public class OperatorCoordinatorHolder
             return create(
                     opId,
                     provider,
+                    coordinatorStore,
                     jobVertex.getName(),
                     jobVertex.getGraph().getUserClassLoader(),
                     jobVertex.getParallelism(),
                     jobVertex.getMaxParallelism(),
-                    taskAccesses);
+                    taskAccesses,
+                    supportsConcurrentExecutionAttempts,
+                    taskInformation,
+                    metricGroup);
         }
     }
 
@@ -449,16 +518,31 @@ public class OperatorCoordinatorHolder
     static OperatorCoordinatorHolder create(
             final OperatorID opId,
             final OperatorCoordinator.Provider coordinatorProvider,
+            final CoordinatorStore coordinatorStore,
             final String operatorName,
             final ClassLoader userCodeClassLoader,
             final int operatorParallelism,
             final int operatorMaxParallelism,
-            final SubtaskAccess.SubtaskAccessFactory taskAccesses)
+            final SubtaskAccess.SubtaskAccessFactory taskAccesses,
+            final boolean supportsConcurrentExecutionAttempts,
+            final TaskInformation taskInformation,
+            final JobManagerJobMetricGroup jobManagerJobMetricGroup)
             throws Exception {
-
+        final MetricGroup parentMetricGroup =
+                jobManagerJobMetricGroup.getOrAddOperator(
+                        taskInformation.getJobVertexId(),
+                        taskInformation.getTaskName(),
+                        opId,
+                        operatorName);
         final LazyInitializedCoordinatorContext context =
                 new LazyInitializedCoordinatorContext(
-                        opId, operatorName, userCodeClassLoader, operatorParallelism);
+                        opId,
+                        operatorName,
+                        userCodeClassLoader,
+                        operatorParallelism,
+                        coordinatorStore,
+                        supportsConcurrentExecutionAttempts,
+                        new InternalOperatorCoordinatorMetricGroup(parentMetricGroup));
 
         final OperatorCoordinator coordinator = coordinatorProvider.create(context);
 
@@ -493,10 +577,14 @@ public class OperatorCoordinatorHolder
         private final OperatorID operatorId;
         private final String operatorName;
         private final ClassLoader userCodeClassLoader;
-        private final int operatorParallelism;
+        private final CoordinatorStore coordinatorStore;
+        private final boolean supportsConcurrentExecutionAttempts;
+        private final OperatorCoordinatorMetricGroup metricGroup;
 
-        private Consumer<Throwable> globalFailureHandler;
+        private GlobalFailureHandler globalFailureHandler;
         private Executor schedulerExecutor;
+        @Nullable private CheckpointCoordinator checkpointCoordinator;
+        private int operatorParallelism;
 
         private volatile boolean failed;
 
@@ -504,21 +592,34 @@ public class OperatorCoordinatorHolder
                 final OperatorID operatorId,
                 final String operatorName,
                 final ClassLoader userCodeClassLoader,
-                final int operatorParallelism) {
+                final int operatorParallelism,
+                final CoordinatorStore coordinatorStore,
+                final boolean supportsConcurrentExecutionAttempts,
+                final OperatorCoordinatorMetricGroup metricGroup) {
             this.operatorId = checkNotNull(operatorId);
             this.operatorName = checkNotNull(operatorName);
             this.userCodeClassLoader = checkNotNull(userCodeClassLoader);
             this.operatorParallelism = operatorParallelism;
+            this.coordinatorStore = checkNotNull(coordinatorStore);
+            this.supportsConcurrentExecutionAttempts = supportsConcurrentExecutionAttempts;
+            this.metricGroup = checkNotNull(metricGroup);
         }
 
-        void lazyInitialize(Consumer<Throwable> globalFailureHandler, Executor schedulerExecutor) {
+        void lazyInitialize(
+                GlobalFailureHandler globalFailureHandler,
+                Executor schedulerExecutor,
+                @Nullable CheckpointCoordinator checkpointCoordinator,
+                final int operatorParallelism) {
             this.globalFailureHandler = checkNotNull(globalFailureHandler);
             this.schedulerExecutor = checkNotNull(schedulerExecutor);
+            this.checkpointCoordinator = checkpointCoordinator;
+            this.operatorParallelism = operatorParallelism;
         }
 
         void unInitialize() {
             this.globalFailureHandler = null;
             this.schedulerExecutor = null;
+            this.checkpointCoordinator = null;
         }
 
         boolean isInitialized() {
@@ -536,6 +637,11 @@ public class OperatorCoordinatorHolder
         @Override
         public OperatorID getOperatorId() {
             return operatorId;
+        }
+
+        @Override
+        public OperatorCoordinatorMetricGroup metricGroup() {
+            return metricGroup;
         }
 
         @Override
@@ -560,7 +666,7 @@ public class OperatorCoordinatorHolder
             }
             failed = true;
 
-            schedulerExecutor.execute(() -> globalFailureHandler.accept(e));
+            schedulerExecutor.execute(() -> globalFailureHandler.handleGlobalFailure(e));
         }
 
         @Override
@@ -571,6 +677,22 @@ public class OperatorCoordinatorHolder
         @Override
         public ClassLoader getUserCodeClassloader() {
             return userCodeClassLoader;
+        }
+
+        @Override
+        public CoordinatorStore getCoordinatorStore() {
+            return coordinatorStore;
+        }
+
+        @Override
+        public boolean isConcurrentExecutionAttemptsSupported() {
+            return supportsConcurrentExecutionAttempts;
+        }
+
+        @Override
+        @Nullable
+        public CheckpointCoordinator getCheckpointCoordinator() {
+            return checkpointCoordinator;
         }
     }
 }

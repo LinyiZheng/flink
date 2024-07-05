@@ -18,20 +18,34 @@
 
 package org.apache.flink.table.factories;
 
+import org.apache.flink.annotation.Internal;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.DelegatingConfiguration;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.api.ValidationException;
+import org.apache.flink.table.api.config.TableConfigOptions;
 import org.apache.flink.table.catalog.Catalog;
 import org.apache.flink.table.catalog.CatalogTable;
+import org.apache.flink.table.catalog.CommonCatalogOptions;
 import org.apache.flink.table.catalog.ObjectIdentifier;
+import org.apache.flink.table.catalog.listener.CatalogModificationListener;
+import org.apache.flink.table.catalog.listener.CatalogModificationListenerFactory;
+import org.apache.flink.table.descriptors.ConnectorDescriptorValidator;
+import org.apache.flink.table.descriptors.DescriptorProperties;
 import org.apache.flink.table.sinks.TableSink;
 import org.apache.flink.table.sources.TableSource;
 
 import javax.annotation.Nullable;
 
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 /** Utility for dealing with {@link TableFactory} using the {@link TableFactoryService}. */
+@Internal
 public class TableFactoryUtil {
 
     /** Returns a table source matching the descriptor. */
@@ -128,5 +142,110 @@ public class TableFactoryUtil {
             return Optional.ofNullable(((TableSinkFactory) tableFactory).createTableSink(context));
         }
         return Optional.empty();
+    }
+
+    /** Checks whether the {@link CatalogTable} uses legacy connector sink options. */
+    public static boolean isLegacyConnectorOptions(
+            @Nullable Catalog catalog,
+            ReadableConfig configuration,
+            boolean isStreamingMode,
+            ObjectIdentifier objectIdentifier,
+            CatalogTable catalogTable,
+            boolean isTemporary) {
+        // normalize option keys
+        DescriptorProperties properties = new DescriptorProperties(true);
+        properties.putProperties(catalogTable.getOptions());
+        if (properties.containsKey(ConnectorDescriptorValidator.CONNECTOR_TYPE)) {
+            return true;
+        } else {
+            try {
+                // try to create legacy table source using the options,
+                // some legacy factories may use the 'type' key
+                TableFactoryUtil.findAndCreateTableSink(
+                        catalog,
+                        objectIdentifier,
+                        catalogTable,
+                        configuration,
+                        isStreamingMode,
+                        isTemporary);
+                // success, then we will use the legacy factories
+                return true;
+            } catch (Throwable ignore) {
+                // fail, then we will use new factories
+                return false;
+            }
+        }
+    }
+
+    /** Find and create modification listener list from configuration. */
+    public static List<CatalogModificationListener> findCatalogModificationListenerList(
+            final ReadableConfig configuration, final ClassLoader classLoader) {
+        return configuration.getOptional(TableConfigOptions.TABLE_CATALOG_MODIFICATION_LISTENERS)
+                .orElse(Collections.emptyList()).stream()
+                .map(
+                        identifier ->
+                                FactoryUtil.discoverFactory(
+                                                classLoader,
+                                                CatalogModificationListenerFactory.class,
+                                                identifier)
+                                        .createListener(
+                                                new CatalogModificationListenerFactory.Context() {
+                                                    @Override
+                                                    public ReadableConfig getConfiguration() {
+                                                        return configuration;
+                                                    }
+
+                                                    @Override
+                                                    public ClassLoader getUserClassLoader() {
+                                                        return classLoader;
+                                                    }
+                                                }))
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Finds and creates a {@link CatalogStoreFactory} using the provided {@link Configuration} and
+     * user classloader.
+     *
+     * <p>The configuration format should be as follows:
+     *
+     * <pre>{@code
+     * table.catalog-store.kind: {identifier}
+     * table.catalog-store.{identifier}.{param1}: xxx
+     * table.catalog-store.{identifier}.{param2}: xxx
+     * }</pre>
+     */
+    public static CatalogStoreFactory findAndCreateCatalogStoreFactory(
+            Configuration configuration, ClassLoader classLoader) {
+        String identifier = configuration.get(CommonCatalogOptions.TABLE_CATALOG_STORE_KIND);
+
+        CatalogStoreFactory catalogStoreFactory =
+                FactoryUtil.discoverFactory(classLoader, CatalogStoreFactory.class, identifier);
+
+        return catalogStoreFactory;
+    }
+
+    /**
+     * Build a {@link CatalogStoreFactory.Context} for opening the {@link CatalogStoreFactory}.
+     *
+     * <p>The configuration format should be as follows:
+     *
+     * <pre>{@code
+     * table.catalog-store.kind: {identifier}
+     * table.catalog-store.{identifier}.{param1}: xxx
+     * table.catalog-store.{identifier}.{param2}: xxx
+     * }</pre>
+     */
+    public static CatalogStoreFactory.Context buildCatalogStoreFactoryContext(
+            Configuration configuration, ClassLoader classLoader) {
+        String identifier = configuration.get(CommonCatalogOptions.TABLE_CATALOG_STORE_KIND);
+        String catalogStoreOptionPrefix =
+                CommonCatalogOptions.TABLE_CATALOG_STORE_OPTION_PREFIX + identifier + ".";
+        Map<String, String> options =
+                new DelegatingConfiguration(configuration, catalogStoreOptionPrefix).toMap();
+        CatalogStoreFactory.Context context =
+                new FactoryUtil.DefaultCatalogStoreContext(options, configuration, classLoader);
+
+        return context;
     }
 }

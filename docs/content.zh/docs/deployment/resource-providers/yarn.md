@@ -40,7 +40,7 @@ Flink can dynamically allocate and de-allocate TaskManager resources depending o
 
 ### Preparation
 
-This *Getting Started* section assumes a functional YARN environment, starting from version 2.8.5. YARN environments are provided most conveniently through services such as Amazon EMR, Google Cloud DataProc or products like Cloudera. [Manually setting up a YARN environment locally](https://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-common/SingleCluster.html) or [on a cluster](https://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-common/ClusterSetup.html) is not recommended for following through this *Getting Started* tutorial. 
+This *Getting Started* section assumes a functional YARN environment, starting from version 2.10.2. YARN environments are provided most conveniently through services such as Amazon EMR, Google Cloud DataProc or products like Cloudera. [Manually setting up a YARN environment locally](https://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-common/SingleCluster.html) or [on a cluster](https://hadoop.apache.org/docs/current/hadoop-project-dist/hadoop-common/ClusterSetup.html) is not recommended for following through this *Getting Started* tutorial. 
 
 - Make sure your YARN cluster is ready for accepting Flink applications by running `yarn top`. It should show no error messages.
 - Download a recent Flink distribution from the [download page]({{< downloads >}}) and unpack it.
@@ -166,7 +166,7 @@ You can **re-attach to a YARN session** using the following command:
 ./bin/yarn-session.sh -id application_XXXX_YY
 ```
 
-Besides passing [configuration]({{< ref "docs/deployment/config" >}}) via the `conf/flink-conf.yaml` file, you can also pass any configuration at submission time to the `./bin/yarn-session.sh` client using `-Dkey=value` arguments.
+Besides passing [configuration]({{< ref "docs/deployment/config" >}}) via the [Flink configuration file]({{< ref "docs/deployment/config#flink-配置文件" >}}) , you can also pass any configuration at submission time to the `./bin/yarn-session.sh` client using `-Dkey=value` arguments.
 
 The YARN session client also has a few "shortcut arguments" for commonly used settings. They can be listed with `./bin/yarn-session.sh -h`.
 
@@ -211,7 +211,7 @@ Overwriting this configuration parameter can lead to multiple YARN clusters affe
 
 - **YARN 2.3.0 < version < 2.4.0**. All containers are restarted if the application master fails.
 - **YARN 2.4.0 < version < 2.6.0**. TaskManager containers are kept alive across application master failures. This has the advantage that the startup time is faster and that the user does not have to wait for obtaining the container resources again.
-- **YARN 2.6.0 <= version**: Sets the attempt failure validity interval to the Flinks' Akka timeout value. The attempt failure validity interval says that an application is only killed after the system has seen the maximum number of application attempts during one interval. This avoids that a long lasting job will deplete it's application attempts.
+- **YARN 2.6.0 <= version**: Sets the attempt failure validity interval to the Flinks' Pekko timeout value. The attempt failure validity interval says that an application is only killed after the system has seen the maximum number of application attempts during one interval. This avoids that a long lasting job will deplete it's application attempts.
 
 {{< hint danger >}}
 Hadoop YARN 2.4.0 has a major bug (fixed in 2.5.0) preventing container restarts from a restarted Application Master/Job Manager container. See <a href="https://issues.apache.org/jira/browse/FLINK-4142">FLINK-4142</a> for details. We recommend using at least Hadoop 2.5.0 for high availability setups on YARN.</p>
@@ -219,7 +219,7 @@ Hadoop YARN 2.4.0 has a major bug (fixed in 2.5.0) preventing container restarts
 
 ### Supported Hadoop versions.
 
-Flink on YARN is compiled against Hadoop 2.8.5, and all Hadoop versions `>= 2.8.5` are supported, including Hadoop 3.x.
+Flink on YARN is compiled against Hadoop 2.10.2, and all Hadoop versions `>= 2.10.2` are supported, including Hadoop 3.x.
 
 For providing Flink with the required Hadoop dependencies, we recommend setting the `HADOOP_CLASSPATH` environment variable already introduced in the [Getting Started / Preparation](#preparation) section. 
 
@@ -237,7 +237,14 @@ The configuration parameter for specifying the REST endpoint port is [rest.bind-
 
 ### User jars & Classpath
 
-By default Flink will include the user jars into the system classpath when running a single job. This behavior can be controlled with the [yarn.per-job-cluster.include-user-jar]({{< ref "docs/deployment/config" >}}#yarn-per-job-cluster-include-user-jar) parameter.
+**Session Mode**
+
+When deploying Flink with Session Mode on Yarn, only the JAR file specified in startup command will be recognized as user-jars and included into user classpath.
+
+**PerJob Mode & Application Mode**
+
+When deploying Flink with PerJob/Application Mode on Yarn, the JAR file specified in startup command and all JAR files in Flink's `usrlib` folder will be recognized as user-jars.
+By default Flink will include the user-jars into the system classpath. This behavior can be controlled with the [yarn.classpath.include-user-jar]({{< ref "docs/deployment/config" >}}#yarn-classpath-include-user-jar) parameter.
 
 When setting this to `DISABLED` Flink will include the jar in the user classpath instead.
 
@@ -246,5 +253,7 @@ The user-jars position in the classpath can be controlled by setting the paramet
 - `ORDER`: (default) Adds the jar to the system classpath based on the lexicographic order.
 - `FIRST`: Adds the jar to the beginning of the system classpath.
 - `LAST`: Adds the jar to the end of the system classpath.
+
+Please refer to the [Debugging Classloading Docs]({{< ref "docs/ops/debugging/debugging_classloading" >}}#overview-of-classloading-in-flink) for details.
 
 {{< top >}}

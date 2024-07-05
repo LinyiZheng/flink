@@ -22,20 +22,23 @@ import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.api.common.functions.AggregateFunction;
 import org.apache.flink.api.common.time.Time;
+import org.apache.flink.core.execution.CheckpointType;
+import org.apache.flink.core.execution.SavepointFormatType;
+import org.apache.flink.runtime.blocklist.BlocklistListener;
 import org.apache.flink.runtime.checkpoint.CheckpointCoordinatorGateway;
+import org.apache.flink.runtime.checkpoint.CheckpointStatsSnapshot;
+import org.apache.flink.runtime.checkpoint.CompletedCheckpoint;
 import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.execution.ExecutionState;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.executiongraph.ExecutionJobVertex;
-import org.apache.flink.runtime.executiongraph.ExecutionVertex;
-import org.apache.flink.runtime.io.network.partition.ResultPartition;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
 import org.apache.flink.runtime.jobgraph.IntermediateDataSetID;
+import org.apache.flink.runtime.jobgraph.JobResourceRequirements;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.messages.Acknowledge;
-import org.apache.flink.runtime.messages.webmonitor.JobDetails;
 import org.apache.flink.runtime.operators.coordination.CoordinationRequest;
 import org.apache.flink.runtime.operators.coordination.CoordinationResponse;
 import org.apache.flink.runtime.registration.RegistrationResponse;
@@ -43,16 +46,19 @@ import org.apache.flink.runtime.resourcemanager.ResourceManagerId;
 import org.apache.flink.runtime.rpc.FencedRpcGateway;
 import org.apache.flink.runtime.rpc.RpcTimeout;
 import org.apache.flink.runtime.scheduler.ExecutionGraphInfo;
+import org.apache.flink.runtime.shuffle.PartitionWithMetrics;
 import org.apache.flink.runtime.slots.ResourceRequirement;
 import org.apache.flink.runtime.taskexecutor.TaskExecutorToJobManagerHeartbeatPayload;
 import org.apache.flink.runtime.taskexecutor.slot.SlotOffer;
 import org.apache.flink.runtime.taskmanager.TaskExecutionState;
-import org.apache.flink.runtime.taskmanager.UnresolvedTaskManagerLocation;
 import org.apache.flink.util.SerializedValue;
 
 import javax.annotation.Nullable;
 
+import java.time.Duration;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
 /** {@link JobMaster} rpc gateway interface. */
@@ -61,7 +67,8 @@ public interface JobMasterGateway
                 FencedRpcGateway<JobMasterId>,
                 KvStateLocationOracle,
                 KvStateRegistryGateway,
-                JobMasterOperatorEventGateway {
+                JobMasterOperatorEventGateway,
+                BlocklistListener {
 
     /**
      * Cancels the currently executed job.
@@ -103,23 +110,6 @@ public interface JobMasterGateway
      */
     CompletableFuture<ExecutionState> requestPartitionState(
             final IntermediateDataSetID intermediateResultId, final ResultPartitionID partitionId);
-
-    /**
-     * Notifies the JobManager about available data for a produced partition.
-     *
-     * <p>There is a call to this method for each {@link ExecutionVertex} instance once per produced
-     * {@link ResultPartition} instance, either when first producing data (for pipelined executions)
-     * or when all data has been produced (for staged executions).
-     *
-     * <p>The JobManager then can decide when to schedule the partition consumers of the given
-     * session.
-     *
-     * @param partitionID The partition which has already produced data
-     * @param timeout before the rpc call fails
-     * @return Future acknowledge of the notification
-     */
-    CompletableFuture<Acknowledge> notifyPartitionDataAvailable(
-            final ResultPartitionID partitionID, @RpcTimeout final Time timeout);
 
     /**
      * Disconnects the given {@link org.apache.flink.runtime.taskexecutor.TaskExecutor} from the
@@ -166,17 +156,16 @@ public interface JobMasterGateway
     /**
      * Registers the task manager at the job manager.
      *
-     * @param taskManagerRpcAddress the rpc address of the task manager
-     * @param unresolvedTaskManagerLocation unresolved location of the task manager
      * @param jobId jobId specifying the job for which the JobMaster should be responsible
+     * @param taskManagerRegistrationInformation the information for registering a task manager at
+     *     the job manager
      * @param timeout for the rpc call
      * @return Future registration response indicating whether the registration was successful or
      *     not
      */
     CompletableFuture<RegistrationResponse> registerTaskManager(
-            final String taskManagerRpcAddress,
-            final UnresolvedTaskManagerLocation unresolvedTaskManagerLocation,
             final JobID jobId,
+            final TaskManagerRegistrationInformation taskManagerRegistrationInformation,
             @RpcTimeout final Time timeout);
 
     /**
@@ -198,14 +187,6 @@ public interface JobMasterGateway
     CompletableFuture<Void> heartbeatFromResourceManager(final ResourceID resourceID);
 
     /**
-     * Request the details of the executed job.
-     *
-     * @param timeout for the rpc call
-     * @return Future details of the executed job
-     */
-    CompletableFuture<JobDetails> requestJobDetails(@RpcTimeout Time timeout);
-
-    /**
      * Requests the current job status.
      *
      * @param timeout for the rpc call
@@ -222,17 +203,37 @@ public interface JobMasterGateway
     CompletableFuture<ExecutionGraphInfo> requestJob(@RpcTimeout Time timeout);
 
     /**
+     * Requests the {@link CheckpointStatsSnapshot} of the job.
+     *
+     * @param timeout for the rpc call
+     * @return Future which is completed with the {@link CheckpointStatsSnapshot} of the job
+     */
+    CompletableFuture<CheckpointStatsSnapshot> requestCheckpointStats(@RpcTimeout Time timeout);
+
+    /**
      * Triggers taking a savepoint of the executed job.
      *
      * @param targetDirectory to which to write the savepoint data or null if the default savepoint
      *     directory should be used
+     * @param formatType binary format for the savepoint
      * @param timeout for the rpc call
      * @return Future which is completed with the savepoint path once completed
      */
     CompletableFuture<String> triggerSavepoint(
             @Nullable final String targetDirectory,
             final boolean cancelJob,
+            final SavepointFormatType formatType,
             @RpcTimeout final Time timeout);
+
+    /**
+     * Triggers taking a checkpoint of the executed job.
+     *
+     * @param checkpointType to determine how checkpoint should be taken
+     * @param timeout for the rpc call
+     * @return Future which is completed with the CompletedCheckpoint once completed
+     */
+    CompletableFuture<CompletedCheckpoint> triggerCheckpoint(
+            final CheckpointType checkpointType, @RpcTimeout final Time timeout);
 
     /**
      * Triggers taking a checkpoint of the executed job.
@@ -240,7 +241,10 @@ public interface JobMasterGateway
      * @param timeout for the rpc call
      * @return Future which is completed with the checkpoint path once completed
      */
-    CompletableFuture<String> triggerCheckpoint(@RpcTimeout final Time timeout);
+    default CompletableFuture<String> triggerCheckpoint(@RpcTimeout final Time timeout) {
+        return triggerCheckpoint(CheckpointType.DEFAULT, timeout)
+                .thenApply(CompletedCheckpoint::getExternalPointer);
+    }
 
     /**
      * Stops the job with a savepoint.
@@ -253,16 +257,9 @@ public interface JobMasterGateway
      */
     CompletableFuture<String> stopWithSavepoint(
             @Nullable final String targetDirectory,
+            final SavepointFormatType formatType,
             final boolean terminate,
             @RpcTimeout final Time timeout);
-
-    /**
-     * Notifies that the allocation has failed.
-     *
-     * @param allocationID the failed allocation id.
-     * @param cause the reason that the allocation failed
-     */
-    void notifyAllocationFailure(AllocationID allocationID, Exception cause);
 
     /**
      * Notifies that not enough resources are available to fulfill the resource requirements of a
@@ -307,4 +304,48 @@ public interface JobMasterGateway
      */
     CompletableFuture<?> stopTrackingAndReleasePartitions(
             Collection<ResultPartitionID> partitionIds);
+
+    /**
+     * Get specified partitions and their metrics (identified by {@code expectedPartitions}), the
+     * metrics include sizes of sub-partitions in a result partition.
+     *
+     * @param timeout The timeout used for retrieve the specified partitions.
+     * @param expectedPartitions The set of identifiers for the result partitions whose metrics are
+     *     to be fetched.
+     * @return A future will contain a collection of the partitions with their metrics that could be
+     *     retrieved from the expected partitions within the specified timeout period.
+     */
+    default CompletableFuture<Collection<PartitionWithMetrics>> getPartitionWithMetrics(
+            Duration timeout, Set<ResultPartitionID> expectedPartitions) {
+        return CompletableFuture.completedFuture(Collections.emptyList());
+    }
+
+    /**
+     * Notify jobMaster to fetch and retain partitions on task managers. It will process for future
+     * TaskManager registrations and already registered TaskManagers.
+     */
+    default void startFetchAndRetainPartitionWithMetricsOnTaskManager() {}
+
+    /**
+     * Read current {@link JobResourceRequirements job resource requirements}.
+     *
+     * @return Future which that contains current resource requirements.
+     */
+    CompletableFuture<JobResourceRequirements> requestJobResourceRequirements();
+
+    /**
+     * Update {@link JobResourceRequirements job resource requirements}.
+     *
+     * @param jobResourceRequirements new resource requirements
+     * @return Future which is completed successfully when requirements are updated
+     */
+    CompletableFuture<Acknowledge> updateJobResourceRequirements(
+            JobResourceRequirements jobResourceRequirements);
+
+    /**
+     * Notifies that the task has reached the end of data.
+     *
+     * @param executionAttempt The execution attempt id.
+     */
+    void notifyEndOfData(final ExecutionAttemptID executionAttempt);
 }

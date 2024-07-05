@@ -25,15 +25,17 @@ import org.apache.flink.api.java.DataSet;
 import org.apache.flink.api.java.ExecutionEnvironment;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.test.testdata.WordCountData;
-import org.apache.flink.test.util.JavaProgramTestBase;
+import org.apache.flink.test.util.JavaProgramTestBaseJUnit4;
 import org.apache.flink.util.Collector;
 
 import java.io.Serializable;
 import java.util.Date;
 
+import static org.apache.flink.test.util.TestBaseUtils.compareResultsByLinesInMemory;
+
 /** WordCount with nested POJO example. */
 @SuppressWarnings("serial")
-public class WordCountNestedPOJOITCase extends JavaProgramTestBase implements Serializable {
+public class WordCountNestedPOJOITCase extends JavaProgramTestBaseJUnit4 implements Serializable {
     private static final long serialVersionUID = 1L;
     protected String textPath;
     protected String resultPath;

@@ -15,28 +15,36 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.api.scala.typeutils
-
-import java.util
-import java.util.regex.{Matcher, Pattern}
 
 import org.apache.flink.annotation.{Public, PublicEvolving}
 import org.apache.flink.api.common.ExecutionConfig
 import org.apache.flink.api.common.operators.Keys
+import org.apache.flink.api.common.operators.Keys.ExpressionKeys
+import org.apache.flink.api.common.serialization.SerializerConfig
 import org.apache.flink.api.common.typeinfo.TypeInformation
-import org.apache.flink.api.common.typeutils.CompositeType.{FlatFieldDescriptor, InvalidFieldReferenceException, TypeComparatorBuilder}
 import org.apache.flink.api.common.typeutils._
-import Keys.ExpressionKeys
+import org.apache.flink.api.common.typeutils.CompositeType.{FlatFieldDescriptor, InvalidFieldReferenceException, TypeComparatorBuilder}
 import org.apache.flink.api.java.typeutils.TupleTypeInfoBase
+
+import java.util
+import java.util.regex.{Matcher, Pattern}
 
 import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
 
 /**
- * TypeInformation for Case Classes. Creation and access is different from
- * our Java Tuples so we have to treat them differently.
+ * TypeInformation for Case Classes. Creation and access is different from our Java Tuples so we
+ * have to treat them differently.
+ *
+ * @deprecated
+ *   All Flink Scala APIs are deprecated and will be removed in a future Flink major version. You
+ *   can still build your application in Scala, but you should move to the Java version of either
+ *   the DataStream and/or Table API.
+ * @see
+ *   <a href="https://s.apache.org/flip-265">FLIP-265 Deprecate and remove Scala API support</a>
  */
+@deprecated(org.apache.flink.api.scala.FLIP_265_WARNING, since = "1.18.0")
 @Public
 abstract class CaseClassTypeInfo[T <: Product](
     clazz: Class[T],
@@ -47,9 +55,13 @@ abstract class CaseClassTypeInfo[T <: Product](
 
   @PublicEvolving
   override def getGenericParameters: java.util.Map[String, TypeInformation[_]] = {
-    typeParamTypeInfos.zipWithIndex.map { case (info, index) =>
-      "T" + (index + 1) -> info
-    }.toMap[String, TypeInformation[_]].asJava
+    typeParamTypeInfos.zipWithIndex
+      .map {
+        case (info, index) =>
+          "T" + (index + 1) -> info
+      }
+      .toMap[String, TypeInformation[_]]
+      .asJava
   }
 
   private val REGEX_INT_FIELD: String = "[0-9]+"
@@ -66,7 +78,7 @@ abstract class CaseClassTypeInfo[T <: Product](
 
   @PublicEvolving
   def getFieldIndices(fields: Array[String]): Array[Int] = {
-    fields map { x => fieldNames.indexOf(x) }
+    fields.map(x => fieldNames.indexOf(x))
   }
 
   @PublicEvolving
@@ -77,14 +89,17 @@ abstract class CaseClassTypeInfo[T <: Product](
     val matcher: Matcher = PATTERN_NESTED_FIELDS_WILDCARD.matcher(fieldExpression)
 
     if (!matcher.matches) {
-      throw new InvalidFieldReferenceException("Invalid tuple field reference \"" +
-        fieldExpression + "\".")
+      throw new InvalidFieldReferenceException(
+        "Invalid tuple field reference \"" +
+          fieldExpression + "\".")
     }
 
     var field: String = matcher.group(0)
 
-    if ((field == ExpressionKeys.SELECT_ALL_CHAR) ||
-      (field == ExpressionKeys.SELECT_ALL_CHAR_SCALA)) {
+    if (
+      (field == ExpressionKeys.SELECT_ALL_CHAR) ||
+      (field == ExpressionKeys.SELECT_ALL_CHAR_SCALA)
+    ) {
       var keyPosition: Int = 0
       for (fType <- fieldTypes) {
         fType match {
@@ -100,7 +115,7 @@ abstract class CaseClassTypeInfo[T <: Product](
       field = matcher.group(1)
 
       val intFieldMatcher = PATTERN_INT_FIELD.matcher(field)
-      if(intFieldMatcher.matches()) {
+      if (intFieldMatcher.matches()) {
         // convert 0-indexed integer field into 1-indexed name field
         field = "_" + (Integer.valueOf(field) + 1)
       }
@@ -110,8 +125,9 @@ abstract class CaseClassTypeInfo[T <: Product](
       if (tail == null) {
         def extractFlatFields(index: Int, pos: Int): Unit = {
           if (index >= fieldNames.size) {
-            throw new InvalidFieldReferenceException("Unable to find field \"" + field +
-              "\" in type " + this + ".")
+            throw new InvalidFieldReferenceException(
+              "Unable to find field \"" + field +
+                "\" in type " + this + ".")
           } else if (field == fieldNames(index)) {
             // found field
             fieldTypes(index) match {
@@ -130,16 +146,18 @@ abstract class CaseClassTypeInfo[T <: Product](
       } else {
         def extractFlatFields(index: Int, pos: Int): Unit = {
           if (index >= fieldNames.size) {
-            throw new InvalidFieldReferenceException("Unable to find field \"" + field +
-              "\" in type " + this + ".")
+            throw new InvalidFieldReferenceException(
+              "Unable to find field \"" + field +
+                "\" in type " + this + ".")
           } else if (field == fieldNames(index)) {
             // found field
             fieldTypes(index) match {
               case ct: CompositeType[_] =>
                 ct.getFlatFields(tail, pos, result)
               case _ =>
-                throw new InvalidFieldReferenceException("Nested field expression \"" + tail +
-                  "\" not possible on atomic type " + fieldTypes(index) + ".")
+                throw new InvalidFieldReferenceException(
+                  "Nested field expression \"" + tail +
+                    "\" not possible on atomic type " + fieldTypes(index) + ".")
             }
           } else {
             extractFlatFields(index + 1, pos + fieldTypes(index).getTotalFields())
@@ -152,17 +170,19 @@ abstract class CaseClassTypeInfo[T <: Product](
   }
 
   @PublicEvolving
-  override def getTypeAt[X](fieldExpression: String) : TypeInformation[X] = {
+  override def getTypeAt[X](fieldExpression: String): TypeInformation[X] = {
 
     val matcher: Matcher = PATTERN_NESTED_FIELDS.matcher(fieldExpression)
     if (!matcher.matches) {
-      if (fieldExpression.startsWith(ExpressionKeys.SELECT_ALL_CHAR) ||
-        fieldExpression.startsWith(ExpressionKeys.SELECT_ALL_CHAR_SCALA)) {
+      if (
+        fieldExpression.startsWith(ExpressionKeys.SELECT_ALL_CHAR) ||
+        fieldExpression.startsWith(ExpressionKeys.SELECT_ALL_CHAR_SCALA)
+      ) {
         throw new InvalidFieldReferenceException("Wildcard expressions are not allowed here.")
-      }
-      else {
-        throw new InvalidFieldReferenceException("Invalid format of case class field expression \""
-          + fieldExpression + "\".")
+      } else {
+        throw new InvalidFieldReferenceException(
+          "Invalid format of case class field expression \""
+            + fieldExpression + "\".")
       }
     }
 
@@ -170,7 +190,7 @@ abstract class CaseClassTypeInfo[T <: Product](
     val tail = matcher.group(3)
 
     val intFieldMatcher = PATTERN_INT_FIELD.matcher(field)
-    if(intFieldMatcher.matches()) {
+    if (intFieldMatcher.matches()) {
       // convert 0-indexed integer field into 1-indexed name field
       field = "_" + (Integer.valueOf(field) + 1)
     }
@@ -184,14 +204,16 @@ abstract class CaseClassTypeInfo[T <: Product](
             case co: CompositeType[_] =>
               return co.getTypeAt(tail)
             case _ =>
-              throw new InvalidFieldReferenceException("Nested field expression \"" + tail +
-                "\" not possible on atomic type " + fieldTypes(i) + ".")
+              throw new InvalidFieldReferenceException(
+                "Nested field expression \"" + tail +
+                  "\" not possible on atomic type " + fieldTypes(i) + ".")
           }
         }
       }
     }
-    throw new InvalidFieldReferenceException("Unable to find field \"" + field +
-      "\" in type " + this + ".")
+    throw new InvalidFieldReferenceException(
+      "Unable to find field \"" + field +
+        "\" in type " + this + ".")
   }
 
   @PublicEvolving
@@ -232,15 +254,16 @@ abstract class CaseClassTypeInfo[T <: Product](
       new CaseClassComparator[T](
         logicalKeyFields.toArray,
         fieldComparators.toArray,
-        types.take(maxIndex + 1).map(_.createSerializer(config))
+        types.take(maxIndex + 1).map(_.createSerializer(config.getSerializerConfig))
       )
     }
   }
 
   override def toString: String = {
-    clazz.getName + "(" + fieldNames.zip(types).map {
-      case (n, t) => n + ": " + t
-    }.mkString(", ") + ")"
+    clazz.getName + "(" + fieldNames
+      .zip(types)
+      .map { case (n, t) => n + ": " + t }
+      .mkString(", ") + ")"
   }
 
   override def isCaseClass = true

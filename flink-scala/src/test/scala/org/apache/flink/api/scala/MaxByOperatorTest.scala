@@ -19,8 +19,8 @@ package org.apache.flink.api.scala
 
 import org.apache.flink.api.common.InvalidProgramException
 
-import org.junit.Test
-import org.junit.Assert
+import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.junit.jupiter.api.Test
 
 class MaxByOperatorTest {
 
@@ -31,130 +31,124 @@ class MaxByOperatorTest {
   def testMaxByKeyFieldsDataset(): Unit = {
     val env = ExecutionEnvironment.getExecutionEnvironment
     val collection = env.fromCollection(emptyTupleData)
-    try {
-      collection.maxBy(0, 1, 2, 3, 4)
-    } catch {
-      case e : Exception => Assert.fail();
-    }
+    collection.maxBy(0, 1, 2, 3, 4)
   }
 
   /**
-    * This test validates that an index which is out of bounds throws an
-    * IndexOutOfBoundsException.
-    */
-  @Test(expected = classOf[IndexOutOfBoundsException])
-  def testOutOfTupleBoundsDataset1() {
-
-    val env = ExecutionEnvironment.getExecutionEnvironment
-    val collection = env.fromCollection(emptyTupleData)
-
-    // should not work, key out of tuple bounds
-    collection.maxBy(5)
-  }
-
-  /**
-    * This test validates that an index which is out of bounds throws an
-    * IndexOutOfBoundsException.
-    */
-  @Test(expected = classOf[IndexOutOfBoundsException])
-  def testOutOfTupleBoundsDataset2() {
-    val env = ExecutionEnvironment.getExecutionEnvironment
-    val collection = env.fromCollection(emptyTupleData)
-
-    // should not work, key out of tuple bounds
-    collection.maxBy(-1)
-  }
-
-  /**
-    * This test validates that an index which is out of bounds throws an
-    * IndexOutOfBoundsException.
-    */
-  @Test(expected = classOf[IndexOutOfBoundsException])
-  def testOutOfTupleBoundsDataset3() {
-    val env = ExecutionEnvironment.getExecutionEnvironment
-    val collection = env.fromCollection(emptyTupleData)
-
-    // should not work, key out of tuple bounds
-    collection.maxBy(1, 2, 3, 4, -1)
-  }
-
-  /**
-    * This test validates that no exceptions is thrown when an empty grouping
-    * calls maxBy().
-    */
+   * This test validates that an index which is out of bounds throws an IndexOutOfBoundsException.
+   */
   @Test
-  def testMaxByKeyFieldsGrouping() {
+  def testOutOfTupleBoundsDataset1(): Unit = {
+
+    val env = ExecutionEnvironment.getExecutionEnvironment
+    val collection = env.fromCollection(emptyTupleData)
+
+    // should not work, key out of tuple bounds
+    assertThatThrownBy(() => collection.maxBy(5)).isInstanceOf(classOf[IndexOutOfBoundsException])
+  }
+
+  /**
+   * This test validates that an index which is out of bounds throws an IndexOutOfBoundsException.
+   */
+  @Test
+  def testOutOfTupleBoundsDataset2(): Unit = {
+    val env = ExecutionEnvironment.getExecutionEnvironment
+    val collection = env.fromCollection(emptyTupleData)
+
+    // should not work, key out of tuple bounds
+    assertThatThrownBy(() => collection.maxBy(-1))
+      .isInstanceOf(classOf[IndexOutOfBoundsException])
+  }
+
+  /**
+   * This test validates that an index which is out of bounds throws an IndexOutOfBoundsException.
+   */
+  @Test
+  def testOutOfTupleBoundsDataset3(): Unit = {
+    val env = ExecutionEnvironment.getExecutionEnvironment
+    val collection = env.fromCollection(emptyTupleData)
+
+    // should not work, key out of tuple bounds
+    assertThatThrownBy(() => collection.maxBy(1, 2, 3, 4, -1))
+      .isInstanceOf(classOf[IndexOutOfBoundsException])
+  }
+
+  /** This test validates that no exceptions is thrown when an empty grouping calls maxBy(). */
+  @Test
+  def testMaxByKeyFieldsGrouping(): Unit = {
 
     val env = ExecutionEnvironment.getExecutionEnvironment
     val groupDs = env.fromCollection(emptyTupleData).groupBy(0)
     // should work
-    try {
-      groupDs.maxBy(4, 0, 1, 2, 3)
-    } catch {
-      case e : Exception => Assert.fail();
-    }
+    groupDs.maxBy(4, 0, 1, 2, 3)
   }
 
   /**
-    * This test validates that an InvalidProgramException is thrown when maxBy
-    * is used on a custom data type.
-    */
-  @Test(expected = classOf[InvalidProgramException])
-  def testCustomKeyFieldsDataset() {
+   * This test validates that an InvalidProgramException is thrown when maxBy is used on a custom
+   * data type.
+   */
+  @Test
+  def testCustomKeyFieldsDataset(): Unit = {
 
     val env = ExecutionEnvironment.getExecutionEnvironment
 
     val customDS = env.fromCollection(customTypeData)
     // should not work: groups on custom type
-    customDS.maxBy(0)
+    assertThatThrownBy(() => customDS.maxBy(0))
+      .isInstanceOf(classOf[InvalidProgramException])
   }
 
   /**
-    * This test validates that an InvalidProgramException is thrown when maxBy
-    * is used on a custom data type.
-    */
-  @Test(expected = classOf[InvalidProgramException])
-  def testCustomKeyFieldsGrouping() {
+   * This test validates that an InvalidProgramException is thrown when maxBy is used on a custom
+   * data type.
+   */
+  @Test
+  def testCustomKeyFieldsGrouping(): Unit = {
 
     val env = ExecutionEnvironment.getExecutionEnvironment
-    val groupDs: GroupedDataSet[CustomType] = env.fromCollection(customTypeData).groupBy(0)
+    assertThatThrownBy(
+      () => {
+        val groupDs: GroupedDataSet[CustomType] = env.fromCollection(customTypeData).groupBy(0)
 
-    groupDs.maxBy(0)
-  }
-  /**
-    * This test validates that an index which is out of bounds throws an
-    * IndexOutOfBoundsException.
-    */
-  @Test(expected = classOf[IndexOutOfBoundsException])
-  def testOutOfTupleBoundsGrouping1() {
-
-    val env = ExecutionEnvironment.getExecutionEnvironment
-    val groupDs = env.fromCollection(emptyTupleData).groupBy(0)
-    groupDs.maxBy(5)
+        groupDs.maxBy(0)
+      })
+      .isInstanceOf(classOf[InvalidProgramException])
   }
 
   /**
-    * This test validates that an index which is out of bounds throws an
-    * IndexOutOfBoundsException.
-    */
-  @Test(expected = classOf[IndexOutOfBoundsException])
-  def testOutOfTupleBoundsGrouping2() {
+   * This test validates that an index which is out of bounds throws an IndexOutOfBoundsException.
+   */
+  @Test
+  def testOutOfTupleBoundsGrouping1(): Unit = {
 
     val env = ExecutionEnvironment.getExecutionEnvironment
     val groupDs = env.fromCollection(emptyTupleData).groupBy(0)
-    groupDs.maxBy(-1)
+    assertThatThrownBy(() => groupDs.maxBy(5))
+      .isInstanceOf(classOf[IndexOutOfBoundsException])
   }
 
   /**
-    * This test validates that an index which is out of bounds throws an
-    * IndexOutOfBoundsException.
-    */
-  @Test(expected = classOf[IndexOutOfBoundsException])
-  def testOutOfTupleBoundsGrouping3() {
+   * This test validates that an index which is out of bounds throws an IndexOutOfBoundsException.
+   */
+  @Test
+  def testOutOfTupleBoundsGrouping2(): Unit = {
 
     val env = ExecutionEnvironment.getExecutionEnvironment
     val groupDs = env.fromCollection(emptyTupleData).groupBy(0)
-    groupDs.maxBy(1, 2, 3, 4, -1)
+    assertThatThrownBy(() => groupDs.maxBy(-1))
+      .isInstanceOf(classOf[IndexOutOfBoundsException])
+  }
+
+  /**
+   * This test validates that an index which is out of bounds throws an IndexOutOfBoundsException.
+   */
+  @Test
+  def testOutOfTupleBoundsGrouping3(): Unit = {
+
+    val env = ExecutionEnvironment.getExecutionEnvironment
+    val groupDs = env.fromCollection(emptyTupleData).groupBy(0)
+    assertThatThrownBy(() => groupDs.maxBy(1, 2, 3, 4, -1))
+      .isInstanceOf(classOf[IndexOutOfBoundsException])
   }
 
   class CustomType(var myInt: Int, var myLong: Long, var myString: String) {

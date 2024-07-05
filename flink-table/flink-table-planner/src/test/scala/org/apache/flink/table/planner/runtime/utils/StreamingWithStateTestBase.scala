@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.runtime.utils
 
 import org.apache.flink.api.common.restartstrategy.RestartStrategies
@@ -23,24 +22,25 @@ import org.apache.flink.api.common.typeinfo.{TypeInformation, Types}
 import org.apache.flink.api.common.typeutils.CompositeType
 import org.apache.flink.configuration.{CheckpointingOptions, Configuration}
 import org.apache.flink.contrib.streaming.state.RocksDBStateBackend
+import org.apache.flink.core.execution.CheckpointingMode
 import org.apache.flink.runtime.state.memory.MemoryStateBackend
-import org.apache.flink.streaming.api.CheckpointingMode
 import org.apache.flink.streaming.api.functions.source.FromElementsFunction
 import org.apache.flink.streaming.api.scala.DataStream
 import org.apache.flink.table.api.bridge.scala.StreamTableEnvironment
+import org.apache.flink.table.data.{RowData, StringData}
 import org.apache.flink.table.data.binary.BinaryRowData
 import org.apache.flink.table.data.writer.BinaryRowWriter
-import org.apache.flink.table.data.{RowData, StringData}
 import org.apache.flink.table.planner.runtime.utils.StreamingWithStateTestBase.{HEAP_BACKEND, ROCKSDB_BACKEND, StateBackendMode}
 import org.apache.flink.table.planner.utils.TableTestUtil
 import org.apache.flink.table.runtime.types.TypeInfoLogicalTypeConverter
 import org.apache.flink.table.runtime.typeutils.InternalTypeInfo
 import org.apache.flink.table.types.logical.RowType
+import org.apache.flink.testutils.junit.extensions.parameterized.Parameters
 
-import org.junit.runners.Parameterized
-import org.junit.{After, Assert, Before}
+import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.{AfterEach, BeforeEach}
 
-import java.io.File
+import java.nio.file.Files
 import java.util
 
 import scala.collection.JavaConversions._
@@ -56,37 +56,35 @@ class StreamingWithStateTestBase(state: StateBackendMode) extends StreamingTestB
 
   private val classLoader = Thread.currentThread.getContextClassLoader
 
-  var baseCheckpointPath: File = _
-
-  @Before
+  @BeforeEach
   override def before(): Unit = {
     super.before()
     // set state backend
-    baseCheckpointPath = tempFolder.newFolder().getAbsoluteFile
+
+    val baseCheckpointPath = Files.createTempDirectory(getClass.getCanonicalName)
+    baseCheckpointPath.toFile.deleteOnExit();
     state match {
       case HEAP_BACKEND =>
         val conf = new Configuration()
-        env.setStateBackend(new MemoryStateBackend(
-          "file://" + baseCheckpointPath, null).configure(conf, classLoader))
+        env.setStateBackend(
+          new MemoryStateBackend("file://" + baseCheckpointPath, null).configure(conf, classLoader))
       case ROCKSDB_BACKEND =>
         val conf = new Configuration()
-        conf.setBoolean(CheckpointingOptions.INCREMENTAL_CHECKPOINTS, true)
-        env.setStateBackend(new RocksDBStateBackend(
-          "file://" + baseCheckpointPath).configure(conf, classLoader))
+        conf.set(CheckpointingOptions.INCREMENTAL_CHECKPOINTS, Boolean.box(true))
+        env.setStateBackend(
+          new RocksDBStateBackend("file://" + baseCheckpointPath).configure(conf, classLoader))
     }
     this.tEnv = StreamTableEnvironment.create(env, TableTestUtil.STREAM_SETTING)
     FailingCollectionSource.failedBefore = true
   }
 
-  @After
+  @AfterEach
   override def after(): Unit = {
     super.after()
-    Assert.assertTrue(FailingCollectionSource.failedBefore)
+    assertThat(FailingCollectionSource.failedBefore).isTrue
   }
 
-  /**
-    * Creates a BinaryRowData DataStream from the given non-empty [[Seq]].
-    */
+  /** Creates a BinaryRowData DataStream from the given non-empty [[Seq]]. */
   def failingBinaryRowSource[T: TypeInformation](data: Seq[T]): DataStream[RowData] = {
     val typeInfo = implicitly[TypeInformation[_]].asInstanceOf[CompositeType[_]]
     val result = new mutable.MutableList[RowData]
@@ -99,8 +97,8 @@ class StreamingWithStateTestBase(state: StateBackendMode) extends StreamingTestB
           fieldType match {
             case Types.INT => writer.writeInt(i, p.productElement(i).asInstanceOf[Int])
             case Types.LONG => writer.writeLong(i, p.productElement(i).asInstanceOf[Long])
-            case Types.STRING => writer.writeString(i,
-              StringData.fromString(p.productElement(i).asInstanceOf[String]))
+            case Types.STRING =>
+              writer.writeString(i, StringData.fromString(p.productElement(i).asInstanceOf[String]))
             case Types.BOOLEAN => writer.writeBoolean(i, p.productElement(i).asInstanceOf[Boolean])
           }
         }
@@ -113,9 +111,7 @@ class StreamingWithStateTestBase(state: StateBackendMode) extends StreamingTestB
     failingDataSource(result)(newTypeInfo.asInstanceOf[TypeInformation[RowData]])
   }
 
-  /**
-    * Creates a DataStream from the given non-empty [[Seq]].
-    */
+  /** Creates a DataStream from the given non-empty [[Seq]]. */
   def failingDataSource[T: TypeInformation](data: Seq[T]): DataStream[T] = {
     env.enableCheckpointing(100, CheckpointingMode.EXACTLY_ONCE)
     env.setRestartStrategy(RestartStrategies.fixedDelayRestart(1, 0))
@@ -130,9 +126,10 @@ class StreamingWithStateTestBase(state: StateBackendMode) extends StreamingTestB
     FromElementsFunction.checkCollection(data, typeInfo.getTypeClass)
 
     val function = new FailingCollectionSource[T](
-      typeInfo.createSerializer(env.getConfig),
+      typeInfo.createSerializer(env.getConfig.getSerializerConfig),
       collection,
-      data.length / 2) // fail after half elements
+      data.length / 2
+    ) // fail after half elements
 
     env.addSource(function)(typeInfo).setMaxParallelism(1)
   }
@@ -154,7 +151,7 @@ class StreamingWithStateTestBase(state: StateBackendMode) extends StreamingTestB
     var idx = 0
     def findEquals(ss: CharSequence): Array[Int] = {
       val ret = new ArrayBuffer[Int]()
-      (0 until ss.length) foreach (idx => if (ss.charAt(idx) == equalsChar) ret += idx)
+      (0 until ss.length).foreach(idx => if (ss.charAt(idx) == equalsChar) ret += idx)
       ret.toArray
     }
 
@@ -201,7 +198,7 @@ class StreamingWithStateTestBase(state: StateBackendMode) extends StreamingTestB
 
     def appendStrToMap(ss: CharSequence, m: Map[String, String]): Unit = {
       val equalsIdxs = findEquals(ss)
-      equalsIdxs.foreach (idx => m + splitKV(ss, idx))
+      equalsIdxs.foreach(idx => m + splitKV(ss, idx))
     }
 
     while (idx < l) {
@@ -239,7 +236,7 @@ object StreamingWithStateTestBase {
   val HEAP_BACKEND = StateBackendMode("HEAP")
   val ROCKSDB_BACKEND = StateBackendMode("ROCKSDB")
 
-  @Parameterized.Parameters(name = "StateBackend={0}")
+  @Parameters(name = "StateBackend={0}")
   def parameters(): util.Collection[Array[java.lang.Object]] = {
     Seq[Array[AnyRef]](Array(HEAP_BACKEND), Array(ROCKSDB_BACKEND))
   }

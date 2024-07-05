@@ -15,21 +15,20 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.api.scala.util
 
 import org.apache.flink.api.java.Utils.ChecksumHashCode
 import org.apache.flink.api.scala._
 import org.apache.flink.api.scala.utils._
-import org.apache.flink.test.util.MultipleProgramsTestBase
+import org.apache.flink.test.util.MultipleProgramsTestBaseJUnit4
+
 import org.junit._
 import org.junit.runner.RunWith
 import org.junit.runners.Parameterized
 
 @RunWith(classOf[Parameterized])
-class DataSetUtilsITCase (
-    mode: MultipleProgramsTestBase.TestExecutionMode)
-  extends MultipleProgramsTestBase(mode) {
+class DataSetUtilsITCase(mode: MultipleProgramsTestBaseJUnit4.TestExecutionMode)
+  extends MultipleProgramsTestBaseJUnit4(mode) {
 
   @Test
   @throws(classOf[Exception])
@@ -44,7 +43,7 @@ class DataSetUtilsITCase (
 
     Assert.assertEquals(expectedSize, result.size)
 
-    for( ((index, _), expected) <- result.sortBy(_._1).zipWithIndex) {
+    for (((index, _), expected) <- result.sortBy(_._1).zipWithIndex) {
       Assert.assertEquals(expected, index)
     }
   }

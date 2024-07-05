@@ -22,6 +22,7 @@ import org.apache.flink.api.common.JobExecutionResult;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.core.execution.JobClient;
+import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.operators.coordination.CoordinationRequest;
 import org.apache.flink.runtime.operators.coordination.CoordinationRequestGateway;
@@ -29,12 +30,12 @@ import org.apache.flink.runtime.operators.coordination.CoordinationRequestHandle
 import org.apache.flink.runtime.operators.coordination.CoordinationResponse;
 import org.apache.flink.util.OptionalFailure;
 
-import org.junit.Assert;
-
 import javax.annotation.Nullable;
 
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** A {@link JobClient} to test fetching SELECT query results. */
 public class TestJobClient implements JobClient, CoordinationRequestGateway {
@@ -79,12 +80,15 @@ public class TestJobClient implements JobClient, CoordinationRequestGateway {
 
     @Override
     public CompletableFuture<String> stopWithSavepoint(
-            boolean advanceToEndOfEventTime, @Nullable String savepointDirectory) {
+            boolean advanceToEndOfEventTime,
+            @Nullable String savepointDirectory,
+            SavepointFormatType formatType) {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public CompletableFuture<String> triggerSavepoint(@Nullable String savepointDirectory) {
+    public CompletableFuture<String> triggerSavepoint(
+            @Nullable String savepointDirectory, SavepointFormatType formatType) {
         throw new UnsupportedOperationException();
     }
 
@@ -105,7 +109,7 @@ public class TestJobClient implements JobClient, CoordinationRequestGateway {
             throw new RuntimeException("Job terminated");
         }
 
-        Assert.assertEquals(this.operatorId, operatorId);
+        assertThat(operatorId).isEqualTo(this.operatorId);
         CoordinationResponse response;
         try {
             response = handler.handleCoordinationRequest(request).get();

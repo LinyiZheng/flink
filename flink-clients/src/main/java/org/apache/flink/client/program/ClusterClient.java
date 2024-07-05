@@ -21,6 +21,8 @@ package org.apache.flink.client.program;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.execution.CheckpointType;
+import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.runtime.client.JobStatusMessage;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobgraph.OperatorID;
@@ -28,12 +30,16 @@ import org.apache.flink.runtime.jobmaster.JobResult;
 import org.apache.flink.runtime.messages.Acknowledge;
 import org.apache.flink.runtime.operators.coordination.CoordinationRequest;
 import org.apache.flink.runtime.operators.coordination.CoordinationResponse;
+import org.apache.flink.util.AbstractID;
 import org.apache.flink.util.FlinkException;
+import org.apache.flink.util.concurrent.FutureUtils;
 
 import javax.annotation.Nullable;
 
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -135,9 +141,11 @@ public interface ClusterClient<T> extends AutoCloseable {
      *
      * @param jobId the job id
      * @param savepointDirectory directory the savepoint should be written to
+     * @param formatType a binary format of the savepoint
      * @return future of path where the savepoint is located
      */
-    CompletableFuture<String> cancelWithSavepoint(JobID jobId, @Nullable String savepointDirectory);
+    CompletableFuture<String> cancelWithSavepoint(
+            JobID jobId, @Nullable String savepointDirectory, SavepointFormatType formatType);
 
     /**
      * Stops a program on Flink cluster whose job-manager is configured in this client's
@@ -149,12 +157,33 @@ public interface ClusterClient<T> extends AutoCloseable {
      * @param advanceToEndOfEventTime flag indicating if the source should inject a {@code
      *     MAX_WATERMARK} in the pipeline
      * @param savepointDirectory directory the savepoint should be written to
+     * @param formatType a binary format of the savepoint
      * @return a {@link CompletableFuture} containing the path where the savepoint is located
      */
     CompletableFuture<String> stopWithSavepoint(
             final JobID jobId,
             final boolean advanceToEndOfEventTime,
-            @Nullable final String savepointDirectory);
+            @Nullable final String savepointDirectory,
+            final SavepointFormatType formatType);
+
+    /**
+     * Stops a program on Flink cluster whose job-manager is configured in this client's
+     * configuration. Stopping works only for streaming programs. Be aware, that the program might
+     * continue to run for a while after sending the stop command, because after sources stopped to
+     * emit data all operators need to finish processing.
+     *
+     * @param jobId the job ID of the streaming program to stop
+     * @param advanceToEndOfEventTime flag indicating if the source should inject a {@code
+     *     MAX_WATERMARK} in the pipeline
+     * @param savepointDirectory directory the savepoint should be written to
+     * @param formatType a binary format of the savepoint
+     * @return the savepoint trigger id
+     */
+    CompletableFuture<String> stopWithDetachedSavepoint(
+            final JobID jobId,
+            final boolean advanceToEndOfEventTime,
+            @Nullable final String savepointDirectory,
+            final SavepointFormatType formatType);
 
     /**
      * Triggers a savepoint for the job identified by the job id. The savepoint will be written to
@@ -163,9 +192,35 @@ public interface ClusterClient<T> extends AutoCloseable {
      *
      * @param jobId job id
      * @param savepointDirectory directory the savepoint should be written to
+     * @param formatType a binary format of the savepoint
      * @return path future where the savepoint is located
      */
-    CompletableFuture<String> triggerSavepoint(JobID jobId, @Nullable String savepointDirectory);
+    CompletableFuture<String> triggerSavepoint(
+            JobID jobId, @Nullable String savepointDirectory, SavepointFormatType formatType);
+
+    /**
+     * Triggers a checkpoint for the job identified by the job id. The checkpoint will be written to
+     * the checkpoint directory for the job.
+     *
+     * @param jobId job id
+     * @param checkpointType the checkpoint type (configured / full / incremental)
+     */
+    CompletableFuture<Long> triggerCheckpoint(JobID jobId, CheckpointType checkpointType);
+
+    /**
+     * Triggers a detached savepoint for the job identified by the job id. The savepoint will be
+     * written to the given savepoint directory, or {@link
+     * org.apache.flink.configuration.CheckpointingOptions#SAVEPOINT_DIRECTORY} if it is null.
+     * Notice that: the detached savepoint will return with a savepoint trigger id instead of the
+     * path future, that means the client will return very quickly.
+     *
+     * @param jobId job id
+     * @param savepointDirectory directory the savepoint should be written to
+     * @param formatType a binary format of the savepoint
+     * @return the savepoint trigger id
+     */
+    CompletableFuture<String> triggerDetachedSavepoint(
+            JobID jobId, @Nullable String savepointDirectory, SavepointFormatType formatType);
 
     /**
      * Sends out a request to a specified coordinator and return the response.
@@ -177,4 +232,33 @@ public interface ClusterClient<T> extends AutoCloseable {
      */
     CompletableFuture<CoordinationResponse> sendCoordinationRequest(
             JobID jobId, OperatorID operatorId, CoordinationRequest request);
+
+    /**
+     * Return a set of ids of the completed cluster datasets.
+     *
+     * @return A set of ids of the completely cached intermediate dataset.
+     */
+    default CompletableFuture<Set<AbstractID>> listCompletedClusterDatasetIds() {
+        return CompletableFuture.completedFuture(Collections.emptySet());
+    }
+
+    /**
+     * Invalidate the cached intermediate dataset with the given id.
+     *
+     * @param clusterDatasetId id of the cluster dataset to be invalidated.
+     * @return Future which will be completed when the cached dataset is invalidated.
+     */
+    default CompletableFuture<Void> invalidateClusterDataset(AbstractID clusterDatasetId) {
+        return CompletableFuture.completedFuture(null);
+    }
+
+    /**
+     * The client reports the heartbeat to the dispatcher for aliveness.
+     *
+     * @param jobId The jobId for the client and the job.
+     * @return
+     */
+    default CompletableFuture<Void> reportHeartbeat(JobID jobId, long expiredTimestamp) {
+        return FutureUtils.completedVoidFuture();
+    }
 }

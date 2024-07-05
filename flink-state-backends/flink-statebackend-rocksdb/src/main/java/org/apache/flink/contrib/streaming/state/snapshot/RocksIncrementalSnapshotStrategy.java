@@ -22,57 +22,42 @@ import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.contrib.streaming.state.RocksDBKeyedStateBackend.RocksDbKvStateInfo;
 import org.apache.flink.contrib.streaming.state.RocksDBStateUploader;
 import org.apache.flink.core.fs.CloseableRegistry;
-import org.apache.flink.core.memory.DataOutputView;
-import org.apache.flink.core.memory.DataOutputViewStreamWrapper;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
 import org.apache.flink.runtime.checkpoint.CheckpointType;
+import org.apache.flink.runtime.checkpoint.SnapshotType;
 import org.apache.flink.runtime.state.CheckpointStreamFactory;
-import org.apache.flink.runtime.state.CheckpointStreamWithResultProvider;
 import org.apache.flink.runtime.state.CheckpointedStateScope;
-import org.apache.flink.runtime.state.DirectoryStateHandle;
-import org.apache.flink.runtime.state.IncrementalLocalKeyedStateHandle;
+import org.apache.flink.runtime.state.IncrementalKeyedStateHandle.HandleAndLocalPath;
 import org.apache.flink.runtime.state.IncrementalRemoteKeyedStateHandle;
 import org.apache.flink.runtime.state.KeyGroupRange;
-import org.apache.flink.runtime.state.KeyedBackendSerializationProxy;
 import org.apache.flink.runtime.state.KeyedStateHandle;
 import org.apache.flink.runtime.state.LocalRecoveryConfig;
-import org.apache.flink.runtime.state.LocalRecoveryDirectoryProvider;
-import org.apache.flink.runtime.state.PlaceholderStreamStateHandle;
 import org.apache.flink.runtime.state.SnapshotDirectory;
-import org.apache.flink.runtime.state.SnapshotResources;
 import org.apache.flink.runtime.state.SnapshotResult;
-import org.apache.flink.runtime.state.StateHandleID;
-import org.apache.flink.runtime.state.StateObject;
-import org.apache.flink.runtime.state.StateUtil;
 import org.apache.flink.runtime.state.StreamStateHandle;
 import org.apache.flink.runtime.state.metainfo.StateMetaInfoSnapshot;
-import org.apache.flink.util.ExceptionUtils;
-import org.apache.flink.util.FileUtils;
-import org.apache.flink.util.IOUtils;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.ResourceGuard;
 
-import org.rocksdb.Checkpoint;
 import org.rocksdb.RocksDB;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nonnegative;
 import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.SortedMap;
+import java.util.TreeMap;
 import java.util.UUID;
 
 import static org.apache.flink.contrib.streaming.state.snapshot.RocksSnapshotUtil.SST_FILE_SUFFIX;
@@ -85,34 +70,25 @@ import static org.apache.flink.contrib.streaming.state.snapshot.RocksSnapshotUti
  */
 public class RocksIncrementalSnapshotStrategy<K>
         extends RocksDBSnapshotStrategyBase<
-                K, RocksIncrementalSnapshotStrategy.IncrementalRocksDBSnapshotResources> {
+                K, RocksDBSnapshotStrategyBase.NativeRocksDBSnapshotResources> {
 
     private static final Logger LOG =
             LoggerFactory.getLogger(RocksIncrementalSnapshotStrategy.class);
 
     private static final String DESCRIPTION = "Asynchronous incremental RocksDB snapshot";
 
-    /** Base path of the RocksDB instance. */
-    @Nonnull private final File instanceBasePath;
-
-    /** The state handle ids of all sst files materialized in snapshots for previous checkpoints. */
-    @Nonnull private final UUID backendUID;
-
     /**
-     * Stores the {@link StateHandleID IDs} of uploaded SST files that build the incremental
-     * history. Once the checkpoint is confirmed by JM, only the ID paired with {@link
-     * PlaceholderStreamStateHandle} can be sent.
+     * Stores the {@link StreamStateHandle} and corresponding local path of uploaded SST files that
+     * build the incremental history. Once the checkpoint is confirmed by JM, they can be reused for
+     * incremental checkpoint.
      */
-    @Nonnull private final SortedMap<Long, Set<StateHandleID>> uploadedStateIDs;
+    @Nonnull private final SortedMap<Long, Collection<HandleAndLocalPath>> uploadedSstFiles;
 
     /** The identifier of the last completed checkpoint. */
     private long lastCompletedCheckpointId;
 
     /** The help class used to upload state files. */
     private final RocksDBStateUploader stateUploader;
-
-    /** The local directory name of the current snapshot strategy. */
-    private final String localDirectoryName;
 
     public RocksIncrementalSnapshotStrategy(
             @Nonnull RocksDB db,
@@ -122,10 +98,9 @@ public class RocksIncrementalSnapshotStrategy<K>
             @Nonnull KeyGroupRange keyGroupRange,
             @Nonnegative int keyGroupPrefixBytes,
             @Nonnull LocalRecoveryConfig localRecoveryConfig,
-            @Nonnull CloseableRegistry cancelStreamRegistry,
             @Nonnull File instanceBasePath,
             @Nonnull UUID backendUID,
-            @Nonnull SortedMap<Long, Set<StateHandleID>> uploadedStateIDs,
+            @Nonnull SortedMap<Long, Collection<HandleAndLocalPath>> uploadedStateHandles,
             @Nonnull RocksDBStateUploader rocksDBStateUploader,
             long lastCompletedCheckpointId) {
 
@@ -137,37 +112,18 @@ public class RocksIncrementalSnapshotStrategy<K>
                 kvStateInformation,
                 keyGroupRange,
                 keyGroupPrefixBytes,
-                localRecoveryConfig);
+                localRecoveryConfig,
+                instanceBasePath,
+                backendUID);
 
-        this.instanceBasePath = instanceBasePath;
-        this.backendUID = backendUID;
-        this.uploadedStateIDs = uploadedStateIDs;
+        this.uploadedSstFiles = new TreeMap<>(uploadedStateHandles);
         this.stateUploader = rocksDBStateUploader;
         this.lastCompletedCheckpointId = lastCompletedCheckpointId;
-        this.localDirectoryName = backendUID.toString().replaceAll("[\\-]", "");
-    }
-
-    @Override
-    public IncrementalRocksDBSnapshotResources syncPrepareResources(long checkpointId)
-            throws Exception {
-
-        final SnapshotDirectory snapshotDirectory = prepareLocalSnapshotDirectory(checkpointId);
-        LOG.trace("Local RocksDB checkpoint goes to backup path {}.", snapshotDirectory);
-
-        final List<StateMetaInfoSnapshot> stateMetaInfoSnapshots =
-                new ArrayList<>(kvStateInformation.size());
-        final PreviousSnapshot previousSnapshot =
-                snapshotMetaData(checkpointId, stateMetaInfoSnapshots);
-
-        takeDBNativeCheckpoint(snapshotDirectory);
-
-        return new IncrementalRocksDBSnapshotResources(
-                snapshotDirectory, previousSnapshot, stateMetaInfoSnapshots);
     }
 
     @Override
     public SnapshotResultSupplier<KeyedStateHandle> asyncSnapshot(
-            IncrementalRocksDBSnapshotResources snapshotResources,
+            NativeRocksDBSnapshotResources snapshotResources,
             long checkpointId,
             long timestamp,
             @Nonnull CheckpointStreamFactory checkpointStreamFactory,
@@ -190,9 +146,9 @@ public class RocksIncrementalSnapshotStrategy<K>
                 previousSnapshot = snapshotResources.previousSnapshot;
                 break;
             case FORWARD:
+            case NO_SHARING:
                 previousSnapshot = EMPTY_PREVIOUS_SNAPSHOT;
                 break;
-            case NO_SHARING:
             default:
                 throw new IllegalArgumentException(
                         "Unsupported sharing files strategy: " + sharingFilesStrategy);
@@ -203,18 +159,19 @@ public class RocksIncrementalSnapshotStrategy<K>
                 checkpointStreamFactory,
                 snapshotResources.snapshotDirectory,
                 previousSnapshot,
+                sharingFilesStrategy,
                 snapshotResources.stateMetaInfoSnapshots);
     }
 
     @Override
     public void notifyCheckpointComplete(long completedCheckpointId) {
-        synchronized (uploadedStateIDs) {
+        synchronized (uploadedSstFiles) {
             // FLINK-23949: materializedSstFiles.keySet().contains(completedCheckpointId) make sure
             // the notified checkpointId is not a savepoint, otherwise next checkpoint will
             // degenerate into a full checkpoint
             if (completedCheckpointId > lastCompletedCheckpointId
-                    && uploadedStateIDs.containsKey(completedCheckpointId)) {
-                uploadedStateIDs
+                    && uploadedSstFiles.containsKey(completedCheckpointId)) {
+                uploadedSstFiles
                         .keySet()
                         .removeIf(checkpointId -> checkpointId < completedCheckpointId);
                 lastCompletedCheckpointId = completedCheckpointId;
@@ -224,71 +181,27 @@ public class RocksIncrementalSnapshotStrategy<K>
 
     @Override
     public void notifyCheckpointAborted(long abortedCheckpointId) {
-        synchronized (uploadedStateIDs) {
-            uploadedStateIDs.keySet().remove(abortedCheckpointId);
+        synchronized (uploadedSstFiles) {
+            uploadedSstFiles.keySet().remove(abortedCheckpointId);
         }
     }
 
     @Override
-    public void close() {
+    public void close() throws IOException {
         stateUploader.close();
     }
 
-    @Nonnull
-    private SnapshotDirectory prepareLocalSnapshotDirectory(long checkpointId) throws IOException {
-
-        if (localRecoveryConfig.isLocalRecoveryEnabled()) {
-            // create a "permanent" snapshot directory for local recovery.
-            LocalRecoveryDirectoryProvider directoryProvider =
-                    localRecoveryConfig.getLocalStateDirectoryProvider();
-            File directory = directoryProvider.subtaskSpecificCheckpointDirectory(checkpointId);
-
-            if (!directory.exists() && !directory.mkdirs()) {
-                throw new IOException(
-                        "Local state base directory for checkpoint "
-                                + checkpointId
-                                + " does not exist and could not be created: "
-                                + directory);
-            }
-
-            // introduces an extra directory because RocksDB wants a non-existing directory for
-            // native checkpoints.
-            // append localDirectoryName here to solve directory collision problem when two stateful
-            // operators chained in one task.
-            File rdbSnapshotDir = new File(directory, localDirectoryName);
-            if (rdbSnapshotDir.exists()) {
-                FileUtils.deleteDirectory(rdbSnapshotDir);
-            }
-
-            Path path = rdbSnapshotDir.toPath();
-            // create a "permanent" snapshot directory because local recovery is active.
-            try {
-                return SnapshotDirectory.permanent(path);
-            } catch (IOException ex) {
-                try {
-                    FileUtils.deleteDirectory(directory);
-                } catch (IOException delEx) {
-                    ex = ExceptionUtils.firstOrSuppressed(delEx, ex);
-                }
-                throw ex;
-            }
-        } else {
-            // create a "temporary" snapshot directory because local recovery is inactive.
-            File snapshotDir = new File(instanceBasePath, "chk-" + checkpointId);
-            return SnapshotDirectory.temporary(snapshotDir);
-        }
-    }
-
-    private PreviousSnapshot snapshotMetaData(
+    @Override
+    protected PreviousSnapshot snapshotMetaData(
             long checkpointId, @Nonnull List<StateMetaInfoSnapshot> stateMetaInfoSnapshots) {
 
         final long lastCompletedCheckpoint;
-        final Set<StateHandleID> confirmedSstFiles;
+        final Collection<HandleAndLocalPath> confirmedSstFiles;
 
         // use the last completed checkpoint as the comparison base.
-        synchronized (uploadedStateIDs) {
+        synchronized (uploadedSstFiles) {
             lastCompletedCheckpoint = lastCompletedCheckpointId;
-            confirmedSstFiles = uploadedStateIDs.get(lastCompletedCheckpoint);
+            confirmedSstFiles = uploadedSstFiles.get(lastCompletedCheckpoint);
             LOG.trace(
                     "Use confirmed SST files for checkpoint {}: {}",
                     checkpointId,
@@ -309,55 +222,31 @@ public class RocksIncrementalSnapshotStrategy<K>
         return new PreviousSnapshot(confirmedSstFiles);
     }
 
-    private void takeDBNativeCheckpoint(@Nonnull SnapshotDirectory outputDirectory)
-            throws Exception {
-        // create hard links of living files in the output path
-        try (ResourceGuard.Lease ignored = rocksDBResourceGuard.acquireResource();
-                Checkpoint checkpoint = Checkpoint.create(db)) {
-            checkpoint.createCheckpoint(outputDirectory.getDirectory().toString());
-        } catch (Exception ex) {
-            try {
-                outputDirectory.cleanup();
-            } catch (IOException cleanupEx) {
-                ex = ExceptionUtils.firstOrSuppressed(cleanupEx, ex);
-            }
-            throw ex;
-        }
-    }
-
     /**
      * Encapsulates the process to perform an incremental snapshot of a RocksDBKeyedStateBackend.
      */
-    private final class RocksDBIncrementalSnapshotOperation
-            implements SnapshotResultSupplier<KeyedStateHandle> {
-
-        /** Id for the current checkpoint. */
-        private final long checkpointId;
-
-        /** Stream factory that creates the output streams to DFS. */
-        @Nonnull private final CheckpointStreamFactory checkpointStreamFactory;
-
-        /** The state meta data. */
-        @Nonnull private final List<StateMetaInfoSnapshot> stateMetaInfoSnapshots;
-
-        /** Local directory for the RocksDB native backup. */
-        @Nonnull private final SnapshotDirectory localBackupDirectory;
+    private final class RocksDBIncrementalSnapshotOperation extends RocksDBSnapshotOperation {
 
         /** All sst files that were part of the last previously completed checkpoint. */
         @Nonnull private final PreviousSnapshot previousSnapshot;
+
+        @Nonnull private final SnapshotType.SharingFilesStrategy sharingFilesStrategy;
 
         private RocksDBIncrementalSnapshotOperation(
                 long checkpointId,
                 @Nonnull CheckpointStreamFactory checkpointStreamFactory,
                 @Nonnull SnapshotDirectory localBackupDirectory,
                 @Nonnull PreviousSnapshot previousSnapshot,
+                @Nonnull SnapshotType.SharingFilesStrategy sharingFilesStrategy,
                 @Nonnull List<StateMetaInfoSnapshot> stateMetaInfoSnapshots) {
 
-            this.checkpointStreamFactory = checkpointStreamFactory;
+            super(
+                    checkpointId,
+                    checkpointStreamFactory,
+                    localBackupDirectory,
+                    stateMetaInfoSnapshots);
             this.previousSnapshot = previousSnapshot;
-            this.checkpointId = checkpointId;
-            this.localBackupDirectory = localBackupDirectory;
-            this.stateMetaInfoSnapshots = stateMetaInfoSnapshots;
+            this.sharingFilesStrategy = sharingFilesStrategy;
         }
 
         @Override
@@ -369,13 +258,21 @@ public class RocksIncrementalSnapshotStrategy<K>
             // Handle to the meta data file
             SnapshotResult<StreamStateHandle> metaStateHandle = null;
             // Handles to new sst files since the last completed checkpoint will go here
-            final Map<StateHandleID, StreamStateHandle> sstFiles = new HashMap<>();
+            final List<HandleAndLocalPath> sstFiles = new ArrayList<>();
             // Handles to the misc files in the current snapshot will go here
-            final Map<StateHandleID, StreamStateHandle> miscFiles = new HashMap<>();
+            final List<HandleAndLocalPath> miscFiles = new ArrayList<>();
+
+            final List<StreamStateHandle> reusedHandle = new ArrayList<>();
 
             try {
 
-                metaStateHandle = materializeMetaData(snapshotCloseableRegistry);
+                metaStateHandle =
+                        materializeMetaData(
+                                snapshotCloseableRegistry,
+                                tmpResourcesRegistry,
+                                stateMetaInfoSnapshots,
+                                checkpointId,
+                                checkpointStreamFactory);
 
                 // Sanity checks - they should never fail
                 Preconditions.checkNotNull(metaStateHandle, "Metadata was not properly created.");
@@ -383,8 +280,24 @@ public class RocksIncrementalSnapshotStrategy<K>
                         metaStateHandle.getJobManagerOwnedSnapshot(),
                         "Metadata for job manager was not properly created.");
 
-                uploadSstFiles(sstFiles, miscFiles, snapshotCloseableRegistry);
+                long checkpointedSize = metaStateHandle.getStateSize();
+                checkpointedSize +=
+                        uploadSnapshotFiles(
+                                sstFiles,
+                                miscFiles,
+                                snapshotCloseableRegistry,
+                                tmpResourcesRegistry,
+                                reusedHandle);
 
+                // We make the 'sstFiles' as the 'sharedState' in IncrementalRemoteKeyedStateHandle,
+                // whether they belong to the sharded CheckpointedStateScope or exclusive
+                // CheckpointedStateScope.
+                // In this way, the first checkpoint after job recovery can be an incremental
+                // checkpoint in CLAIM mode, either restoring from checkpoint or restoring from
+                // native savepoint.
+                // And this has no effect on the registration of shareState currently, because the
+                // snapshot result of native savepoint would not be registered into
+                // 'SharedStateRegistry'.
                 final IncrementalRemoteKeyedStateHandle jmIncrementalKeyedStateHandle =
                         new IncrementalRemoteKeyedStateHandle(
                                 backendUID,
@@ -392,222 +305,128 @@ public class RocksIncrementalSnapshotStrategy<K>
                                 checkpointId,
                                 sstFiles,
                                 miscFiles,
-                                metaStateHandle.getJobManagerOwnedSnapshot());
+                                metaStateHandle.getJobManagerOwnedSnapshot(),
+                                checkpointedSize);
 
-                final DirectoryStateHandle directoryStateHandle =
-                        localBackupDirectory.completeSnapshotAndGetHandle();
-                final SnapshotResult<KeyedStateHandle> snapshotResult;
-                if (directoryStateHandle != null
-                        && metaStateHandle.getTaskLocalSnapshot() != null) {
-
-                    IncrementalLocalKeyedStateHandle localDirKeyedStateHandle =
-                            new IncrementalLocalKeyedStateHandle(
-                                    backendUID,
-                                    checkpointId,
-                                    directoryStateHandle,
-                                    keyGroupRange,
-                                    metaStateHandle.getTaskLocalSnapshot(),
-                                    sstFiles.keySet());
-
-                    snapshotResult =
-                            SnapshotResult.withLocalState(
-                                    jmIncrementalKeyedStateHandle, localDirKeyedStateHandle);
-                } else {
-                    snapshotResult = SnapshotResult.of(jmIncrementalKeyedStateHandle);
-                }
+                Optional<KeyedStateHandle> localSnapshot =
+                        getLocalSnapshot(metaStateHandle.getTaskLocalSnapshot(), sstFiles);
+                final SnapshotResult<KeyedStateHandle> snapshotResult =
+                        localSnapshot
+                                .map(
+                                        keyedStateHandle ->
+                                                SnapshotResult.withLocalState(
+                                                        jmIncrementalKeyedStateHandle,
+                                                        keyedStateHandle))
+                                .orElseGet(() -> SnapshotResult.of(jmIncrementalKeyedStateHandle));
 
                 completed = true;
 
                 return snapshotResult;
             } finally {
                 if (!completed) {
-                    final List<StateObject> statesToDiscard =
-                            new ArrayList<>(1 + miscFiles.size() + sstFiles.size());
-                    statesToDiscard.add(metaStateHandle);
-                    statesToDiscard.addAll(miscFiles.values());
-                    statesToDiscard.addAll(sstFiles.values());
-                    cleanupIncompleteSnapshot(statesToDiscard);
+                    cleanupIncompleteSnapshot(tmpResourcesRegistry, localBackupDirectory);
+                } else {
+                    // Report the reuse of state handle to stream factory, which is essential for
+                    // file merging mechanism.
+                    checkpointStreamFactory.reusePreviousStateHandle(reusedHandle);
                 }
             }
         }
 
-        private void cleanupIncompleteSnapshot(@Nonnull List<StateObject> statesToDiscard) {
-
-            try {
-                StateUtil.bestEffortDiscardAllStateObjects(statesToDiscard);
-            } catch (Exception e) {
-                LOG.warn("Could not properly discard states.", e);
-            }
-
-            if (localBackupDirectory.isSnapshotCompleted()) {
-                try {
-                    DirectoryStateHandle directoryStateHandle =
-                            localBackupDirectory.completeSnapshotAndGetHandle();
-                    if (directoryStateHandle != null) {
-                        directoryStateHandle.discardState();
-                    }
-                } catch (Exception e) {
-                    LOG.warn("Could not properly discard local state.", e);
-                }
-            }
-        }
-
-        private void uploadSstFiles(
-                @Nonnull Map<StateHandleID, StreamStateHandle> sstFiles,
-                @Nonnull Map<StateHandleID, StreamStateHandle> miscFiles,
-                @Nonnull CloseableRegistry snapshotCloseableRegistry)
+        /** upload files and return total uploaded size. */
+        private long uploadSnapshotFiles(
+                @Nonnull List<HandleAndLocalPath> sstFiles,
+                @Nonnull List<HandleAndLocalPath> miscFiles,
+                @Nonnull CloseableRegistry snapshotCloseableRegistry,
+                @Nonnull CloseableRegistry tmpResourcesRegistry,
+                @Nonnull List<StreamStateHandle> reusedHandle)
                 throws Exception {
 
             // write state data
             Preconditions.checkState(localBackupDirectory.exists());
 
-            Map<StateHandleID, Path> sstFilePaths = new HashMap<>();
-            Map<StateHandleID, Path> miscFilePaths = new HashMap<>();
-
             Path[] files = localBackupDirectory.listDirectory();
+            long uploadedSize = 0;
             if (files != null) {
+                List<Path> sstFilePaths = new ArrayList<>(files.length);
+                List<Path> miscFilePaths = new ArrayList<>(files.length);
+
                 createUploadFilePaths(files, sstFiles, sstFilePaths, miscFilePaths);
 
-                sstFiles.putAll(
-                        stateUploader.uploadFilesToCheckpointFs(
-                                sstFilePaths, checkpointStreamFactory, snapshotCloseableRegistry));
-                miscFiles.putAll(
-                        stateUploader.uploadFilesToCheckpointFs(
-                                miscFilePaths, checkpointStreamFactory, snapshotCloseableRegistry));
+                final CheckpointedStateScope stateScope =
+                        sharingFilesStrategy == SnapshotType.SharingFilesStrategy.NO_SHARING
+                                ? CheckpointedStateScope.EXCLUSIVE
+                                : CheckpointedStateScope.SHARED;
 
-                synchronized (uploadedStateIDs) {
-                    uploadedStateIDs.put(checkpointId, sstFiles.keySet());
+                // Collect the reuse of state handle.
+                sstFiles.stream().map(HandleAndLocalPath::getHandle).forEach(reusedHandle::add);
+
+                List<HandleAndLocalPath> sstFilesUploadResult =
+                        stateUploader.uploadFilesToCheckpointFs(
+                                sstFilePaths,
+                                checkpointStreamFactory,
+                                stateScope,
+                                snapshotCloseableRegistry,
+                                tmpResourcesRegistry);
+                uploadedSize +=
+                        sstFilesUploadResult.stream()
+                                .mapToLong(HandleAndLocalPath::getStateSize)
+                                .sum();
+                sstFiles.addAll(sstFilesUploadResult);
+
+                List<HandleAndLocalPath> miscFilesUploadResult =
+                        stateUploader.uploadFilesToCheckpointFs(
+                                miscFilePaths,
+                                checkpointStreamFactory,
+                                stateScope,
+                                snapshotCloseableRegistry,
+                                tmpResourcesRegistry);
+                uploadedSize +=
+                        miscFilesUploadResult.stream()
+                                .mapToLong(HandleAndLocalPath::getStateSize)
+                                .sum();
+                miscFiles.addAll(miscFilesUploadResult);
+
+                synchronized (uploadedSstFiles) {
+                    switch (sharingFilesStrategy) {
+                        case FORWARD_BACKWARD:
+                        case FORWARD:
+                            uploadedSstFiles.put(
+                                    checkpointId, Collections.unmodifiableList(sstFiles));
+                            break;
+                        case NO_SHARING:
+                            break;
+                        default:
+                            // This is just a safety precaution. It is checked before creating the
+                            // RocksDBIncrementalSnapshotOperation
+                            throw new IllegalArgumentException(
+                                    "Unsupported sharing files strategy: " + sharingFilesStrategy);
+                    }
                 }
             }
+            return uploadedSize;
         }
 
         private void createUploadFilePaths(
                 Path[] files,
-                Map<StateHandleID, StreamStateHandle> sstFiles,
-                Map<StateHandleID, Path> sstFilePaths,
-                Map<StateHandleID, Path> miscFilePaths) {
+                List<HandleAndLocalPath> sstFiles,
+                List<Path> sstFilePaths,
+                List<Path> miscFilePaths) {
             for (Path filePath : files) {
                 final String fileName = filePath.getFileName().toString();
-                final StateHandleID stateHandleID = new StateHandleID(fileName);
 
                 if (fileName.endsWith(SST_FILE_SUFFIX)) {
-                    Optional<StreamStateHandle> uploaded =
-                            previousSnapshot.getUploaded(stateHandleID);
-                    if (uploaded.isPresent()) {
-                        sstFiles.put(stateHandleID, uploaded.get());
+                    Optional<StreamStateHandle> uploaded = previousSnapshot.getUploaded(fileName);
+                    if (uploaded.isPresent()
+                            && checkpointStreamFactory.couldReuseStateHandle(uploaded.get())) {
+                        sstFiles.add(HandleAndLocalPath.of(uploaded.get(), fileName));
                     } else {
-                        sstFilePaths.put(stateHandleID, filePath); // re-upload
+                        sstFilePaths.add(filePath); // re-upload
                     }
                 } else {
-                    miscFilePaths.put(stateHandleID, filePath);
+                    miscFilePaths.add(filePath);
                 }
             }
-        }
-
-        @Nonnull
-        private SnapshotResult<StreamStateHandle> materializeMetaData(
-                @Nonnull CloseableRegistry snapshotCloseableRegistry) throws Exception {
-
-            CheckpointStreamWithResultProvider streamWithResultProvider =
-                    localRecoveryConfig.isLocalRecoveryEnabled()
-                            ? CheckpointStreamWithResultProvider.createDuplicatingStream(
-                                    checkpointId,
-                                    CheckpointedStateScope.EXCLUSIVE,
-                                    checkpointStreamFactory,
-                                    localRecoveryConfig.getLocalStateDirectoryProvider())
-                            : CheckpointStreamWithResultProvider.createSimpleStream(
-                                    CheckpointedStateScope.EXCLUSIVE, checkpointStreamFactory);
-
-            snapshotCloseableRegistry.registerCloseable(streamWithResultProvider);
-
-            try {
-                // no need for compression scheme support because sst-files are already compressed
-                KeyedBackendSerializationProxy<K> serializationProxy =
-                        new KeyedBackendSerializationProxy<>(
-                                keySerializer, stateMetaInfoSnapshots, false);
-
-                DataOutputView out =
-                        new DataOutputViewStreamWrapper(
-                                streamWithResultProvider.getCheckpointOutputStream());
-
-                serializationProxy.write(out);
-
-                if (snapshotCloseableRegistry.unregisterCloseable(streamWithResultProvider)) {
-                    SnapshotResult<StreamStateHandle> result =
-                            streamWithResultProvider.closeAndFinalizeCheckpointStreamResult();
-                    streamWithResultProvider = null;
-                    return result;
-                } else {
-                    throw new IOException("Stream already closed and cannot return a handle.");
-                }
-            } finally {
-                if (streamWithResultProvider != null) {
-                    if (snapshotCloseableRegistry.unregisterCloseable(streamWithResultProvider)) {
-                        IOUtils.closeQuietly(streamWithResultProvider);
-                    }
-                }
-            }
-        }
-    }
-
-    static class IncrementalRocksDBSnapshotResources implements SnapshotResources {
-        @Nonnull private final SnapshotDirectory snapshotDirectory;
-        @Nonnull private final PreviousSnapshot previousSnapshot;
-        @Nonnull private final List<StateMetaInfoSnapshot> stateMetaInfoSnapshots;
-
-        public IncrementalRocksDBSnapshotResources(
-                SnapshotDirectory snapshotDirectory,
-                PreviousSnapshot previousSnapshot,
-                List<StateMetaInfoSnapshot> stateMetaInfoSnapshots) {
-            this.snapshotDirectory = snapshotDirectory;
-            this.previousSnapshot = previousSnapshot;
-            this.stateMetaInfoSnapshots = stateMetaInfoSnapshots;
-        }
-
-        @Override
-        public void release() {
-            try {
-                if (snapshotDirectory.exists()) {
-                    LOG.trace(
-                            "Running cleanup for local RocksDB backup directory {}.",
-                            snapshotDirectory);
-                    boolean cleanupOk = snapshotDirectory.cleanup();
-
-                    if (!cleanupOk) {
-                        LOG.debug("Could not properly cleanup local RocksDB backup directory.");
-                    }
-                }
-            } catch (IOException e) {
-                LOG.warn("Could not properly cleanup local RocksDB backup directory.", e);
-            }
-        }
-    }
-
-    private static final PreviousSnapshot EMPTY_PREVIOUS_SNAPSHOT =
-            new PreviousSnapshot(Collections.emptySet());
-
-    private static class PreviousSnapshot {
-
-        @Nullable private final Set<StateHandleID> confirmedSstFiles;
-
-        private PreviousSnapshot(@Nullable Set<StateHandleID> confirmedSstFiles) {
-            this.confirmedSstFiles = confirmedSstFiles;
-        }
-
-        private Optional<StreamStateHandle> getUploaded(StateHandleID stateHandleID) {
-            if (isConfirmed(stateHandleID)) {
-                // we introduce a placeholder state handle, that is replaced with the
-                // original from the shared state registry (created from a previous checkpoint)
-                return Optional.of(new PlaceholderStreamStateHandle());
-            } else {
-                // Don't use any uploaded but not confirmed handles because they might be deleted
-                // (by TM) if the previous checkpoint failed. See FLINK-25395
-                return Optional.empty();
-            }
-        }
-
-        private boolean isConfirmed(StateHandleID stateHandleID) {
-            return confirmedSstFiles != null && confirmedSstFiles.contains(stateHandleID);
         }
     }
 }

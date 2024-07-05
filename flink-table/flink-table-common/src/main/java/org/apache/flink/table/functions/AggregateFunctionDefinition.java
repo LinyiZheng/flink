@@ -18,23 +18,26 @@
 
 package org.apache.flink.table.functions;
 
-import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
-import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.catalog.DataTypeFactory;
 import org.apache.flink.table.types.inference.TypeInference;
+import org.apache.flink.table.types.inference.TypeStrategies;
 import org.apache.flink.util.Preconditions;
 
 import java.util.Objects;
 import java.util.Set;
+
+import static org.apache.flink.table.types.utils.TypeConversions.fromLegacyInfoToDataType;
 
 /**
  * A "marker" function definition of an user-defined aggregate function that uses the old type
  * system stack.
  *
  * <p>This class can be dropped once we introduce a new type inference.
+ *
+ * @deprecated Non-legacy functions can simply omit this wrapper for declarations.
  */
-@Internal
+@Deprecated
 public final class AggregateFunctionDefinition implements FunctionDefinition {
 
     private final String name;
@@ -76,8 +79,12 @@ public final class AggregateFunctionDefinition implements FunctionDefinition {
 
     @Override
     public TypeInference getTypeInference(DataTypeFactory typeFactory) {
-        throw new TableException(
-                "Functions implemented for the old type system are not supported.");
+        return TypeInference.newBuilder()
+                .inputTypeStrategy(
+                        LegacyUserDefinedFunctionInference.getInputTypeStrategy(aggregateFunction))
+                .outputTypeStrategy(
+                        TypeStrategies.explicit(fromLegacyInfoToDataType(resultTypeInfo)))
+                .build();
     }
 
     @Override

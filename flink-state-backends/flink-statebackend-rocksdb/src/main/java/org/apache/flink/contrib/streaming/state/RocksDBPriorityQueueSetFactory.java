@@ -20,6 +20,8 @@ package org.apache.flink.contrib.streaming.state;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.common.typeutils.TypeSerializerSchemaCompatibility;
+import org.apache.flink.contrib.streaming.state.sstmerge.RocksDBManualCompactionManager;
+import org.apache.flink.core.fs.ICloseableRegistry;
 import org.apache.flink.core.memory.DataInputDeserializer;
 import org.apache.flink.core.memory.DataOutputSerializer;
 import org.apache.flink.runtime.state.KeyExtractorFunction;
@@ -33,6 +35,7 @@ import org.apache.flink.runtime.state.RegisteredPriorityQueueStateBackendMetaInf
 import org.apache.flink.runtime.state.heap.HeapPriorityQueueElement;
 import org.apache.flink.runtime.state.heap.KeyGroupPartitionedPriorityQueue;
 import org.apache.flink.util.FlinkRuntimeException;
+import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.StateMigrationException;
 
 import org.rocksdb.ColumnFamilyHandle;
@@ -51,8 +54,8 @@ import java.util.function.Function;
  */
 public class RocksDBPriorityQueueSetFactory implements PriorityQueueSetFactory {
 
-    /** Default cache size per key-group. */
-    @VisibleForTesting static final int DEFAULT_CACHES_SIZE = 128; // TODO make this configurable
+    /** The priorityQueue cache size per key-group. */
+    private final int cacheSize;
 
     /** A shared buffer to serialize elements for the priority queue. */
     @Nonnull private final DataOutputSerializer sharedElementOutView;
@@ -70,6 +73,7 @@ public class RocksDBPriorityQueueSetFactory implements PriorityQueueSetFactory {
     private final RocksDBNativeMetricMonitor nativeMetricMonitor;
     private final Function<String, ColumnFamilyOptions> columnFamilyOptionsFactory;
     private final Long writeBufferManagerCapacity;
+    private final RocksDBManualCompactionManager manualCompactionManager;
 
     RocksDBPriorityQueueSetFactory(
             KeyGroupRange keyGroupRange,
@@ -81,7 +85,9 @@ public class RocksDBPriorityQueueSetFactory implements PriorityQueueSetFactory {
             RocksDBWriteBatchWrapper writeBatchWrapper,
             RocksDBNativeMetricMonitor nativeMetricMonitor,
             Function<String, ColumnFamilyOptions> columnFamilyOptionsFactory,
-            Long writeBufferManagerCapacity) {
+            Long writeBufferManagerCapacity,
+            int cacheSize,
+            RocksDBManualCompactionManager manualCompactionManager) {
         this.keyGroupRange = keyGroupRange;
         this.keyGroupPrefixBytes = keyGroupPrefixBytes;
         this.numberOfKeyGroups = numberOfKeyGroups;
@@ -94,6 +100,9 @@ public class RocksDBPriorityQueueSetFactory implements PriorityQueueSetFactory {
         this.sharedElementOutView = new DataOutputSerializer(128);
         this.sharedElementInView = new DataInputDeserializer();
         this.writeBufferManagerCapacity = writeBufferManagerCapacity;
+        Preconditions.checkArgument(cacheSize > 0);
+        this.cacheSize = cacheSize;
+        this.manualCompactionManager = manualCompactionManager;
     }
 
     @Nonnull
@@ -102,9 +111,20 @@ public class RocksDBPriorityQueueSetFactory implements PriorityQueueSetFactory {
             KeyGroupedInternalPriorityQueue<T> create(
                     @Nonnull String stateName,
                     @Nonnull TypeSerializer<T> byteOrderedElementSerializer) {
+        return create(stateName, byteOrderedElementSerializer, false);
+    }
+
+    @Nonnull
+    @Override
+    public <T extends HeapPriorityQueueElement & PriorityComparable<? super T> & Keyed<?>>
+            KeyGroupedInternalPriorityQueue<T> create(
+                    @Nonnull String stateName,
+                    @Nonnull TypeSerializer<T> byteOrderedElementSerializer,
+                    boolean allowFutureMetadataUpdates) {
 
         final RocksDBKeyedStateBackend.RocksDbKvStateInfo stateCFHandle =
-                tryRegisterPriorityQueueMetaInfo(stateName, byteOrderedElementSerializer);
+                tryRegisterPriorityQueueMetaInfo(
+                        stateName, byteOrderedElementSerializer, allowFutureMetadataUpdates);
 
         final ColumnFamilyHandle columnFamilyHandle = stateCFHandle.columnFamilyHandle;
 
@@ -120,8 +140,7 @@ public class RocksDBPriorityQueueSetFactory implements PriorityQueueSetFactory {
                             int numKeyGroups,
                             @Nonnull KeyExtractorFunction<T> keyExtractor,
                             @Nonnull PriorityComparator<T> elementPriorityComparator) {
-                        TreeOrderedSetCache orderedSetCache =
-                                new TreeOrderedSetCache(DEFAULT_CACHES_SIZE);
+                        TreeOrderedSetCache orderedSetCache = new TreeOrderedSetCache(cacheSize);
                         return new RocksDBCachingPriorityQueueSet<>(
                                 keyGroupId,
                                 keyGroupPrefixBytes,
@@ -141,7 +160,9 @@ public class RocksDBPriorityQueueSetFactory implements PriorityQueueSetFactory {
 
     @Nonnull
     private <T> RocksDBKeyedStateBackend.RocksDbKvStateInfo tryRegisterPriorityQueueMetaInfo(
-            @Nonnull String stateName, @Nonnull TypeSerializer<T> byteOrderedElementSerializer) {
+            @Nonnull String stateName,
+            @Nonnull TypeSerializer<T> byteOrderedElementSerializer,
+            boolean allowFutureMetadataUpdates) {
 
         RocksDBKeyedStateBackend.RocksDbKvStateInfo stateInfo = kvStateInformation.get(stateName);
 
@@ -151,13 +172,22 @@ public class RocksDBPriorityQueueSetFactory implements PriorityQueueSetFactory {
             RegisteredPriorityQueueStateBackendMetaInfo<T> metaInfo =
                     new RegisteredPriorityQueueStateBackendMetaInfo<>(
                             stateName, byteOrderedElementSerializer);
+
+            metaInfo =
+                    allowFutureMetadataUpdates
+                            ? metaInfo.withSerializerUpgradesAllowed()
+                            : metaInfo;
+
             stateInfo =
                     RocksDBOperationUtils.createStateInfo(
                             metaInfo,
                             db,
                             columnFamilyOptionsFactory,
                             null,
-                            writeBufferManagerCapacity);
+                            writeBufferManagerCapacity,
+                            // Using ICloseableRegistry.NO_OP here because there is no restore in
+                            // progress; created column families will be closed in dispose()
+                            ICloseableRegistry.NO_OP);
             RocksDBOperationUtils.registerKvStateInformation(
                     kvStateInformation, nativeMetricMonitor, stateName, stateInfo);
         } else {
@@ -187,16 +217,29 @@ public class RocksDBPriorityQueueSetFactory implements PriorityQueueSetFactory {
                                     "The new priority queue serializer must not be incompatible."));
                 }
 
+                RegisteredPriorityQueueStateBackendMetaInfo<T> metaInfo =
+                        new RegisteredPriorityQueueStateBackendMetaInfo<>(
+                                stateName, byteOrderedElementSerializer);
+
+                metaInfo =
+                        allowFutureMetadataUpdates
+                                ? metaInfo.withSerializerUpgradesAllowed()
+                                : metaInfo;
+
                 // update meta info with new serializer
                 stateInfo =
                         new RocksDBKeyedStateBackend.RocksDbKvStateInfo(
-                                stateInfo.columnFamilyHandle,
-                                new RegisteredPriorityQueueStateBackendMetaInfo<>(
-                                        stateName, byteOrderedElementSerializer));
+                                stateInfo.columnFamilyHandle, metaInfo);
                 kvStateInformation.put(stateName, stateInfo);
             }
         }
+        manualCompactionManager.register(stateInfo);
 
         return stateInfo;
+    }
+
+    @VisibleForTesting
+    public int getCacheSize() {
+        return cacheSize;
     }
 }

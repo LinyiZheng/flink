@@ -28,6 +28,7 @@ import org.apache.flink.client.program.ClusterClient;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.TaskManagerOptions;
+import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.core.testutils.MultiShotLatch;
 import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.CheckpointFailureReason;
@@ -39,7 +40,7 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.AssignerWithPeriodicWatermarks;
 import org.apache.flink.streaming.api.functions.AssignerWithPunctuatedWatermarks;
 import org.apache.flink.streaming.api.functions.co.CoMapFunction;
-import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
+import org.apache.flink.streaming.api.functions.sink.v2.DiscardingSink;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
 import org.apache.flink.streaming.api.functions.timestamps.AscendingTimestampExtractor;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
@@ -131,7 +132,7 @@ public class TimestampITCase extends TestLogger {
                 .connect(source2)
                 .map(new IdentityCoMap())
                 .transform("Custom Operator", BasicTypeInfo.INT_TYPE_INFO, new CustomOperator(true))
-                .addSink(new DiscardingSink<Integer>());
+                .sinkTo(new DiscardingSink<>());
 
         env.execute();
 
@@ -157,6 +158,25 @@ public class TimestampITCase extends TestLogger {
                     CustomOperator.finalWatermarks[i].get(
                             CustomOperator.finalWatermarks[i].size() - 1));
         }
+    }
+
+    @Test
+    public void testSelfUnionWatermarkPropagation() throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        DataStream<Integer> dataStream1 = env.fromData(1, 2, 3);
+
+        dataStream1
+                .union(dataStream1)
+                .transform(
+                        "Custom Operator", BasicTypeInfo.INT_TYPE_INFO, new CustomOperator(false))
+                .sinkTo(new DiscardingSink<>());
+        env.execute();
+
+        assertEquals(
+                Watermark.MAX_WATERMARK,
+                CustomOperator.finalWatermarks[0].get(
+                        CustomOperator.finalWatermarks[0].size() - 1));
     }
 
     @Test
@@ -186,7 +206,7 @@ public class TimestampITCase extends TestLogger {
                 .connect(source2)
                 .map(new IdentityCoMap())
                 .transform("Custom Operator", BasicTypeInfo.INT_TYPE_INFO, new CustomOperator(true))
-                .addSink(new DiscardingSink<Integer>());
+                .sinkTo(new DiscardingSink<Integer>());
 
         Thread t =
                 new Thread("stopper") {
@@ -206,7 +226,13 @@ public class TimestampITCase extends TestLogger {
                             // send stop until the job is stopped
                             do {
                                 try {
-                                    clusterClient.stopWithSavepoint(id, false, "test").get();
+                                    clusterClient
+                                            .stopWithSavepoint(
+                                                    id,
+                                                    false,
+                                                    "test",
+                                                    SavepointFormatType.CANONICAL)
+                                            .get();
                                 } catch (Exception e) {
                                     boolean ignoreException =
                                             ExceptionUtils.findThrowable(
@@ -283,7 +309,7 @@ public class TimestampITCase extends TestLogger {
                         "Custom Operator",
                         BasicTypeInfo.INT_TYPE_INFO,
                         new TimestampCheckingOperator())
-                .addSink(new DiscardingSink<Integer>());
+                .sinkTo(new DiscardingSink<Integer>());
 
         env.execute();
     }
@@ -309,7 +335,7 @@ public class TimestampITCase extends TestLogger {
                         "Custom Operator",
                         BasicTypeInfo.INT_TYPE_INFO,
                         new DisabledTimestampCheckingOperator())
-                .addSink(new DiscardingSink<Integer>());
+                .sinkTo(new DiscardingSink<Integer>());
 
         env.execute();
     }
@@ -671,7 +697,7 @@ public class TimestampITCase extends TestLogger {
         env.setStreamTimeCharacteristic(TimeCharacteristic.ProcessingTime);
 
         DataStream<Tuple2<String, Integer>> source1 =
-                env.fromElements(new Tuple2<>("a", 1), new Tuple2<>("b", 2));
+                env.fromData(new Tuple2<>("a", 1), new Tuple2<>("b", 2));
 
         source1.keyBy(0)
                 .window(TumblingEventTimeWindows.of(Time.seconds(5)))
@@ -701,7 +727,7 @@ public class TimestampITCase extends TestLogger {
         env.setParallelism(2);
 
         DataStream<Tuple2<String, Integer>> source1 =
-                env.fromElements(new Tuple2<>("a", 1), new Tuple2<>("b", 2));
+                env.fromData(new Tuple2<>("a", 1), new Tuple2<>("b", 2));
 
         source1.keyBy(0)
                 .window(TumblingEventTimeWindows.of(Time.seconds(5)))
@@ -772,7 +798,7 @@ public class TimestampITCase extends TestLogger {
         @Override
         public void close() throws Exception {
             super.close();
-            finalWatermarks[getRuntimeContext().getIndexOfThisSubtask()] = watermarks;
+            finalWatermarks[getRuntimeContext().getTaskInfo().getIndexOfThisSubtask()] = watermarks;
         }
     }
 

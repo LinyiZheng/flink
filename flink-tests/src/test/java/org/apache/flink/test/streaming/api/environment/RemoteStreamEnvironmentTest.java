@@ -25,9 +25,11 @@ import org.apache.flink.client.deployment.ClusterClientJobClientAdapter;
 import org.apache.flink.client.program.ClusterClient;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.RestOptions;
+import org.apache.flink.core.execution.CheckpointType;
 import org.apache.flink.core.execution.PipelineExecutor;
 import org.apache.flink.core.execution.PipelineExecutorFactory;
 import org.apache.flink.core.execution.PipelineExecutorServiceLoader;
+import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.runtime.client.JobStatusMessage;
 import org.apache.flink.runtime.clusterframework.ApplicationStatus;
 import org.apache.flink.runtime.jobgraph.JobGraph;
@@ -83,13 +85,13 @@ public class RemoteStreamEnvironmentTest extends TestLogger {
                         null,
                         null,
                         null);
-        env.fromElements(1).map(x -> x * 2);
+        env.fromData(1).map(x -> x * 2);
 
         JobExecutionResult actualResult = env.execute("fakeJobName");
         TestClusterClient testClient = testExecutorServiceLoader.getCreatedClusterClient();
         assertThat(actualResult.getJobID(), is(jobId));
-        assertThat(testClient.getConfiguration().getString(RestOptions.ADDRESS), is(host));
-        assertThat(testClient.getConfiguration().getInteger(RestOptions.PORT), is(99));
+        assertThat(testClient.getConfiguration().get(RestOptions.ADDRESS), is(host));
+        assertThat(testClient.getConfiguration().get(RestOptions.PORT), is(99));
     }
 
     @Test
@@ -108,7 +110,7 @@ public class RemoteStreamEnvironmentTest extends TestLogger {
                         null,
                         restoreSettings);
 
-        env.fromElements(1).map(x -> x * 2);
+        env.fromData(1).map(x -> x * 2);
 
         JobExecutionResult actualResult = env.execute("fakeJobName");
         assertThat(actualResult.getJobID(), is(jobID));
@@ -254,19 +256,45 @@ public class RemoteStreamEnvironmentTest extends TestLogger {
 
         @Override
         public CompletableFuture<String> cancelWithSavepoint(
-                JobID jobId, @Nullable String savepointDirectory) {
+                JobID jobId, @Nullable String savepointDirectory, SavepointFormatType formatType) {
             return null;
         }
 
         @Override
         public CompletableFuture<String> stopWithSavepoint(
-                JobID jobId, boolean advanceToEndOfEventTime, @Nullable String savepointDirectory) {
+                JobID jobId,
+                boolean advanceToEndOfEventTime,
+                @Nullable String savepointDirectory,
+                SavepointFormatType formatType) {
+            return null;
+        }
+
+        @Override
+        public CompletableFuture<String> stopWithDetachedSavepoint(
+                JobID jobId,
+                boolean advanceToEndOfEventTime,
+                @org.jetbrains.annotations.Nullable String savepointDirectory,
+                SavepointFormatType formatType) {
             return null;
         }
 
         @Override
         public CompletableFuture<String> triggerSavepoint(
-                JobID jobId, @Nullable String savepointDirectory) {
+                JobID jobId, @Nullable String savepointDirectory, SavepointFormatType formatType) {
+            return null;
+        }
+
+        @Override
+        public CompletableFuture<Long> triggerCheckpoint(
+                JobID jobId, CheckpointType checkpointType) {
+            return null;
+        }
+
+        @Override
+        public CompletableFuture<String> triggerDetachedSavepoint(
+                JobID jobId,
+                @org.jetbrains.annotations.Nullable String savepointDirectory,
+                SavepointFormatType formatType) {
             return null;
         }
 

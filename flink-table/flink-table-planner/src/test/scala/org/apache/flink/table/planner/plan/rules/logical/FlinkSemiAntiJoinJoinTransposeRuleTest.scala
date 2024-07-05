@@ -24,16 +24,14 @@ import org.apache.flink.table.planner.utils.{TableConfigUtils, TableTestBase}
 
 import org.apache.calcite.plan.hep.HepMatchOrder
 import org.apache.calcite.tools.RuleSets
-import org.junit.{Before, Test}
+import org.junit.jupiter.api.{BeforeEach, Test}
 
-/**
-  * Test for [[FlinkSemiAntiJoinJoinTransposeRule]].
-  */
+/** Test for [[FlinkSemiAntiJoinJoinTransposeRule]]. */
 class FlinkSemiAntiJoinJoinTransposeRuleTest extends TableTestBase {
 
   private val util = batchTestUtil()
 
-  @Before
+  @BeforeEach
   def setup(): Unit = {
     util.buildBatchProgram(FlinkBatchProgram.DEFAULT_REWRITE)
     val calciteConfig = TableConfigUtils.getCalciteConfig(util.tableEnv.getConfig)
@@ -42,10 +40,11 @@ class FlinkSemiAntiJoinJoinTransposeRuleTest extends TableTestBase {
       FlinkHepRuleSetProgramBuilder.newBuilder
         .setHepRulesExecutionType(HEP_RULES_EXECUTION_TYPE.RULE_COLLECTION)
         .setHepMatchOrder(HepMatchOrder.BOTTOM_UP)
-        .add(RuleSets.ofList(
-          FlinkSemiAntiJoinProjectTransposeRule.INSTANCE,
-          FlinkSemiAntiJoinFilterTransposeRule.INSTANCE,
-          FlinkSemiAntiJoinJoinTransposeRule.INSTANCE))
+        .add(
+          RuleSets.ofList(
+            FlinkSemiAntiJoinProjectTransposeRule.INSTANCE,
+            FlinkSemiAntiJoinFilterTransposeRule.INSTANCE,
+            FlinkSemiAntiJoinJoinTransposeRule.INSTANCE))
         .build()
     )
 
@@ -356,4 +355,3 @@ class FlinkSemiAntiJoinJoinTransposeRuleTest extends TableTestBase {
   }
 
 }
-

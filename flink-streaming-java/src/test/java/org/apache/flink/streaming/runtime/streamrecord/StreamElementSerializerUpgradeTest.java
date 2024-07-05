@@ -20,43 +20,30 @@ package org.apache.flink.streaming.runtime.streamrecord;
 
 import org.apache.flink.FlinkVersion;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
-import org.apache.flink.api.common.typeutils.TypeSerializerMatchers;
+import org.apache.flink.api.common.typeutils.TypeSerializerConditions;
 import org.apache.flink.api.common.typeutils.TypeSerializerSchemaCompatibility;
 import org.apache.flink.api.common.typeutils.TypeSerializerUpgradeTestBase;
 import org.apache.flink.api.common.typeutils.base.StringSerializer;
 
-import org.hamcrest.Matcher;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.assertj.core.api.Condition;
 
 import java.util.ArrayList;
 import java.util.Collection;
 
-import static org.apache.flink.streaming.util.StreamRecordMatchers.streamRecord;
-import static org.hamcrest.Matchers.is;
-
 /** Migration tests for {@link StreamElementSerializer}. */
-@RunWith(Parameterized.class)
-public class StreamElementSerializerUpgradeTest
+class StreamElementSerializerUpgradeTest
         extends TypeSerializerUpgradeTestBase<StreamElement, StreamElement> {
 
-    public StreamElementSerializerUpgradeTest(
-            TestSpecification<StreamElement, StreamElement> testSpecification) {
-        super(testSpecification);
-    }
-
-    @Parameterized.Parameters(name = "Test Specification = {0}")
-    public static Collection<TestSpecification<?, ?>> testSpecifications() throws Exception {
+    public Collection<TestSpecification<?, ?>> createTestSpecifications(FlinkVersion flinkVersion)
+            throws Exception {
 
         ArrayList<TestSpecification<?, ?>> testSpecifications = new ArrayList<>();
-        for (FlinkVersion flinkVersion : MIGRATION_VERSIONS) {
-            testSpecifications.add(
-                    new TestSpecification<>(
-                            "stream-element-serializer",
-                            flinkVersion,
-                            StreamElementSetup.class,
-                            StreamElementVerifier.class));
-        }
+        testSpecifications.add(
+                new TestSpecification<>(
+                        "stream-element-serializer",
+                        flinkVersion,
+                        StreamElementSetup.class,
+                        StreamElementVerifier.class));
 
         return testSpecifications;
     }
@@ -95,14 +82,22 @@ public class StreamElementSerializerUpgradeTest
 
         @SuppressWarnings({"unchecked", "rawtypes"})
         @Override
-        public Matcher<StreamElement> testDataMatcher() {
-            return (Matcher) streamRecord(is("key"), is(123456L));
+        public Condition<StreamElement> testDataCondition() {
+            return new Condition<>(
+                    se -> {
+                        if (se instanceof StreamRecord) {
+                            StreamRecord<?> sr = (StreamRecord<?>) se;
+                            return sr.getValue().equals("key") && sr.getTimestamp() == 123456L;
+                        }
+                        return false;
+                    },
+                    "a StreamRecord with value 'key' and timestamp 123456");
         }
 
         @Override
-        public Matcher<TypeSerializerSchemaCompatibility<StreamElement>> schemaCompatibilityMatcher(
-                FlinkVersion version) {
-            return TypeSerializerMatchers.isCompatibleAsIs();
+        public Condition<TypeSerializerSchemaCompatibility<StreamElement>>
+                schemaCompatibilityCondition(FlinkVersion version) {
+            return TypeSerializerConditions.isCompatibleAsIs();
         }
     }
 }

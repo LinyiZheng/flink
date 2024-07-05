@@ -19,6 +19,7 @@
 package org.apache.flink.table.planner.functions.casting;
 
 import org.apache.flink.table.planner.codegen.CodeGenUtils;
+import org.apache.flink.table.planner.codegen.CodeGeneratorContext;
 import org.apache.flink.table.types.logical.DistinctType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.utils.EncodingUtils;
@@ -41,6 +42,10 @@ final class CastRuleUtils {
 
     static String nullLiteral(boolean legacyBehaviour) {
         return legacyBehaviour ? strLiteral("null") : strLiteral("NULL");
+    }
+
+    static String operator(Object left, String operator, Object right) {
+        return left + operator + right;
     }
 
     static String staticCall(Class<?> clazz, String methodName, Object... args) {
@@ -208,6 +213,10 @@ final class CastRuleUtils {
             return stmt(varName + " = " + value);
         }
 
+        public CodeWriter assignPlusStmt(String varName, String value) {
+            return stmt(varName + " += " + value);
+        }
+
         public CodeWriter assignArrayStmt(String varName, String index, String value) {
             return stmt(varName + "[" + index + "] = " + value);
         }
@@ -218,8 +227,10 @@ final class CastRuleUtils {
         }
 
         public CodeWriter forStmt(
-                String upperBound, BiConsumer<String, CodeWriter> bodyWriterConsumer) {
-            final String indexTerm = newName("i");
+                String upperBound,
+                BiConsumer<String, CodeWriter> bodyWriterConsumer,
+                CodeGeneratorContext codeGeneratorContext) {
+            final String indexTerm = newName(codeGeneratorContext, "i");
             final CodeWriter innerWriter = new CodeWriter();
 
             builder.append("for (int ")
@@ -270,15 +281,18 @@ final class CastRuleUtils {
 
         public CodeWriter tryCatchStmt(
                 Consumer<CodeWriter> bodyWriterConsumer,
-                BiConsumer<String, CodeWriter> catchConsumer) {
-            return tryCatchStmt(bodyWriterConsumer, Throwable.class, catchConsumer);
+                BiConsumer<String, CodeWriter> catchConsumer,
+                CodeGeneratorContext codeGeneratorContext) {
+            return tryCatchStmt(
+                    bodyWriterConsumer, Throwable.class, catchConsumer, codeGeneratorContext);
         }
 
         public CodeWriter tryCatchStmt(
                 Consumer<CodeWriter> bodyWriterConsumer,
                 Class<? extends Throwable> catchClass,
-                BiConsumer<String, CodeWriter> catchConsumer) {
-            final String exceptionTerm = newName("e");
+                BiConsumer<String, CodeWriter> catchConsumer,
+                CodeGeneratorContext codeGeneratorContext) {
+            final String exceptionTerm = newName(codeGeneratorContext, "e");
 
             final CodeWriter bodyWriter = new CodeWriter();
             final CodeWriter catchWriter = new CodeWriter();

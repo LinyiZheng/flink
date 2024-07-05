@@ -15,24 +15,31 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.streaming.api.scala.function
 
 import org.apache.flink.annotation.Public
 import org.apache.flink.streaming.api.windowing.windows.Window
 
 /**
-  * Base abstract class for functions that are evaluated over
-  * keyed (grouped) windows using a context for retrieving extra information.
-  *
-  * @tparam IN The type of the input value.
-  * @tparam OUT The type of the output value.
-  * @tparam KEY The type of the key.
-  * @tparam W The type of the window.
-  */
-@Public
+ * Base abstract class for functions that are evaluated over keyed (grouped) windows using a context
+ * for retrieving extra information.
+ *
+ * @tparam IN
+ *   The type of the input value.
+ * @tparam OUT
+ *   The type of the output value.
+ * @tparam KEY
+ *   The type of the key.
+ * @tparam W
+ *   The type of the window.
+ * @deprecated
+ *   All Flink Scala APIs are deprecated and will be removed in a future Flink major version. You
+ *   can still build your application in Scala, but you should move to the Java version of either
+ *   the DataStream and/or Table API.
+ * @see
+ *   <a href="https://s.apache.org/flip-265">FLIP-265 Deprecate and remove Scala API support</a>
+ */
 @deprecated("use [[ProcessWindowFunction]] instead")
+@Public
 abstract class RichProcessWindowFunction[IN, OUT, KEY, W <: Window]
-    extends ProcessWindowFunction[IN, OUT, KEY, W] {
-}
-
+  extends ProcessWindowFunction[IN, OUT, KEY, W] {}

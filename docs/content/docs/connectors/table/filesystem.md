@@ -50,6 +50,11 @@ CREATE TABLE MyUserTable (
                                         -- section for more details
   'partition.default-name' = '...',     -- optional: default partition name in case the dynamic partition
                                         -- column value is null/empty string
+  'source.path.regex-pattern' = '...',  -- optional: regex pattern to filter files to read under the 
+                                        -- directory of `path` option. This regex pattern should be
+                                        -- matched with the absolute file path. If this option is set,
+                                        -- the connector  will recursive all files under the directory
+                                        -- of `path` option
 
   -- optional: the option to enable shuffle data by dynamic partition fields in sink phase, this can greatly
   -- reduce the number of file for filesystem sink but may lead data skew, the default value is false.
@@ -60,10 +65,6 @@ CREATE TABLE MyUserTable (
 
 {{< hint info >}}
 Make sure to include [Flink File System specific dependencies]({{< ref "docs/deployment/filesystems/overview" >}}).
-{{< /hint >}}
-
-{{< hint info >}}
-File system sources for streaming is still under development. In the future, the community will add support for common streaming use cases, i.e., partition and directory monitoring.
 {{< /hint >}}
 
 {{< hint warning >}}
@@ -94,8 +95,8 @@ The file system table supports both partition inserting and overwrite inserting.
 
 The file system connector supports multiple formats:
 
- - CSV: [RFC-4180](https://tools.ietf.org/html/rfc4180). Uncompressed.
- - JSON: Note JSON format for file system connector is not a typical JSON file but uncompressed [newline delimited JSON](http://jsonlines.org/).
+ - CSV: [RFC-4180](https://tools.ietf.org/html/rfc4180).
+ - JSON: Note JSON format for file system connector is not a typical JSON file but [newline delimited JSON](http://jsonlines.org/).
  - Avro: [Apache Avro](http://avro.apache.org). Support compression by configuring `avro.codec`.
  - Parquet: [Apache Parquet](http://parquet.apache.org). Compatible with Hive.
  - Orc: [Apache Orc](http://orc.apache.org). Compatible with Hive.
@@ -111,9 +112,9 @@ When using a directory as the source path, there is **no defined order of ingest
 
 ### Directory watching
 
-The file system connector automatically watches the input directory when the runtime mode is configured as STREAMING.
+By default, the file system connector is bounded, that is it will scan the configured path once and then close itself.
 
-You can modify the watch interval using the following option.
+You can enable continuous directory watching by configuring the option `source.monitor-interval`:
 
 <table class="table table-bordered">
   <thead>
@@ -192,8 +193,8 @@ CREATE TABLE MyUserTableWithFilepath (
 
 ## Streaming Sink
 
-The file system connector supports streaming writes, based on Flink's [Streaming File Sink]({{< ref "docs/connectors/datastream/streamfile_sink" >}})
-to write records to file. Row-encoded Formats are csv and json. Bulk-encoded Formats are parquet, orc and avro.
+The file system connector supports streaming writes, based on Flink's [FileSystem]({{< ref "docs/connectors/datastream/filesystem" >}}),
+to write records to file. Row-encoded Formats are CSV and JSON. Bulk-encoded Formats are Parquet, ORC and Avro.
 
 You can write SQL directly, insert the stream data into the non-partitioned table.
 If it is a partitioned table, you can configure partition related operations. See [Partition Commit]({{< ref "docs/connectors/table/filesystem" >}}#partition-commit) for details.
@@ -208,21 +209,27 @@ a timeout that specifies the maximum duration for which a file can be open.
 <table class="table table-bordered">
   <thead>
     <tr>
-        <th class="text-left" style="width: 20%">Key</th>
-        <th class="text-left" style="width: 15%">Default</th>
+        <th class="text-left" style="width: 25%">Option</th>
+        <th class="text-left" style="width: 8%">Required</th>
+        <th class="text-left" style="width: 8%">Forwarded</th>
+        <th class="text-left" style="width: 7%">Default</th>
         <th class="text-left" style="width: 10%">Type</th>
-        <th class="text-left" style="width: 55%">Description</th>
+        <th class="text-left" style="width: 42%">Description</th>
     </tr>
   </thead>
   <tbody>
     <tr>
         <td><h5>sink.rolling-policy.file-size</h5></td>
+        <td>optional</td>
+        <td>yes</td>
         <td style="word-wrap: break-word;">128MB</td>
         <td>MemorySize</td>
         <td>The maximum part file size before rolling.</td>
     </tr>
     <tr>
         <td><h5>sink.rolling-policy.rollover-interval</h5></td>
+        <td>optional</td>
+        <td>yes</td>
         <td style="word-wrap: break-word;">30 min</td>
         <td>Duration</td>
         <td>The maximum time duration a part file can stay open before rolling (by default 30 min to avoid to many small files).
@@ -230,6 +237,8 @@ a timeout that specifies the maximum duration for which a file can be open.
     </tr>
     <tr>
         <td><h5>sink.rolling-policy.check-interval</h5></td>
+        <td>optional</td>
+        <td>yes</td>
         <td style="word-wrap: break-word;">1 min</td>
         <td>Duration</td>
         <td>The interval for checking time based rolling policies. This controls the frequency to check whether a part file should rollover based on 'sink.rolling-policy.rollover-interval'.</td>
@@ -240,8 +249,8 @@ a timeout that specifies the maximum duration for which a file can be open.
 **NOTE:** For bulk formats (parquet, orc, avro), the rolling policy in combination with the checkpoint interval(pending files
 become finished on the next checkpoint) control the size and number of these parts.
 
-**NOTE:** For row formats (csv, json), you can set the parameter `sink.rolling-policy.file-size` or `sink.rolling-policy.rollover-interval` in the connector properties and parameter `execution.checkpointing.interval` in flink-conf.yaml together
-if you don't want to wait a long period before observe the data exists in file system. For other formats (avro, orc), you can just set parameter `execution.checkpointing.interval` in flink-conf.yaml.
+**NOTE:** For row formats (csv, json), you can set the parameter `sink.rolling-policy.file-size` or `sink.rolling-policy.rollover-interval` in the connector properties and parameter `execution.checkpointing.interval` in [Flink configuration file]({{< ref "docs/deployment/config#flink-configuration-file" >}}) together
+if you don't want to wait a long period before observe the data exists in file system. For other formats (avro, orc), you can just set parameter `execution.checkpointing.interval` in [Flink configuration file]({{< ref "docs/deployment/config#flink-configuration-file" >}}).
 
 ### File Compaction
 
@@ -250,21 +259,27 @@ The file sink supports file compactions, which allows applications to have small
 <table class="table table-bordered">
   <thead>
     <tr>
-        <th class="text-left" style="width: 20%">Key</th>
-        <th class="text-left" style="width: 15%">Default</th>
+        <th class="text-left" style="width: 25%">Option</th>
+        <th class="text-left" style="width: 8%">Required</th>
+        <th class="text-left" style="width: 8%">Forwarded</th>
+        <th class="text-left" style="width: 7%">Default</th>
         <th class="text-left" style="width: 10%">Type</th>
-        <th class="text-left" style="width: 55%">Description</th>
+        <th class="text-left" style="width: 42%">Description</th>
     </tr>
   </thead>
   <tbody>
     <tr>
         <td><h5>auto-compaction</h5></td>
+        <td>optional</td>
+        <td>no</td>
         <td style="word-wrap: break-word;">false</td>
         <td>Boolean</td>
         <td>Whether to enable automatic compaction in streaming sink or not. The data will be written to temporary files. After the checkpoint is completed, the temporary files generated by a checkpoint will be compacted. The temporary files are invisible before compaction.</td>
     </tr>
     <tr>
         <td><h5>compaction.file-size</h5></td>
+        <td>optional</td>
+        <td>yes</td>
         <td style="word-wrap: break-word;">(none)</td>
         <td>MemorySize</td>
         <td>The compaction target file size, the default value is the rolling file size.</td>
@@ -294,27 +309,35 @@ To define when to commit a partition, providing partition commit trigger:
 <table class="table table-bordered">
   <thead>
     <tr>
-        <th class="text-left" style="width: 20%">Key</th>
-        <th class="text-left" style="width: 15%">Default</th>
+        <th class="text-left" style="width: 25%">Option</th>
+        <th class="text-left" style="width: 8%">Required</th>
+        <th class="text-left" style="width: 8%">Forwarded</th>
+        <th class="text-left" style="width: 7%">Default</th>
         <th class="text-left" style="width: 10%">Type</th>
-        <th class="text-left" style="width: 55%">Description</th>
+        <th class="text-left" style="width: 42%">Description</th>
     </tr>
   </thead>
   <tbody>
     <tr>
         <td><h5>sink.partition-commit.trigger</h5></td>
+        <td>optional</td>
+        <td>yes</td>
         <td style="word-wrap: break-word;">process-time</td>
         <td>String</td>
         <td>Trigger type for partition commit: 'process-time': based on the time of the machine, it neither requires partition time extraction nor watermark generation. Commit partition once the 'current system time' passes 'partition creation system time' plus 'delay'. 'partition-time': based on the time that extracted from partition values, it requires watermark generation. Commit partition once the 'watermark' passes 'time extracted from partition values' plus 'delay'.</td>
     </tr>
     <tr>
         <td><h5>sink.partition-commit.delay</h5></td>
+        <td>optional</td>
+        <td>yes</td>
         <td style="word-wrap: break-word;">0 s</td>
         <td>Duration</td>
         <td>The partition will not commit until the delay time. If it is a daily partition, should be '1 d', if it is a hourly partition, should be '1 h'.</td>
     </tr>
     <tr>
         <td><h5>sink.partition-commit.watermark-time-zone</h5></td>
+        <td>optional</td>
+        <td>yes</td>
         <td style="word-wrap: break-word;">UTC</td>
         <td>String</td>
         <td>The time zone to parse the long watermark value to TIMESTAMP value, the parsed watermark timestamp is used to compare with partition time to decide the partition should commit or not. This option is only take effect when `sink.partition-commit.trigger` is set to 'partition-time'. If this option is not configured correctly, e.g. source rowtime is defined on TIMESTAMP_LTZ column, but this config is not configured, then users may see the partition committed after a few hours. The default value is 'UTC', which means the watermark is defined on TIMESTAMP column or not defined. If the watermark is defined on TIMESTAMP_LTZ column, the time zone of watermark is the session time zone. The option value is either a full name such as 'America/Los_Angeles', or a custom timezone id such as 'GMT-08:00'.</td>
@@ -356,33 +379,43 @@ Time extractors define extracting time from partition values.
 <table class="table table-bordered">
   <thead>
     <tr>
-        <th class="text-left" style="width: 20%">Key</th>
-        <th class="text-left" style="width: 15%">Default</th>
+        <th class="text-left" style="width: 25%">Option</th>
+        <th class="text-left" style="width: 8%">Required</th>
+        <th class="text-left" style="width: 8%">Forwarded</th>
+        <th class="text-left" style="width: 7%">Default</th>
         <th class="text-left" style="width: 10%">Type</th>
-        <th class="text-left" style="width: 55%">Description</th>
+        <th class="text-left" style="width: 42%">Description</th>
     </tr>
   </thead>
   <tbody>
     <tr>
         <td><h5>partition.time-extractor.kind</h5></td>
+        <td>optional</td>
+        <td>no</td>
         <td style="word-wrap: break-word;">default</td>
         <td>String</td>
         <td>Time extractor to extract time from partition values. Support default and custom. For default, can configure timestamp pattern\formatter. For custom, should configure extractor class.</td>
     </tr>
     <tr>
         <td><h5>partition.time-extractor.class</h5></td>
+        <td>optional</td>
+        <td>no</td>
         <td style="word-wrap: break-word;">(none)</td>
         <td>String</td>
         <td>The extractor class for implement PartitionTimeExtractor interface.</td>
     </tr>
     <tr>
         <td><h5>partition.time-extractor.timestamp-pattern</h5></td>
+        <td>optional</td>
+        <td>no</td>
         <td style="word-wrap: break-word;">(none)</td>
         <td>String</td>
         <td>The 'default' construction way allows users to use partition fields to get a legal timestamp pattern. Default support 'yyyy-MM-dd hh:mm:ss' from first field. If timestamp should be extracted from a single partition field 'dt', can configure: '$dt'. If timestamp should be extracted from multiple partition fields, say 'year', 'month', 'day' and 'hour', can configure: '$year-$month-$day $hour:00:00'. If timestamp should be extracted from two partition fields 'dt' and 'hour', can configure: '$dt $hour:00:00'.</td>
     </tr>
     <tr>
         <td><h5>partition.time-extractor.timestamp-formatter</h5></td>
+        <td>optional</td>
+        <td>no</td>
         <td style="word-wrap: break-word;">yyyy-MM-dd&nbsp;HH:mm:ss</td>
         <td>String</td>
         <td>The formatter that formats the partition timestamp string value to timestamp, the partition timestamp string value is expressed by 'partition.time-extractor.timestamp-pattern'. For example, the partition timestamp is extracted from multiple partition fields, say 'year', 'month' and 'day', you can configure 'partition.time-extractor.timestamp-pattern' to '$year$month$day', and configure `partition.time-extractor.timestamp-formatter` to 'yyyyMMdd'. By default the formatter is 'yyyy-MM-dd HH:mm:ss'.
@@ -417,27 +450,43 @@ The partition commit policy defines what action is taken when partitions are com
 <table class="table table-bordered">
   <thead>
     <tr>
-        <th class="text-left" style="width: 20%">Key</th>
-        <th class="text-left" style="width: 15%">Default</th>
+        <th class="text-left" style="width: 25%">Option</th>
+        <th class="text-left" style="width: 8%">Required</th>
+        <th class="text-left" style="width: 8%">Forwarded</th>
+        <th class="text-left" style="width: 7%">Default</th>
         <th class="text-left" style="width: 10%">Type</th>
-        <th class="text-left" style="width: 55%">Description</th>
+        <th class="text-left" style="width: 42%">Description</th>
     </tr>
   </thead>
   <tbody>
     <tr>
         <td><h5>sink.partition-commit.policy.kind</h5></td>
+        <td>optional</td>
+        <td>yes</td>
         <td style="word-wrap: break-word;">(none)</td>
         <td>String</td>
         <td>Policy to commit a partition is to notify the downstream application that the partition has finished writing, the partition is ready to be read. metastore: add partition to metastore. Only hive table supports metastore policy, file system manages partitions through directory structure. success-file: add '_success' file to directory. Both can be configured at the same time: 'metastore,success-file'. custom: use policy class to create a commit policy. Support to configure multiple policies: 'metastore,success-file'.</td>
     </tr>
     <tr>
         <td><h5>sink.partition-commit.policy.class</h5></td>
+        <td>optional</td>
+        <td>yes</td>
         <td style="word-wrap: break-word;">(none)</td>
         <td>String</td>
         <td>The partition commit policy class for implement PartitionCommitPolicy interface. Only work in custom commit policy.</td>
     </tr>
     <tr>
+        <td><h5>sink.partition-commit.policy.class.parameters</h5></td>
+        <td>optional</td>
+        <td>yes</td>
+        <td style="word-wrap: break-word;">(none)</td>
+        <td>String</td>
+        <td>The parameters passed to the constructor of the custom commit policy, with multiple parameters separated by semicolons, such as 'param1;param2'. The configuration value will be split into a list (['param1', 'param2']) and passed to the constructor of the custom commit policy class. This option is optional, if not configured, the default constructor will be used.</td>
+    </tr>
+    <tr>
         <td><h5>sink.partition-commit.success-file.name</h5></td>
+        <td>optional</td>
+        <td>yes</td>
         <td style="word-wrap: break-word;">_SUCCESS</td>
         <td>String</td>
         <td>The file name for success-file partition commit policy, default is '_SUCCESS'.</td>
@@ -482,15 +531,19 @@ The parallelism of writing files into external file system (including Hive) can 
 <table class="table table-bordered">
   <thead>
     <tr>
-        <th class="text-left" style="width: 20%">Key</th>
-        <th class="text-left" style="width: 15%">Default</th>
+        <th class="text-left" style="width: 25%">Option</th>
+        <th class="text-left" style="width: 8%">Required</th>
+        <th class="text-left" style="width: 8%">Forwarded</th>
+        <th class="text-left" style="width: 7%">Default</th>
         <th class="text-left" style="width: 10%">Type</th>
-        <th class="text-left" style="width: 55%">Description</th>
+        <th class="text-left" style="width: 42%">Description</th>
     </tr>
   </thead>
   <tbody>
     <tr>
         <td><h5>sink.parallelism</h5></td>
+        <td>optional</td>
+        <td>no</td>
         <td style="word-wrap: break-word;">(none)</td>
         <td>Integer</td>
         <td>Parallelism of writing files into external file system. The value should greater than zero otherwise exception will be thrown.</td>

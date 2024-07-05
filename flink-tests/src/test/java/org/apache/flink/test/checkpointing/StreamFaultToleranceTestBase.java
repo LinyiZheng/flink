@@ -40,6 +40,7 @@ import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 
 import java.io.Serializable;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collection;
 
@@ -77,17 +78,18 @@ public abstract class StreamFaultToleranceTestBase extends TestLogger {
         Configuration configuration = new Configuration();
         switch (failoverStrategy) {
             case RestartPipelinedRegionFailoverStrategy:
-                configuration.setString(JobManagerOptions.EXECUTION_FAILOVER_STRATEGY, "region");
+                configuration.set(JobManagerOptions.EXECUTION_FAILOVER_STRATEGY, "region");
                 break;
             case RestartAllFailoverStrategy:
-                configuration.setString(JobManagerOptions.EXECUTION_FAILOVER_STRATEGY, "full");
+                configuration.set(JobManagerOptions.EXECUTION_FAILOVER_STRATEGY, "full");
         }
 
         // Configure DFS DSTL for this test as it might produce too much GC pressure if
         // ChangelogStateBackend is used.
         // Doing it on cluster level unconditionally as randomization currently happens on the job
         // level (environment); while this factory can only be set on the cluster level.
-        FsStateChangelogStorageFactory.configure(configuration, tempFolder.newFolder());
+        FsStateChangelogStorageFactory.configure(
+                configuration, tempFolder.newFolder(), Duration.ofMinutes(1), 10);
         cluster =
                 new MiniClusterWithClientResource(
                         new MiniClusterResourceConfiguration.Builder()

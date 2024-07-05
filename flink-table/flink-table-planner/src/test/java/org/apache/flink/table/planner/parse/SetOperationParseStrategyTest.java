@@ -18,29 +18,40 @@
 
 package org.apache.flink.table.planner.parse;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for {@link SetOperationParseStrategy}. */
-public class SetOperationParseStrategyTest {
+class SetOperationParseStrategyTest {
 
     @Test
-    public void testMatches() {
-        assertTrue(SetOperationParseStrategy.INSTANCE.match("SET"));
-        assertTrue(
-                SetOperationParseStrategy.INSTANCE.match(
-                        "SET table.local-time-zone = Europe/Berlin"));
-        assertTrue(
-                SetOperationParseStrategy.INSTANCE.match(
-                        "SET table.local-time-zone = 'Europe/Berlin'"));
+    void testMatches() {
+        assertThat(SetOperationParseStrategy.INSTANCE.match("SET")).isTrue();
+        assertThat(
+                        SetOperationParseStrategy.INSTANCE.match(
+                                "SET table.local-time-zone = Europe/Berlin"))
+                .isTrue();
+        assertThat(
+                        SetOperationParseStrategy.INSTANCE.match(
+                                "SET table.local-time-zone = 'Europe/Berlin'"))
+                .isTrue();
+        assertThat(SetOperationParseStrategy.INSTANCE.match("SET;")).isTrue();
+        assertThat(
+                        SetOperationParseStrategy.INSTANCE.match(
+                                "SET table.local-time-zone = Europe/Berlin;"))
+                .isTrue();
+        assertThat(
+                        SetOperationParseStrategy.INSTANCE.match(
+                                "SET table.local-time-zone = 'Europe/Berlin';"))
+                .isTrue();
     }
 
     @Test
-    public void testDoesNotMatchQuotedKey() {
-        assertFalse(
-                SetOperationParseStrategy.INSTANCE.match(
-                        "SET 'table.local-time-zone' = Europe/Berlin"));
+    void testDoesNotMatchQuotedKey() {
+        assertThat(
+                        SetOperationParseStrategy.INSTANCE.match(
+                                "SET 'table.local-time-zone' = Europe/Berlin"))
+                .isFalse();
     }
 }

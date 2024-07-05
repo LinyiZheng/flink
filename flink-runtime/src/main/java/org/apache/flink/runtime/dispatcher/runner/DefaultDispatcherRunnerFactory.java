@@ -21,8 +21,8 @@ package org.apache.flink.runtime.dispatcher.runner;
 import org.apache.flink.runtime.dispatcher.DispatcherFactory;
 import org.apache.flink.runtime.dispatcher.PartialDispatcherServices;
 import org.apache.flink.runtime.entrypoint.component.JobGraphRetriever;
-import org.apache.flink.runtime.jobmanager.JobGraphStoreFactory;
-import org.apache.flink.runtime.leaderelection.LeaderElectionService;
+import org.apache.flink.runtime.jobmanager.JobPersistenceComponentFactory;
+import org.apache.flink.runtime.leaderelection.LeaderElection;
 import org.apache.flink.runtime.rpc.FatalErrorHandler;
 import org.apache.flink.runtime.rpc.RpcService;
 
@@ -42,9 +42,9 @@ public class DefaultDispatcherRunnerFactory implements DispatcherRunnerFactory {
 
     @Override
     public DispatcherRunner createDispatcherRunner(
-            LeaderElectionService leaderElectionService,
+            LeaderElection leaderElection,
             FatalErrorHandler fatalErrorHandler,
-            JobGraphStoreFactory jobGraphStoreFactory,
+            JobPersistenceComponentFactory jobPersistenceComponentFactory,
             Executor ioExecutor,
             RpcService rpcService,
             PartialDispatcherServices partialDispatcherServices)
@@ -52,14 +52,14 @@ public class DefaultDispatcherRunnerFactory implements DispatcherRunnerFactory {
 
         final DispatcherLeaderProcessFactory dispatcherLeaderProcessFactory =
                 dispatcherLeaderProcessFactoryFactory.createFactory(
-                        jobGraphStoreFactory,
+                        jobPersistenceComponentFactory,
                         ioExecutor,
                         rpcService,
                         partialDispatcherServices,
                         fatalErrorHandler);
 
         return DefaultDispatcherRunner.create(
-                leaderElectionService, fatalErrorHandler, dispatcherLeaderProcessFactory);
+                leaderElection, fatalErrorHandler, dispatcherLeaderProcessFactory);
     }
 
     public static DefaultDispatcherRunnerFactory createSessionRunner(

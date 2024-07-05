@@ -23,46 +23,52 @@ import org.apache.flink.hadoopcompatibility.scala.HadoopInputs
 import org.apache.flink.test.testdata.WordCountData
 import org.apache.flink.test.util.{JavaProgramTestBase, TestBaseUtils}
 import org.apache.flink.util.OperatingSystem
+
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.io.{LongWritable, Text}
 import org.apache.hadoop.mapred.{FileOutputFormat, JobConf, TextInputFormat, TextOutputFormat}
-import org.junit.{Assume, Before}
+import org.assertj.core.api.Assumptions.assumeThat
+import org.junit.jupiter.api.BeforeEach
 
 class WordCountMapredITCase extends JavaProgramTestBase {
   protected var textPath: String = null
   protected var resultPath: String = null
 
-  @Before
+  @BeforeEach
   def checkOperatingSystem() {
     // FLINK-5164 - see https://wiki.apache.org/hadoop/WindowsProblems
-    Assume.assumeTrue("This test can't run successfully on Windows.", !OperatingSystem.isWindows)
+    assumeThat(OperatingSystem.isWindows)
+      .isFalse()
   }
 
-  protected override def preSubmit() {
+  override protected def preSubmit() {
     textPath = createTempFile("text.txt", WordCountData.TEXT)
     resultPath = getTempDirPath("result")
   }
 
-  protected override def postSubmit() {
-    TestBaseUtils.compareResultsByLinesInMemory(WordCountData.COUNTS,
-                                                resultPath, Array[String](".", "_"))
+  override protected def postSubmit() {
+    TestBaseUtils.compareResultsByLinesInMemory(
+      WordCountData.COUNTS,
+      resultPath,
+      Array[String](".", "_"))
   }
 
-  private def internalRun (): Unit = {
+  private def internalRun(): Unit = {
     val env = ExecutionEnvironment.getExecutionEnvironment
 
     val input =
-      env.createInput(HadoopInputs.readHadoopFile(new TextInputFormat, classOf[LongWritable],
-        classOf[Text], textPath))
+      env.createInput(
+        HadoopInputs
+          .readHadoopFile(new TextInputFormat, classOf[LongWritable], classOf[Text], textPath))
 
     val counts = input
       .map(_._2.toString)
-      .flatMap(_.toLowerCase.split("\\W+").filter(_.nonEmpty).map( (_, 1)))
+      .flatMap(_.toLowerCase.split("\\W+").filter(_.nonEmpty).map((_, 1)))
       .groupBy(0)
       .sum(1)
 
     val words = counts
-      .map( t => (new Text(t._1), new LongWritable(t._2)) )
+      .map(t => (new Text(t._1), new LongWritable(t._2)))
 
     val hadoopOutputFormat = new HadoopOutputFormat[Text, LongWritable](
       new TextOutputFormat[Text, LongWritable],
@@ -81,4 +87,3 @@ class WordCountMapredITCase extends JavaProgramTestBase {
     postSubmit()
   }
 }
-

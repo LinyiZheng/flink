@@ -18,20 +18,22 @@
 
 package org.apache.flink.runtime.rest.messages.job.savepoints;
 
+import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.runtime.rest.messages.RestRequestMarshallingTestBase;
 import org.apache.flink.runtime.rest.messages.TriggerId;
 import org.apache.flink.runtime.rest.messages.job.savepoints.stop.StopWithSavepointRequestBody;
+import org.apache.flink.testutils.junit.extensions.parameterized.ParameterizedTestExtension;
+import org.apache.flink.testutils.junit.extensions.parameterized.Parameters;
 
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.util.Arrays;
 import java.util.Collection;
 
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for {@link StopWithSavepointRequestBody}. */
-@RunWith(Parameterized.class)
+@ExtendWith(ParameterizedTestExtension.class)
 public class StopWithSavepointTriggerRequestBodyTest
         extends RestRequestMarshallingTestBase<StopWithSavepointRequestBody> {
 
@@ -42,14 +44,42 @@ public class StopWithSavepointTriggerRequestBodyTest
         this.savepointTriggerRequestBody = savepointTriggerRequestBody;
     }
 
-    @Parameterized.Parameters
+    @Parameters
     public static Collection<Object[]> data() {
         return Arrays.asList(
                 new Object[][] {
-                    {new StopWithSavepointRequestBody("/tmp", true, null)},
-                    {new StopWithSavepointRequestBody("/tmp", false, null)},
-                    {new StopWithSavepointRequestBody("/tmp", true, new TriggerId())},
-                    {new StopWithSavepointRequestBody("/tmp", false, new TriggerId())},
+                    {
+                        new StopWithSavepointRequestBody(
+                                "/tmp", true, SavepointFormatType.CANONICAL, null)
+                    },
+                    {
+                        new StopWithSavepointRequestBody(
+                                "/tmp", false, SavepointFormatType.CANONICAL, null)
+                    },
+                    {
+                        new StopWithSavepointRequestBody(
+                                "/tmp", true, SavepointFormatType.CANONICAL, new TriggerId())
+                    },
+                    {
+                        new StopWithSavepointRequestBody(
+                                "/tmp", false, SavepointFormatType.CANONICAL, new TriggerId())
+                    },
+                    {
+                        new StopWithSavepointRequestBody(
+                                "/tmp", true, SavepointFormatType.NATIVE, null)
+                    },
+                    {
+                        new StopWithSavepointRequestBody(
+                                "/tmp", false, SavepointFormatType.NATIVE, null)
+                    },
+                    {
+                        new StopWithSavepointRequestBody(
+                                "/tmp", true, SavepointFormatType.NATIVE, new TriggerId())
+                    },
+                    {
+                        new StopWithSavepointRequestBody(
+                                "/tmp", false, SavepointFormatType.NATIVE, new TriggerId())
+                    },
                 });
     }
 
@@ -67,8 +97,9 @@ public class StopWithSavepointTriggerRequestBodyTest
     protected void assertOriginalEqualsToUnmarshalled(
             final StopWithSavepointRequestBody expected,
             final StopWithSavepointRequestBody actual) {
-        assertEquals(expected.getTargetDirectory(), actual.getTargetDirectory());
-        assertEquals(expected.getTriggerId(), actual.getTriggerId());
-        assertEquals(expected.shouldDrain(), actual.shouldDrain());
+        assertThat(expected.getTargetDirectory()).isEqualTo(actual.getTargetDirectory());
+        assertThat(expected.getTriggerId()).isEqualTo(actual.getTriggerId());
+        assertThat(expected.shouldDrain()).isEqualTo(actual.shouldDrain());
+        assertThat(expected.getFormatType()).isEqualTo(actual.getFormatType());
     }
 }

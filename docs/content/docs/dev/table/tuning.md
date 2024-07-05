@@ -28,10 +28,10 @@ under the License.
 
 SQL is the most widely used language for data analytics. Flink's Table API and SQL enables users to define efficient stream analytics applications in less time and effort. Moreover, Flink Table API and SQL is effectively optimized, it integrates a lot of query optimizations and tuned operator implementations. But not all of the optimizations are enabled by default, so for some workloads, it is possible to improve performance by turning on some options.
 
-In this page, we will introduce some useful optimization options and the internals of streaming aggregation which will bring great improvement in some cases.
+In this page, we will introduce some useful optimization options and the internals of streaming aggregation, regular join which will bring great improvement in some cases.
 
 {{< hint info >}}
-The streaming aggregation optimizations mentioned in this page are all supported for [Group Aggregations]({{< ref "docs/dev/table/sql/queries/group-agg" >}}) and [Window TVF Aggregations]({{< ref "docs/dev/table/sql/queries/window-agg" >}}) now.
+The streaming aggregation optimizations mentioned in this page are all supported for [Group Aggregations]({{< ref "docs/dev/table/sql/queries/group-agg" >}}) and [Window TVF Aggregations]({{< ref "docs/dev/table/sql/queries/window-agg" >}}) (except Session Window TVF Aggregation) now.
 {{< /hint >}}
 
 
@@ -59,14 +59,14 @@ The following examples show how to enable these options.
 {{< tab "Java" >}}
 ```java
 // instantiate table environment
-TableEnvironment tEnv = ...
+TableEnvironment tEnv = ...;
 
 // access flink configuration
-Configuration configuration = tEnv.getConfig().getConfiguration();
+TableConfig configuration = tEnv.getConfig();
 // set low-level key-value options
-configuration.setString("table.exec.mini-batch.enabled", "true"); // enable mini-batch optimization
-configuration.setString("table.exec.mini-batch.allow-latency", "5 s"); // use 5 seconds to buffer input records
-configuration.setString("table.exec.mini-batch.size", "5000"); // the maximum number of records can be buffered by each aggregate operator task
+configuration.set("table.exec.mini-batch.enabled", "true"); // enable mini-batch optimization
+configuration.set("table.exec.mini-batch.allow-latency", "5 s"); // use 5 seconds to buffer input records
+configuration.set("table.exec.mini-batch.size", "5000"); // the maximum number of records can be buffered by each aggregate operator task
 ```
 {{< /tab >}}
 {{< tab "Scala" >}}
@@ -75,11 +75,11 @@ configuration.setString("table.exec.mini-batch.size", "5000"); // the maximum nu
 val tEnv: TableEnvironment = ...
 
 // access flink configuration
-val configuration = tEnv.getConfig().getConfiguration()
+val configuration = tEnv.getConfig()
 // set low-level key-value options
-configuration.setString("table.exec.mini-batch.enabled", "true") // enable mini-batch optimization
-configuration.setString("table.exec.mini-batch.allow-latency", "5 s") // use 5 seconds to buffer input records
-configuration.setString("table.exec.mini-batch.size", "5000") // the maximum number of records can be buffered by each aggregate operator task
+configuration.set("table.exec.mini-batch.enabled", "true") // enable mini-batch optimization
+configuration.set("table.exec.mini-batch.allow-latency", "5 s") // use 5 seconds to buffer input records
+configuration.set("table.exec.mini-batch.size", "5000") // the maximum number of records can be buffered by each aggregate operator task
 ```
 {{< /tab >}}
 {{< tab "Python" >}}
@@ -88,11 +88,11 @@ configuration.setString("table.exec.mini-batch.size", "5000") // the maximum num
 t_env = ...
 
 # access flink configuration
-configuration = t_env.get_config().get_configuration();
+configuration = t_env.get_config()
 # set low-level key-value options
-configuration.set_string("table.exec.mini-batch.enabled", "true"); # enable mini-batch optimization
-configuration.set_string("table.exec.mini-batch.allow-latency", "5 s"); # use 5 seconds to buffer input records
-configuration.set_string("table.exec.mini-batch.size", "5000"); # the maximum number of records can be buffered by each aggregate operator task
+configuration.set("table.exec.mini-batch.enabled", "true") # enable mini-batch optimization
+configuration.set("table.exec.mini-batch.allow-latency", "5 s") # use 5 seconds to buffer input records
+configuration.set("table.exec.mini-batch.size", "5000") # the maximum number of records can be buffered by each aggregate operator task
 ```
 {{< /tab >}}
 {{< /tabs >}}
@@ -122,15 +122,15 @@ The following examples show how to enable the local-global aggregation.
 {{< tab "Java" >}}
 ```java
 // instantiate table environment
-TableEnvironment tEnv = ...
+TableEnvironment tEnv = ...;
 
 // access flink configuration
-Configuration configuration = tEnv.getConfig().getConfiguration();
+TableConfig configuration = tEnv.getConfig();
 // set low-level key-value options
-configuration.setString("table.exec.mini-batch.enabled", "true"); // local-global aggregation depends on mini-batch is enabled
-configuration.setString("table.exec.mini-batch.allow-latency", "5 s");
-configuration.setString("table.exec.mini-batch.size", "5000");
-configuration.setString("table.optimizer.agg-phase-strategy", "TWO_PHASE"); // enable two-phase, i.e. local-global aggregation
+configuration.set("table.exec.mini-batch.enabled", "true"); // local-global aggregation depends on mini-batch is enabled
+configuration.set("table.exec.mini-batch.allow-latency", "5 s");
+configuration.set("table.exec.mini-batch.size", "5000");
+configuration.set("table.optimizer.agg-phase-strategy", "TWO_PHASE"); // enable two-phase, i.e. local-global aggregation
 ```
 {{< /tab >}}
 {{< tab "Scala" >}}
@@ -139,12 +139,12 @@ configuration.setString("table.optimizer.agg-phase-strategy", "TWO_PHASE"); // e
 val tEnv: TableEnvironment = ...
 
 // access flink configuration
-val configuration = tEnv.getConfig().getConfiguration()
+val configuration = tEnv.getConfig()
 // set low-level key-value options
-configuration.setString("table.exec.mini-batch.enabled", "true") // local-global aggregation depends on mini-batch is enabled
-configuration.setString("table.exec.mini-batch.allow-latency", "5 s")
-configuration.setString("table.exec.mini-batch.size", "5000")
-configuration.setString("table.optimizer.agg-phase-strategy", "TWO_PHASE") // enable two-phase, i.e. local-global aggregation
+configuration.set("table.exec.mini-batch.enabled", "true") // local-global aggregation depends on mini-batch is enabled
+configuration.set("table.exec.mini-batch.allow-latency", "5 s")
+configuration.set("table.exec.mini-batch.size", "5000")
+configuration.set("table.optimizer.agg-phase-strategy", "TWO_PHASE") // enable two-phase, i.e. local-global aggregation
 ```
 {{< /tab >}}
 {{< tab "Python" >}}
@@ -153,12 +153,12 @@ configuration.setString("table.optimizer.agg-phase-strategy", "TWO_PHASE") // en
 t_env = ...
 
 # access flink configuration
-configuration = t_env.get_config().get_configuration();
+configuration = t_env.get_config()
 # set low-level key-value options
-configuration.set_string("table.exec.mini-batch.enabled", "true"); # local-global aggregation depends on mini-batch is enabled
-configuration.set_string("table.exec.mini-batch.allow-latency", "5 s");
-configuration.set_string("table.exec.mini-batch.size", "5000");
-configuration.set_string("table.optimizer.agg-phase-strategy", "TWO_PHASE"); # enable two-phase, i.e. local-global aggregation
+configuration.set("table.exec.mini-batch.enabled", "true") # local-global aggregation depends on mini-batch is enabled
+configuration.set("table.exec.mini-batch.allow-latency", "5 s")
+configuration.set("table.exec.mini-batch.size", "5000")
+configuration.set("table.optimizer.agg-phase-strategy", "TWO_PHASE") # enable two-phase, i.e. local-global aggregation
 ```
 {{< /tab >}}
 {{< /tabs >}}
@@ -210,11 +210,10 @@ The following examples show how to enable the split distinct aggregation optimiz
 {{< tab "Java" >}}
 ```java
 // instantiate table environment
-TableEnvironment tEnv = ...
+TableEnvironment tEnv = ...;
 
-tEnv.getConfig()        // access high-level configuration
-  .getConfiguration()   // set low-level key-value options
-  .setString("table.optimizer.distinct-agg.split.enabled", "true");  // enable distinct agg split
+tEnv.getConfig()
+  .set("table.optimizer.distinct-agg.split.enabled", "true");  // enable distinct agg split
 ```
 {{< /tab >}}
 {{< tab "Scala" >}}
@@ -222,9 +221,8 @@ tEnv.getConfig()        // access high-level configuration
 // instantiate table environment
 val tEnv: TableEnvironment = ...
 
-tEnv.getConfig         // access high-level configuration
-  .getConfiguration    // set low-level key-value options
-  .setString("table.optimizer.distinct-agg.split.enabled", "true")  // enable distinct agg split
+tEnv.getConfig
+  .set("table.optimizer.distinct-agg.split.enabled", "true")  // enable distinct agg split
 ```
 {{< /tab >}}
 {{< tab "Python" >}}
@@ -232,9 +230,7 @@ tEnv.getConfig         // access high-level configuration
 # instantiate table environment
 t_env = ...
 
-t_env.get_config()        # access high-level configuration
-  .get_configuration()    # set low-level key-value options
-  .set_string("table.optimizer.distinct-agg.split.enabled", "true"); # enable distinct agg split
+t_env.get_config().set("table.optimizer.distinct-agg.split.enabled", "true") # enable distinct agg split
 ```
 {{< /tab >}}
 {{< /tabs >}}
@@ -270,5 +266,39 @@ GROUP BY day
 Flink SQL optimizer can recognize the different filter arguments on the same distinct key. For example, in the above example, all the three COUNT DISTINCT are on `user_id` column.
 Then Flink can use just one shared state instance instead of three state instances to reduce state access and state size. In some workloads, this can get significant performance improvements.
 
+## MiniBatch Regular Joins
+
+By default, regular join operator processes input records one by one, i.e., 
+(1) lookup associated records from the state of counterpart based on the join key of the current input record, 
+(2) update the state by adding current input record or retracting it, 
+(3) output the join results according to the current record and associated records. 
+This processing pattern may increase the overhead of StateBackend (especially for RocksDB StateBackend). 
+Besides, this can lead to severe record amplification, especially in cascading join scenarios, generating too many intermediate results and further leading to performance degradation.
+
+MiniBatch join seeks to resolve the aforementioned issues. Its core idea is to cache a bundle of inputs in a buffer inside of the mini-batch join operator. 
+Once the buffer reaches a specified size or time threshold, the records are forwarded to the join process.  
+There are two core optimizations:
+
+1) fold records in the buffer to reduce the number of data before join process.
+2) try best to suppress outputting redundant results when the records in buffer are being processed.
+
+For example, consider following SQL:
+
+```sql
+SET 'table.exec.mini-batch.enabled' = 'true';
+SET 'table.exec.mini-batch.allow-latency' = '5S';
+SET 'table.exec.mini-batch.size' = '5000';
+    
+SELECT a.id as a_id, a.a_content, b.id as b_id, b.b_content
+FROM a LEFT JOIN b
+ON a.id = b.id
+```
+
+Both the left and right input side have unique key contained by join key which is `id` (assuming the number represents `id`, and letter represents the `content`).
+The execution of mini-batch join operator are as shown in the figure below.
+
+{{< img src="/fig/table-streaming/minibatch_join.png" width="70%" height="70%" >}}
+
+MiniBatch optimization is disabled by default for regular join. In order to enable this optimization, you should set options `table.exec.mini-batch.enabled`, `table.exec.mini-batch.allow-latency` and `table.exec.mini-batch.size`. Please see [configuration]({{< ref "docs/dev/table/config" >}}#execution-options) page for more details.
 
 {{< top >}}

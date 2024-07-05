@@ -19,22 +19,20 @@ package org.apache.flink.table.planner.plan.rules.logical
 
 import org.apache.flink.table.api.{DataTypes, TableSchema}
 import org.apache.flink.table.planner.plan.optimize.program.{FlinkBatchProgram, FlinkHepRuleSetProgramBuilder, HEP_RULES_EXECUTION_TYPE}
-import org.apache.flink.table.planner.utils.DateTimeTestUtil.localDateTime
 import org.apache.flink.table.planner.utils.{BatchTableTestUtil, TableConfigUtils, TestLegacyFilterableTableSource}
+import org.apache.flink.table.planner.utils.DateTimeTestUtil.localDateTime
 import org.apache.flink.types.Row
 
 import org.apache.calcite.plan.hep.HepMatchOrder
 import org.apache.calcite.rel.rules.CoreRules
 import org.apache.calcite.tools.RuleSets
-import org.junit.{Before, Test}
+import org.junit.jupiter.api.{BeforeEach, Test}
 
-/**
- * Test for [[PushFilterIntoLegacyTableSourceScanRule]].
- */
+/** Test for [[PushFilterIntoLegacyTableSourceScanRule]]. */
 class PushFilterIntoLegacyTableSourceScanRuleTest
   extends PushFilterIntoTableSourceScanRuleTestBase {
 
-  @Before
+  @BeforeEach
   def setup(): Unit = {
     util = batchTestUtil()
     util.asInstanceOf[BatchTableTestUtil].buildBatchProgram(FlinkBatchProgram.DEFAULT_REWRITE)
@@ -44,8 +42,10 @@ class PushFilterIntoLegacyTableSourceScanRuleTest
       FlinkHepRuleSetProgramBuilder.newBuilder
         .setHepRulesExecutionType(HEP_RULES_EXECUTION_TYPE.RULE_COLLECTION)
         .setHepMatchOrder(HepMatchOrder.BOTTOM_UP)
-        .add(RuleSets.ofList(PushFilterIntoLegacyTableSourceScanRule.INSTANCE,
-          CoreRules.FILTER_PROJECT_TRANSPOSE))
+        .add(
+          RuleSets.ofList(
+            PushFilterIntoLegacyTableSourceScanRule.INSTANCE,
+            CoreRules.FILTER_PROJECT_TRANSPOSE))
         .build()
     )
 
@@ -99,8 +99,8 @@ class PushFilterIntoLegacyTableSourceScanRuleTest
       .field("b", DataTypes.TIMESTAMP)
       .build()
 
-    val data = List(Row.of(
-      localDateTime("2021-03-30 10:00:00"), localDateTime("2021-03-30 15:00:00")))
+    val data = List(
+      Row.of(localDateTime("2021-03-30 10:00:00"), localDateTime("2021-03-30 15:00:00")))
     TestLegacyFilterableTableSource.createTemporaryTable(
       util.tableEnv,
       schema,

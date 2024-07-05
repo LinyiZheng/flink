@@ -27,24 +27,22 @@ import org.apache.flink.table.catalog.ObjectIdentifier;
 import org.apache.flink.table.utils.CatalogManagerMocks;
 
 import org.apache.calcite.schema.Table;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 
 import static org.apache.flink.table.utils.CatalogManagerMocks.DEFAULT_CATALOG;
 import static org.apache.flink.table.utils.CatalogManagerMocks.DEFAULT_DATABASE;
-import static org.hamcrest.CoreMatchers.instanceOf;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.containsInAnyOrder;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for {@link DatabaseCalciteSchema}. */
-public class DatabaseCalciteSchemaTest {
+class DatabaseCalciteSchemaTest {
 
     private static final String TABLE_NAME = "tab";
 
     @Test
-    public void testPermanentTableWithPrimaryKey() {
+    void testPermanentTableWithPrimaryKey() {
         final CatalogManager catalogManager = CatalogManagerMocks.createEmptyCatalogManager();
 
         final DatabaseCalciteSchema calciteSchema =
@@ -56,14 +54,13 @@ public class DatabaseCalciteSchemaTest {
                 false);
 
         final Table table = calciteSchema.getTable(TABLE_NAME);
-        assertThat(table, instanceOf(CatalogSchemaTable.class));
-        assertThat(
-                ((CatalogSchemaTable) table).getStatistic().getUniqueKeys().iterator().next(),
-                containsInAnyOrder("a", "b"));
+        assertThat(table).isInstanceOf(CatalogSchemaTable.class);
+        assertThat(((CatalogSchemaTable) table).getStatistic().getUniqueKeys().iterator().next())
+                .containsExactlyInAnyOrder("a", "b");
     }
 
     @Test
-    public void testTemporaryTableWithPrimaryKey() {
+    void testTemporaryTableWithPrimaryKey() {
         final CatalogManager catalogManager = CatalogManagerMocks.createEmptyCatalogManager();
 
         final DatabaseCalciteSchema calciteSchema =
@@ -75,10 +72,9 @@ public class DatabaseCalciteSchemaTest {
                 false);
 
         final Table table = calciteSchema.getTable(TABLE_NAME);
-        assertThat(table, instanceOf(CatalogSchemaTable.class));
-        assertThat(
-                ((CatalogSchemaTable) table).getStatistic().getUniqueKeys().iterator().next(),
-                containsInAnyOrder("a", "b"));
+        assertThat(table).isInstanceOf(CatalogSchemaTable.class);
+        assertThat(((CatalogSchemaTable) table).getStatistic().getUniqueKeys().iterator().next())
+                .containsExactlyInAnyOrder("a", "b");
     }
 
     private CatalogBaseTable createTable() {

@@ -29,7 +29,9 @@ import org.apache.flink.streaming.api.operators.OneInputStreamOperatorFactory;
 import org.apache.flink.streaming.api.operators.SimpleOperatorFactory;
 import org.apache.flink.streaming.api.operators.StreamOperatorFactory;
 import org.apache.flink.streaming.api.watermark.Watermark;
+import org.apache.flink.streaming.runtime.streamrecord.RecordAttributes;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
+import org.apache.flink.streaming.runtime.watermarkstatus.WatermarkStatus;
 import org.apache.flink.util.Preconditions;
 
 import java.util.ArrayList;
@@ -59,6 +61,7 @@ public class OneInputStreamOperatorTestHarness<IN, OUT>
         this(operator, 1, 1, 0);
 
         config.setupNetworkInputs(Preconditions.checkNotNull(typeSerializerIn));
+        config.serializeAllConfigs();
     }
 
     public OneInputStreamOperatorTestHarness(
@@ -76,6 +79,7 @@ public class OneInputStreamOperatorTestHarness<IN, OUT>
                 subtaskIndex,
                 operatorID);
         config.setupNetworkInputs(Preconditions.checkNotNull(typeSerializerIn));
+        config.serializeAllConfigs();
     }
 
     public OneInputStreamOperatorTestHarness(
@@ -86,6 +90,7 @@ public class OneInputStreamOperatorTestHarness<IN, OUT>
         this(operator, environment);
 
         config.setupNetworkInputs(Preconditions.checkNotNull(typeSerializerIn));
+        config.serializeAllConfigs();
     }
 
     public OneInputStreamOperatorTestHarness(OneInputStreamOperator<IN, OUT> operator)
@@ -140,6 +145,7 @@ public class OneInputStreamOperatorTestHarness<IN, OUT>
         this(factory, environment);
 
         config.setupNetworkInputs(Preconditions.checkNotNull(typeSerializerIn));
+        config.serializeAllConfigs();
     }
 
     public OneInputStreamOperatorTestHarness(
@@ -154,6 +160,7 @@ public class OneInputStreamOperatorTestHarness<IN, OUT>
         this(factory, 1, 1, 0);
 
         config.setupNetworkInputs(Preconditions.checkNotNull(typeSerializerIn));
+        config.serializeAllConfigs();
     }
 
     public OneInputStreamOperatorTestHarness(
@@ -184,6 +191,7 @@ public class OneInputStreamOperatorTestHarness<IN, OUT>
         super(operator, taskName, operatorID);
 
         config.setupNetworkInputs(Preconditions.checkNotNull(typeSerializerIn));
+        config.serializeAllConfigs();
     }
 
     @Override
@@ -225,6 +233,16 @@ public class OneInputStreamOperatorTestHarness<IN, OUT>
         processWatermark(new Watermark(watermark));
     }
 
+    public void processWatermarkStatus(WatermarkStatus status) throws Exception {
+        if (inputs.isEmpty()) {
+            getOneInputOperator().processWatermarkStatus(status);
+        } else {
+            checkState(inputs.size() == 1);
+            Input input = inputs.get(0);
+            input.processWatermarkStatus(status);
+        }
+    }
+
     public void processWatermark(Watermark mark) throws Exception {
         currentWatermark = mark.getTimestamp();
         if (inputs.isEmpty()) {
@@ -239,6 +257,16 @@ public class OneInputStreamOperatorTestHarness<IN, OUT>
     public void endInput() throws Exception {
         if (operator instanceof BoundedOneInput) {
             ((BoundedOneInput) operator).endInput();
+        }
+    }
+
+    public void processRecordAttributes(RecordAttributes recordAttributes) throws Exception {
+        if (inputs.isEmpty()) {
+            getOneInputOperator().processRecordAttributes(recordAttributes);
+        } else {
+            checkState(inputs.size() == 1);
+            Input input = inputs.get(0);
+            input.processRecordAttributes(recordAttributes);
         }
     }
 

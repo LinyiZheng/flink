@@ -73,3 +73,10 @@ Flink 提供了两种高可用服务实现：
 为了恢复提交的作业，Flink 持久化元数据和 job 组件。高可用数据将一直保存，直到相应的作业执行成功、被取消或最终失败。当这些情况发生时，将删除所有高可用数据，包括存储在高可用服务中的元数据。
 
 {{< top >}}
+
+## 作业结果存储
+
+作业结果存储用于归档达到全局结束状态作业（即完成、取消或失败）的最终结果，其数据存储在文件系统上 (请参阅[job-result-store.storage-path]({{< ref "docs/deployment/config#job-result-store-storage-path" >}}))。
+只要没有正确清理相应的作业，此数据条目就是脏数据 (数据位于作业的子文件夹中 [high-availability.storageDir]({{< ref "docs/deployment/config#high-availability-storagedir" >}}))。
+脏数据将被清理，即相应的作业要么在当前时刻被清理，要么在作业恢复过程中被清理。一旦清理成功，这些脏数据条目将被删除。请参阅 [HA configuration options]({{< ref "docs/deployment/config#high-availability" >}}) 下作业结果存储的配置参数以获取有关如何调整行为的更多详细信息。
+{{< top >}}

@@ -23,10 +23,16 @@ import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonPro
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonSubTypes;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.annotation.JsonTypeInfo;
 
+import io.swagger.v3.oas.annotations.media.DiscriminatorMapping;
+import io.swagger.v3.oas.annotations.media.Schema;
+
 import java.util.Objects;
 
 /** Checkpoint statistics for a subtask. */
-@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, include = JsonTypeInfo.As.PROPERTY, property = "@class")
+@JsonTypeInfo(
+        use = JsonTypeInfo.Id.NAME,
+        include = JsonTypeInfo.As.PROPERTY,
+        property = "className")
 @JsonSubTypes({
     @JsonSubTypes.Type(
             value = SubtaskCheckpointStatistics.CompletedSubtaskCheckpointStatistics.class,
@@ -35,6 +41,17 @@ import java.util.Objects;
             value = SubtaskCheckpointStatistics.PendingSubtaskCheckpointStatistics.class,
             name = "pending")
 })
+@Schema(
+        discriminatorProperty = "className",
+        discriminatorMapping = {
+            @DiscriminatorMapping(
+                    value = "completed",
+                    schema =
+                            SubtaskCheckpointStatistics.CompletedSubtaskCheckpointStatistics.class),
+            @DiscriminatorMapping(
+                    value = "pending",
+                    schema = SubtaskCheckpointStatistics.PendingSubtaskCheckpointStatistics.class),
+        })
 public class SubtaskCheckpointStatistics {
 
     public static final String FIELD_NAME_INDEX = "index";
@@ -92,6 +109,8 @@ public class SubtaskCheckpointStatistics {
 
         public static final String FIELD_NAME_DURATION = "end_to_end_duration";
 
+        public static final String FIELD_NAME_CHECKPOINTED_SIZE = "checkpointed_size";
+
         /**
          * The accurate name of this field should be 'checkpointed_data_size', keep it as before to
          * not break backwards compatibility for old web UI.
@@ -116,6 +135,9 @@ public class SubtaskCheckpointStatistics {
         @JsonProperty(FIELD_NAME_DURATION)
         private final long duration;
 
+        @JsonProperty(FIELD_NAME_CHECKPOINTED_SIZE)
+        private final long checkpointedSize;
+
         @JsonProperty(FIELD_NAME_STATE_SIZE)
         private final long stateSize;
 
@@ -139,6 +161,7 @@ public class SubtaskCheckpointStatistics {
                 @JsonProperty(FIELD_NAME_INDEX) int index,
                 @JsonProperty(FIELD_NAME_ACK_TIMESTAMP) long ackTimestamp,
                 @JsonProperty(FIELD_NAME_DURATION) long duration,
+                @JsonProperty(FIELD_NAME_CHECKPOINTED_SIZE) long checkpointedSize,
                 @JsonProperty(FIELD_NAME_STATE_SIZE) long stateSize,
                 @JsonProperty(FIELD_NAME_CHECKPOINT_DURATION) CheckpointDuration checkpointDuration,
                 @JsonProperty(FIELD_NAME_ALIGNMENT) CheckpointAlignment alignment,
@@ -148,6 +171,7 @@ public class SubtaskCheckpointStatistics {
             super(index, "completed");
             this.ackTimestamp = ackTimestamp;
             this.duration = duration;
+            this.checkpointedSize = checkpointedSize;
             this.stateSize = stateSize;
             this.checkpointDuration = checkpointDuration;
             this.alignment = alignment;
@@ -166,6 +190,10 @@ public class SubtaskCheckpointStatistics {
 
         public long getStateSize() {
             return stateSize;
+        }
+
+        public long getCheckpointedSize() {
+            return checkpointedSize;
         }
 
         public CheckpointDuration getCheckpointDuration() {
@@ -199,6 +227,7 @@ public class SubtaskCheckpointStatistics {
             CompletedSubtaskCheckpointStatistics that = (CompletedSubtaskCheckpointStatistics) o;
             return ackTimestamp == that.ackTimestamp
                     && duration == that.duration
+                    && checkpointedSize == that.checkpointedSize
                     && stateSize == that.stateSize
                     && Objects.equals(checkpointDuration, that.checkpointDuration)
                     && Objects.equals(alignment, that.alignment)
@@ -212,6 +241,7 @@ public class SubtaskCheckpointStatistics {
             return Objects.hash(
                     ackTimestamp,
                     duration,
+                    checkpointedSize,
                     stateSize,
                     checkpointDuration,
                     alignment,

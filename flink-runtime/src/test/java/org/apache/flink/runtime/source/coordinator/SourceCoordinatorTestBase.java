@@ -18,46 +18,51 @@
 
 package org.apache.flink.runtime.source.coordinator;
 
+import org.apache.flink.api.common.eventtime.WatermarkAlignmentParams;
 import org.apache.flink.api.connector.source.Source;
+import org.apache.flink.api.connector.source.SourceSplit;
 import org.apache.flink.api.connector.source.mocks.MockSourceSplit;
 import org.apache.flink.api.connector.source.mocks.MockSourceSplitSerializer;
 import org.apache.flink.api.connector.source.mocks.MockSplitEnumeratorCheckpointSerializer;
+import org.apache.flink.core.fs.AutoCloseableRegistry;
+import org.apache.flink.core.testutils.CommonTestUtils;
 import org.apache.flink.runtime.jobgraph.OperatorID;
+import org.apache.flink.runtime.operators.coordination.CoordinatorStoreImpl;
 import org.apache.flink.runtime.operators.coordination.EventReceivingTasks;
 import org.apache.flink.runtime.operators.coordination.MockOperatorCoordinatorContext;
+import org.apache.flink.runtime.operators.coordination.OperatorEvent;
+import org.apache.flink.runtime.source.event.AddSplitEvent;
 import org.apache.flink.runtime.source.event.ReaderRegistrationEvent;
-import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.concurrent.ExecutorThreadFactory;
 
-import org.junit.After;
-import org.junit.Before;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.function.Supplier;
 
-import static org.junit.Assert.assertNotNull;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** The test base for SourceCoordinator related tests. */
-public abstract class SourceCoordinatorTestBase {
+abstract class SourceCoordinatorTestBase {
 
     protected static final String OPERATOR_NAME = "TestOperator";
     protected static final OperatorID TEST_OPERATOR_ID = new OperatorID(1234L, 5678L);
     protected static final int NUM_SUBTASKS = 3;
+
+    protected boolean supportsConcurrentExecutionAttempts = false;
+    private AutoCloseableRegistry closeableRegistry;
 
     // ---- Mocks for the underlying Operator Coordinator Context ---
     protected EventReceivingTasks receivingTasks;
     protected MockOperatorCoordinatorContext operatorCoordinatorContext;
 
     // ---- Mocks for the Source Coordinator Context ----
-    protected SourceCoordinatorProvider.CoordinatorExecutorThreadFactory coordinatorThreadFactory;
-    protected ExecutorService coordinatorExecutor;
+    protected String coordinatorThreadName;
     protected SplitAssignmentTracker<MockSourceSplit> splitSplitAssignmentTracker;
     protected SourceCoordinatorContext<MockSourceSplit> context;
 
@@ -67,28 +72,22 @@ public abstract class SourceCoordinatorTestBase {
 
     // ------------------------------------------------------------------------
 
-    @Before
-    public void setup() throws Exception {
+    @BeforeEach
+    void setup() throws Exception {
+        closeableRegistry = new AutoCloseableRegistry();
         receivingTasks = EventReceivingTasks.createForRunningTasks();
         operatorCoordinatorContext =
                 new MockOperatorCoordinatorContext(TEST_OPERATOR_ID, NUM_SUBTASKS);
         splitSplitAssignmentTracker = new SplitAssignmentTracker<>();
-        String coordinatorThreadName = TEST_OPERATOR_ID.toHexString();
-        coordinatorThreadFactory =
-                new SourceCoordinatorProvider.CoordinatorExecutorThreadFactory(
-                        coordinatorThreadName, getClass().getClassLoader());
+        coordinatorThreadName = TEST_OPERATOR_ID.toHexString();
 
-        coordinatorExecutor = Executors.newSingleThreadExecutor(coordinatorThreadFactory);
         sourceCoordinator = getNewSourceCoordinator();
         context = sourceCoordinator.getContext();
     }
 
-    @After
-    public void cleanUp() throws InterruptedException, TimeoutException {
-        coordinatorExecutor.shutdown();
-        if (!coordinatorExecutor.awaitTermination(10, TimeUnit.SECONDS)) {
-            throw new TimeoutException("Failed to close the CoordinatorExecutor before timeout.");
-        }
+    @AfterEach
+    void cleanUp() throws Exception {
+        closeableRegistry.close();
     }
 
     // ------------------------------------------------------------------------
@@ -97,7 +96,7 @@ public abstract class SourceCoordinatorTestBase {
         if (enumerator == null) {
             enumerator =
                     (TestingSplitEnumerator<MockSourceSplit>) sourceCoordinator.getEnumerator();
-            assertNotNull("source was not started", enumerator);
+            assertThat(enumerator).as("source was not started").isNotNull();
         }
         return enumerator;
     }
@@ -107,14 +106,18 @@ public abstract class SourceCoordinatorTestBase {
         setAllReaderTasksReady(sourceCoordinator);
     }
 
-    protected void setAllReaderTasksReady() {
-        setAllReaderTasksReady(sourceCoordinator);
-    }
-
     protected void setAllReaderTasksReady(SourceCoordinator<?, ?> sourceCoordinator) {
         for (int i = 0; i < NUM_SUBTASKS; i++) {
-            sourceCoordinator.subtaskReady(i, receivingTasks.createGatewayForSubtask(i));
+            setReaderTaskReady(sourceCoordinator, i, 0);
         }
+    }
+
+    protected void setReaderTaskReady(
+            SourceCoordinator<?, ?> sourceCoordinator, int subtask, int attemptNumber) {
+        sourceCoordinator.executionAttemptReady(
+                subtask,
+                attemptNumber,
+                receivingTasks.createGatewayForSubtask(subtask, attemptNumber));
     }
 
     protected void addTestingSplitSet(int num) {
@@ -127,45 +130,86 @@ public abstract class SourceCoordinatorTestBase {
     }
 
     protected void registerReader(int subtask) {
+        registerReader(subtask, 0);
+    }
+
+    protected void registerReader(int subtask, int attemptNumber) {
         sourceCoordinator.handleEventFromOperator(
-                subtask, new ReaderRegistrationEvent(subtask, "location_" + subtask));
+                subtask,
+                attemptNumber,
+                new ReaderRegistrationEvent(subtask, createLocationFor(subtask, attemptNumber)));
+    }
+
+    static String createLocationFor(int subtask, int attemptNumber) {
+        return String.format("location_%d_%d", subtask, attemptNumber);
     }
 
     protected void waitForCoordinatorToProcessActions() {
-        final CompletableFuture<Void> future = new CompletableFuture<>();
-        context.runInCoordinatorThread(() -> future.complete(null));
+        CoordinatorTestUtils.waitForCoordinatorToProcessActions(context);
+    }
 
-        try {
-            future.get();
-        } catch (InterruptedException e) {
-            throw new AssertionError("test interrupted");
-        } catch (ExecutionException e) {
-            ExceptionUtils.rethrow(ExceptionUtils.stripExecutionException(e));
-        }
+    void waitForSentEvents(int expectedEventNumber) throws Exception {
+        waitUtilNumberReached(() -> receivingTasks.getNumberOfSentEvents(), expectedEventNumber);
+    }
+
+    static void waitUtilNumberReached(Supplier<Integer> numberSupplier, int expectedNumber)
+            throws Exception {
+        CommonTestUtils.waitUtil(
+                () -> numberSupplier.get() == expectedNumber,
+                Duration.ofDays(1),
+                "Not reach expected number within timeout.");
+    }
+
+    static <SplitT extends SourceSplit> void assertAddSplitEvent(
+            OperatorEvent event, List<SplitT> expectedSplits) throws Exception {
+        assertThat(event).isInstanceOf(AddSplitEvent.class);
+
+        final List<SplitT> splits = ((AddSplitEvent) event).splits(new MockSourceSplitSerializer());
+        assertThat(splits).isEqualTo(expectedSplits);
     }
 
     // ------------------------------------------------------------------------
 
-    protected SourceCoordinator<MockSourceSplit, Set<MockSourceSplit>> getNewSourceCoordinator() {
-        final Source<Integer, MockSourceSplit, Set<MockSourceSplit>> mockSource =
-                TestingSplitEnumerator.factorySource(
-                        new MockSourceSplitSerializer(),
-                        new MockSplitEnumeratorCheckpointSerializer());
-
-        return new SourceCoordinator<>(
-                OPERATOR_NAME, coordinatorExecutor, mockSource, getNewSourceCoordinatorContext());
+    protected SourceCoordinator<MockSourceSplit, Set<MockSourceSplit>> getNewSourceCoordinator()
+            throws Exception {
+        return getNewSourceCoordinator(WatermarkAlignmentParams.WATERMARK_ALIGNMENT_DISABLED);
     }
 
-    protected SourceCoordinatorContext<MockSourceSplit> getNewSourceCoordinatorContext() {
-        return new SourceCoordinatorContext<>(
-                coordinatorExecutor,
-                Executors.newScheduledThreadPool(
-                        1,
-                        new ExecutorThreadFactory(
-                                coordinatorThreadFactory.getCoordinatorThreadName() + "-worker")),
-                coordinatorThreadFactory,
-                operatorCoordinatorContext,
-                new MockSourceSplitSerializer(),
-                splitSplitAssignmentTracker);
+    protected SourceCoordinator<MockSourceSplit, Set<MockSourceSplit>> getNewSourceCoordinator(
+            WatermarkAlignmentParams watermarkAlignmentParams) throws Exception {
+        final Source<Integer, MockSourceSplit, Set<MockSourceSplit>> mockSource =
+                createMockSource();
+
+        return new SourceCoordinator<>(
+                OPERATOR_NAME,
+                mockSource,
+                getNewSourceCoordinatorContext(),
+                new CoordinatorStoreImpl(),
+                watermarkAlignmentParams,
+                null);
+    }
+
+    Source<Integer, MockSourceSplit, Set<MockSourceSplit>> createMockSource() {
+        return TestingSplitEnumerator.factorySource(
+                new MockSourceSplitSerializer(), new MockSplitEnumeratorCheckpointSerializer());
+    }
+
+    protected SourceCoordinatorContext<MockSourceSplit> getNewSourceCoordinatorContext()
+            throws Exception {
+        SourceCoordinatorProvider.CoordinatorExecutorThreadFactory coordinatorThreadFactory =
+                new SourceCoordinatorProvider.CoordinatorExecutorThreadFactory(
+                        coordinatorThreadName, operatorCoordinatorContext);
+        SourceCoordinatorContext<MockSourceSplit> coordinatorContext =
+                new SourceCoordinatorContext<>(
+                        Executors.newScheduledThreadPool(1, coordinatorThreadFactory),
+                        Executors.newScheduledThreadPool(
+                                1, new ExecutorThreadFactory(coordinatorThreadName + "-worker")),
+                        coordinatorThreadFactory,
+                        operatorCoordinatorContext,
+                        new MockSourceSplitSerializer(),
+                        splitSplitAssignmentTracker,
+                        supportsConcurrentExecutionAttempts);
+        closeableRegistry.registerCloseable(coordinatorContext);
+        return coordinatorContext;
     }
 }

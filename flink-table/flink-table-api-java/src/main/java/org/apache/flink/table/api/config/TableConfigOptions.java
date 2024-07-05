@@ -23,10 +23,12 @@ import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.annotation.docs.Documentation;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.DescribedEnum;
+import org.apache.flink.configuration.description.Description;
 import org.apache.flink.configuration.description.InlineElement;
-import org.apache.flink.table.api.PlannerType;
 import org.apache.flink.table.api.SqlDialect;
 import org.apache.flink.table.catalog.Catalog;
+
+import java.util.List;
 
 import static org.apache.flink.configuration.ConfigOptions.key;
 import static org.apache.flink.configuration.description.TextElement.text;
@@ -41,15 +43,33 @@ public class TableConfigOptions {
     private TableConfigOptions() {}
 
     @Documentation.TableOption(execMode = Documentation.ExecMode.BATCH_STREAMING)
-    @Deprecated
-    public static final ConfigOption<PlannerType> TABLE_PLANNER =
-            key("table.planner")
-                    .enumType(PlannerType.class)
-                    .defaultValue(PlannerType.BLINK)
+    public static final ConfigOption<String> TABLE_CATALOG_NAME =
+            key("table.builtin-catalog-name")
+                    .stringType()
+                    .defaultValue("default_catalog")
                     .withDescription(
-                            "The old planner has been removed in Flink 1.14. "
-                                    + "Since there is only one planner left (previously called the 'blink' planner), "
-                                    + "this option is obsolete and will be removed in future versions.");
+                            "The name of the initial catalog to be created when "
+                                    + "instantiating a TableEnvironment.");
+
+    @Documentation.TableOption(execMode = Documentation.ExecMode.BATCH_STREAMING)
+    public static final ConfigOption<String> TABLE_DATABASE_NAME =
+            key("table.builtin-database-name")
+                    .stringType()
+                    .defaultValue("default_database")
+                    .withDescription(
+                            "The name of the default database in the initial catalog to be created "
+                                    + "when instantiating TableEnvironment.");
+
+    @Documentation.TableOption(execMode = Documentation.ExecMode.BATCH_STREAMING)
+    public static final ConfigOption<List<String>> TABLE_CATALOG_MODIFICATION_LISTENERS =
+            key("table.catalog-modification.listeners")
+                    .stringType()
+                    .asList()
+                    .noDefaultValue()
+                    .withDescription(
+                            "A (semicolon-separated) list of factories that creates listener for catalog "
+                                    + "modification which will be notified in catalog manager after it "
+                                    + "performs database and table ddl operations successfully.");
 
     @Documentation.TableOption(execMode = Documentation.ExecMode.BATCH_STREAMING)
     public static final ConfigOption<Boolean> TABLE_DML_SYNC =
@@ -95,6 +115,48 @@ public class TableConfigOptions {
                                     + "the session time zone is used during conversion. The input of option is either a full name "
                                     + "such as \"America/Los_Angeles\", or a custom timezone id such as \"GMT-08:00\".");
 
+    @Documentation.TableOption(execMode = Documentation.ExecMode.BATCH_STREAMING)
+    public static final ConfigOption<Integer> DISPLAY_MAX_COLUMN_WIDTH =
+            key("table.display.max-column-width")
+                    .intType()
+                    .defaultValue(30)
+                    .withDescription(
+                            "When printing the query results to the client console, this parameter determines the number of characters shown on screen before truncating. "
+                                    + "This only applies to columns with variable-length types (e.g. CHAR, VARCHAR, STRING) in the streaming mode. "
+                                    + "Fixed-length types are printed in the batch mode using a deterministic column width.");
+
+    @Documentation.TableOption(execMode = Documentation.ExecMode.BATCH_STREAMING)
+    @Documentation.OverrideDefault("System.getProperty(\"java.io.tmpdir\")")
+    public static final ConfigOption<String> RESOURCES_DOWNLOAD_DIR =
+            key("table.resources.download-dir")
+                    .stringType()
+                    .defaultValue(System.getProperty("java.io.tmpdir"))
+                    .withDescription(
+                            "Local directory that is used by planner for storing downloaded resources.");
+
+    @Documentation.TableOption(execMode = Documentation.ExecMode.BATCH_STREAMING)
+    public static final ConfigOption<Boolean> TABLE_RTAS_CTAS_ATOMICITY_ENABLED =
+            key("table.rtas-ctas.atomicity-enabled")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "Specifies if the CREATE TABLE/REPLACE TABLE/CREATE OR REPLACE AS SELECT statement is executed atomically. By default, the statement is non-atomic. "
+                                    + "The target table is created/replaced on the client side, and it will not be rolled back even though the job fails or is canceled. "
+                                    + "If set this option to true and the underlying DynamicTableSink implements the SupportsStaging interface, "
+                                    + "the statement is expected to be executed atomically, the behavior of which depends on the actual DynamicTableSink.");
+
+    @Documentation.TableOption(execMode = Documentation.ExecMode.BATCH_STREAMING)
+    public static final ConfigOption<List<ColumnExpansionStrategy>>
+            TABLE_COLUMN_EXPANSION_STRATEGY =
+                    key("table.column-expansion-strategy")
+                            .enumType(ColumnExpansionStrategy.class)
+                            .asList()
+                            .defaultValues()
+                            .withDescription(
+                                    "Configures the default expansion behavior of 'SELECT *'. "
+                                            + "By default, all top-level columns of the table's "
+                                            + "schema are selected and nested fields are retained.");
+
     // ------------------------------------------------------------------------------------------
     // Options for plan handling
     // ------------------------------------------------------------------------------------------
@@ -105,10 +167,26 @@ public class TableConfigOptions {
                     .enumType(CatalogPlanCompilation.class)
                     .defaultValue(CatalogPlanCompilation.ALL)
                     .withDescription(
-                            "Strategy how to persist catalog objects such as tables, functions, or data "
-                                    + "types into a plan during compilation. It influences the need "
-                                    + "for catalog metadata to be present during a restore operation "
-                                    + "and affects the plan size.");
+                            Description.builder()
+                                    .text(
+                                            "Strategy how to persist catalog objects such as tables, "
+                                                    + "functions, or data types into a plan during compilation.")
+                                    .linebreak()
+                                    .linebreak()
+                                    .text(
+                                            "It influences the need for catalog metadata to be present "
+                                                    + "during a restore operation and affects the plan size.")
+                                    .linebreak()
+                                    .linebreak()
+                                    .text(
+                                            "This configuration option does not affect anonymous/inline "
+                                                    + "or temporary objects. Anonymous/inline objects will "
+                                                    + "be persisted entirely (including schema and options) "
+                                                    + "if possible or fail the compilation otherwise. "
+                                                    + "Temporary objects will be persisted only by their "
+                                                    + "identifier and the object needs to be present in "
+                                                    + "the session context during a restore.")
+                                    .build());
 
     @Documentation.TableOption(execMode = Documentation.ExecMode.BATCH_STREAMING)
     public static final ConfigOption<CatalogPlanRestore> PLAN_RESTORE_CATALOG_OBJECTS =
@@ -120,6 +198,17 @@ public class TableConfigOptions {
                                     + "types using a given plan and performing catalog lookups if "
                                     + "necessary. It influences the need for catalog metadata to be"
                                     + "present and enables partial enrichment of plan information.");
+
+    @Documentation.TableOption(execMode = Documentation.ExecMode.STREAMING)
+    public static final ConfigOption<Boolean> PLAN_FORCE_RECOMPILE =
+            key("table.plan.force-recompile")
+                    .booleanType()
+                    .defaultValue(false)
+                    .withDescription(
+                            "When false COMPILE PLAN statement will fail if the output plan file is already existing, "
+                                    + "unless the clause IF NOT EXISTS is used. "
+                                    + "When true COMPILE PLAN will overwrite the existing output plan file. "
+                                    + "We strongly suggest to enable this flag only for debugging purpose.");
 
     // ------------------------------------------------------------------------------------------
     // Options for code generation
@@ -148,7 +237,15 @@ public class TableConfigOptions {
     // Enum option types
     // ------------------------------------------------------------------------------------------
 
-    /** Strategy to compile {@link Catalog} objects into a plan. */
+    /**
+     * Strategy to compile {@link Catalog} objects into a plan.
+     *
+     * <p>Depending on the configuration, permanent catalog metadata (such as information about
+     * tables and functions) will be persisted in the plan as well. Anonymous/inline objects will be
+     * persisted (including schema and options) if possible or fail the compilation otherwise. For
+     * temporary objects, only the identifier is part of the plan and the object needs to be present
+     * in the session context during a restore.
+     */
     @PublicEvolving
     public enum CatalogPlanCompilation implements DescribedEnum {
         ALL(
@@ -203,7 +300,7 @@ public class TableConfigOptions {
         ALL_ENFORCED(
                 text(
                         "Requires that all metadata about catalog tables, functions, or data types "
-                                + "that has been persisted in the plan. The strategy will neither "
+                                + "has been persisted in the plan. The strategy will neither "
                                 + "perform a catalog lookup by identifier nor enrich mutable "
                                 + "options with catalog information. A restore will fail if not all "
                                 + "information necessary is contained in the plan.")),
@@ -219,6 +316,34 @@ public class TableConfigOptions {
         private final InlineElement description;
 
         CatalogPlanRestore(InlineElement description) {
+            this.description = description;
+        }
+
+        @Internal
+        @Override
+        public InlineElement getDescription() {
+            return description;
+        }
+    }
+
+    /** Strategy to expand columns in {@code SELECT *} queries. */
+    @PublicEvolving
+    public enum ColumnExpansionStrategy implements DescribedEnum {
+        EXCLUDE_ALIASED_VIRTUAL_METADATA_COLUMNS(
+                text(
+                        "Excludes virtual metadata columns that reference a metadata key via an alias. "
+                                + "For example, a column declared as 'c METADATA VIRTUAL FROM k' "
+                                + "is not selected by default if the strategy is applied.")),
+
+        EXCLUDE_DEFAULT_VIRTUAL_METADATA_COLUMNS(
+                text(
+                        "Excludes virtual metadata columns that directly reference a metadata key. "
+                                + "For example, a column declared as 'k METADATA VIRTUAL' "
+                                + "is not selected by default if the strategy is applied."));
+
+        private final InlineElement description;
+
+        ColumnExpansionStrategy(InlineElement description) {
             this.description = description;
         }
 

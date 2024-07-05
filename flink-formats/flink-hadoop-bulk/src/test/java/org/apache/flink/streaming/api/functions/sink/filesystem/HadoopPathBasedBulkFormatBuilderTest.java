@@ -22,6 +22,7 @@ import org.apache.flink.formats.hadoop.bulk.HadoopPathBasedBulkWriter;
 import org.apache.flink.formats.hadoop.bulk.TestHadoopPathBasedBulkWriterFactory;
 import org.apache.flink.streaming.api.functions.sink.filesystem.bucketassigners.DateTimeBucketAssigner;
 import org.apache.flink.util.FlinkUserCodeClassLoader;
+import org.apache.flink.util.MutableURLClassLoader;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
@@ -32,7 +33,7 @@ import java.lang.reflect.Constructor;
 import java.net.URL;
 import java.net.URLClassLoader;
 
-import static org.junit.Assert.assertNotNull;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests the behaviors of {@link HadoopPathBasedBulkFormatBuilder}. */
 public class HadoopPathBasedBulkFormatBuilderTest {
@@ -75,7 +76,7 @@ public class HadoopPathBasedBulkFormatBuilderTest {
                         userHadoopFormatBuildClass
                                 .getMethod("createBuckets", int.class)
                                 .invoke(hadoopFormatBuilder, 0);
-        assertNotNull(buckets);
+        assertThat(buckets).isNotNull();
     }
 
     private static class SpecifiedChildFirstUserClassLoader extends FlinkUserCodeClassLoader {
@@ -96,6 +97,12 @@ public class HadoopPathBasedBulkFormatBuilderTest {
             } else {
                 return super.loadClassWithoutExceptionHandling(name, resolve);
             }
+        }
+
+        @Override
+        public MutableURLClassLoader copy() {
+            return new SpecifiedChildFirstUserClassLoader(
+                    specifiedClassName, getParent(), getURLs());
         }
     }
 }

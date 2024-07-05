@@ -21,7 +21,10 @@ package org.apache.flink.runtime.jobmaster;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.JobManagerOptions;
+import org.apache.flink.core.failure.FailureEnricher;
+import org.apache.flink.core.testutils.AllCallbackWrapper;
 import org.apache.flink.runtime.blob.BlobWriter;
+import org.apache.flink.runtime.blocklist.BlocklistOperations;
 import org.apache.flink.runtime.checkpoint.CheckpointRecoveryFactory;
 import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutor;
 import org.apache.flink.runtime.executiongraph.JobStatusListener;
@@ -33,61 +36,67 @@ import org.apache.flink.runtime.jobmaster.slotpool.TestingSlotPoolServiceBuilder
 import org.apache.flink.runtime.jobmaster.utils.JobMasterBuilder;
 import org.apache.flink.runtime.metrics.groups.JobManagerJobMetricGroup;
 import org.apache.flink.runtime.rpc.FatalErrorHandler;
-import org.apache.flink.runtime.rpc.TestingRpcServiceResource;
+import org.apache.flink.runtime.rpc.TestingRpcServiceExtension;
 import org.apache.flink.runtime.scheduler.SchedulerNG;
 import org.apache.flink.runtime.scheduler.SchedulerNGFactory;
 import org.apache.flink.runtime.scheduler.TestingSchedulerNG;
 import org.apache.flink.runtime.shuffle.ShuffleMaster;
 import org.apache.flink.util.FlinkRuntimeException;
-import org.apache.flink.util.TestLogger;
 
-import org.junit.ClassRule;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 import org.slf4j.Logger;
 
+import java.util.Collection;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
 
-import static org.hamcrest.CoreMatchers.instanceOf;
-import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 
-/** Tests for the JobMaster scheduler interaction. */
-public class JobMasterSchedulerTest extends TestLogger {
+class JobMasterSchedulerTest {
 
-    @ClassRule
-    public static final TestingRpcServiceResource TESTING_RPC_SERVICE_RESOURCE =
-            new TestingRpcServiceResource();
+    private static final TestingRpcServiceExtension TESTING_RPC_SERVICE_EXTENSION =
+            new TestingRpcServiceExtension();
+
+    @RegisterExtension
+    private static final AllCallbackWrapper<TestingRpcServiceExtension>
+            RPC_SERVICE_EXTENSION_WRAPPER = new AllCallbackWrapper<>(TESTING_RPC_SERVICE_EXTENSION);
 
     /** Tests that the JobMaster fails if we cannot start the scheduling. See FLINK-20382. */
     @Test
-    public void testIfStartSchedulingFailsJobMasterFails() throws Exception {
+    void testIfStartSchedulingFailsJobMasterFails() throws Exception {
         final SchedulerNGFactory schedulerFactory = new FailingSchedulerFactory();
         final JobMasterBuilder.TestingOnCompletionActions onCompletionActions =
                 new JobMasterBuilder.TestingOnCompletionActions();
-        final JobMaster jobMaster =
-                new JobMasterBuilder(
-                                JobGraphTestUtils.emptyJobGraph(),
-                                TESTING_RPC_SERVICE_RESOURCE.getTestingRpcService())
-                        .withSlotPoolServiceSchedulerFactory(
-                                DefaultSlotPoolServiceSchedulerFactory.create(
-                                        TestingSlotPoolServiceBuilder.newBuilder(),
-                                        schedulerFactory))
-                        .withOnCompletionActions(onCompletionActions)
-                        .createJobMaster();
-
-        jobMaster.start();
-
-        assertThat(
-                onCompletionActions.getJobMasterFailedFuture().join(),
-                is(instanceOf(JobMasterException.class)));
-
-        // close the jobMaster to remove it from the testing rpc service so that it can shut down
-        // cleanly
+        final JobManagerSharedServices jobManagerSharedServices =
+                new TestingJobManagerSharedServicesBuilder().build();
         try {
-            jobMaster.close();
-        } catch (Exception expected) {
-            // expected
+            final JobMaster jobMaster =
+                    new JobMasterBuilder(
+                                    JobGraphTestUtils.emptyJobGraph(),
+                                    TESTING_RPC_SERVICE_EXTENSION.getTestingRpcService())
+                            .withSlotPoolServiceSchedulerFactory(
+                                    DefaultSlotPoolServiceSchedulerFactory.create(
+                                            TestingSlotPoolServiceBuilder.newBuilder(),
+                                            schedulerFactory))
+                            .withOnCompletionActions(onCompletionActions)
+                            .withJobManagerSharedServices(jobManagerSharedServices)
+                            .createJobMaster();
+
+            jobMaster.start();
+
+            assertThat(onCompletionActions.getJobMasterFailedFuture().join())
+                    .isInstanceOf(JobMasterException.class);
+
+            // close the jobMaster to remove it from the testing rpc service so that it can shut
+            // down cleanly
+            try {
+                jobMaster.close();
+            } catch (Exception expected) {
+                // expected
+            }
+        } finally {
+            jobManagerSharedServices.shutdown();
         }
     }
 
@@ -112,7 +121,9 @@ public class JobMasterSchedulerTest extends TestLogger {
                 long initializationTimestamp,
                 ComponentMainThreadExecutor mainThreadExecutor,
                 FatalErrorHandler fatalErrorHandler,
-                JobStatusListener jobStatusListener) {
+                JobStatusListener jobStatusListener,
+                Collection<FailureEnricher> failureEnrichers,
+                BlocklistOperations blocklistOperations) {
             return TestingSchedulerNG.newBuilder()
                     .setStartSchedulingRunnable(
                             () -> {
@@ -123,7 +134,7 @@ public class JobMasterSchedulerTest extends TestLogger {
 
         @Override
         public JobManagerOptions.SchedulerType getSchedulerType() {
-            return JobManagerOptions.SchedulerType.Ng;
+            return JobManagerOptions.SchedulerType.Default;
         }
     }
 }

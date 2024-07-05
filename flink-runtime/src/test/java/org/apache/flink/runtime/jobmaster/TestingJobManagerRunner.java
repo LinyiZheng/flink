@@ -23,6 +23,7 @@ import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.core.testutils.OneShotLatch;
 import org.apache.flink.runtime.executiongraph.ArchivedExecutionGraph;
+import org.apache.flink.runtime.jobgraph.JobType;
 import org.apache.flink.runtime.messages.Acknowledge;
 import org.apache.flink.runtime.messages.webmonitor.JobDetails;
 import org.apache.flink.runtime.scheduler.ExecutionGraphInfo;
@@ -69,8 +70,14 @@ public class TestingJobManagerRunner implements JobManagerRunner {
 
         final ExecutionGraphInfo suspendedExecutionGraphInfo =
                 new ExecutionGraphInfo(
-                        ArchivedExecutionGraph.createFromInitializingJob(
-                                jobId, "TestJob", JobStatus.SUSPENDED, null, null, 0L),
+                        ArchivedExecutionGraph.createSparseArchivedExecutionGraph(
+                                jobId,
+                                "TestJob",
+                                JobStatus.SUSPENDED,
+                                JobType.STREAMING,
+                                null,
+                                null,
+                                0L),
                         null);
         terminationFuture.whenComplete(
                 (ignored, ignoredThrowable) ->
@@ -118,7 +125,7 @@ public class TestingJobManagerRunner implements JobManagerRunner {
 
     @Override
     public boolean isInitialized() {
-        throw new UnsupportedOperationException();
+        return true;
     }
 
     @Override
@@ -155,6 +162,10 @@ public class TestingJobManagerRunner implements JobManagerRunner {
         terminationFuture.complete(null);
     }
 
+    public void completeTerminationFutureExceptionally(Throwable expectedException) {
+        terminationFuture.completeExceptionally(expectedException);
+    }
+
     public CompletableFuture<Void> getTerminationFuture() {
         return terminationFuture;
     }
@@ -166,7 +177,7 @@ public class TestingJobManagerRunner implements JobManagerRunner {
     /** {@code Builder} for instantiating {@link TestingJobManagerRunner} instances. */
     public static class Builder {
 
-        private JobID jobId = null;
+        private JobID jobId = new JobID();
         private boolean blockingTermination = false;
         private CompletableFuture<JobMasterGateway> jobMasterGatewayFuture =
                 new CompletableFuture<>();

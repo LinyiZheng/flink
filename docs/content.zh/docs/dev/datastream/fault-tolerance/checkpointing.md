@@ -47,6 +47,9 @@ Flink 的 checkpoint 机制会和持久化存储进行交互，读写流与状�
 
 Checkpoint 其他的属性包括：
 
+  - *Checkpoint 存储*: 你可以设置检查点快照的持久化位置。默认情况下，Flink将使用JobManager的堆。建议在生产部署中改为使用持久性文件系统。
+    有关作业范围和集群范围配置的可用选项的更多详细信息，请参阅[Checkpoint 存储]({{< ref "docs/ops/state/checkpoints" >}}#Checkpoint-存储)。
+
   - *精确一次（exactly-once）对比至少一次（at-least-once）*：你可以选择向 `enableCheckpointing(long interval, CheckpointingMode mode)` 方法中传入一个模式来选择使用两种保证等级中的哪一种。
     对于大多数应用来说，精确一次是较好的选择。至少一次可能与某些延迟超低（始终只有几毫秒）的应用的关联较大。
   
@@ -61,6 +64,8 @@ Checkpoint 其他的属性包括：
 
   - *checkpoint 可容忍连续失败次数*：该属性定义可容忍多少次连续的 checkpoint 失败。超过这个阈值之后会触发作业错误 fail over。
     默认次数为“0”，这意味着不容忍 checkpoint 失败，作业将在第一次 checkpoint 失败时fail over。
+    可容忍的checkpoint失败仅适用于下列情形：Job Manager的IOException，TaskManager做checkpoint时异步部分的失败，
+    checkpoint超时等。TaskManager做checkpoint时同步部分的失败会直接触发作业fail over。其它的checkpoint失败（如一个checkpoint被另一个checkpoint包含）会被忽略掉。
     
   - *并发 checkpoint 的数目*: 默认情况下，在上一个 checkpoint 未完成（失败或者成功）的情况下，系统不会触发另一个 checkpoint。这确保了拓扑不会在 checkpoint 上花费太多时间，从而影响正常的处理流程。
     不过允许多个 checkpoint 并行进行是可行的，对于有确定的处理延迟（例如某方法所调用比较耗时的外部服务），但是仍然想进行频繁的 checkpoint 去最小化故障后重跑的 pipelines 来说，是有意义的。
@@ -68,8 +73,14 @@ Checkpoint 其他的属性包括：
     该选项不能和 "checkpoints 间的最小时间"同时使用。
     
   - *externalized checkpoints*: 你可以配置周期存储 checkpoint 到外部系统中。Externalized checkpoints 将他们的元数据写到持久化存储上并且在 job 失败的时候*不会*被自动删除。
-    这种方式下，如果你的 job 失败，你将会有一个现有的 checkpoint 去恢复。更多的细节请看 [Externalized checkpoints 的部署文档]({{< ref "docs/ops/state/checkpoints" >}}#externalized-checkpoints)。
-    
+    这种方式下，如果你的 job 失败，你将会有一个现有的 checkpoint 去恢复。更多的细节请看 [保留 checkpoints 的部署文档]({{< ref "docs/ops/state/checkpoints" >}}#保留-checkpoint)。
+
+  - *非对齐 checkpoints*: 你可以启用[非对齐 checkpoints]({{< ref "docs/ops/state/checkpointing_under_backpressure" >}}#非对齐-checkpoints)
+     以在背压时大大减少创建checkpoint的时间。这仅适用于精确一次（exactly-once）checkpoints 并且只有一个并发检查点。
+
+  - *部分任务结束的 checkpoints*： 默认情况下，即使DAG的部分已经处理完它们的所有记录，Flink也会继续执行 checkpoints。
+    请参阅[重要注意事项]({{< ref "docs/dev/datastream/fault-tolerance/checkpointing" >}}#部分任务结束后的-checkpoint)以了解详细信息。
+
 {{< tabs "5ef78d6e-3c62-43e9-b0a8-a987df37a8da" >}}
 {{< tab "Java" >}}
 ```java
@@ -90,14 +101,14 @@ env.getCheckpointConfig().setMinPauseBetweenCheckpoints(500);
 env.getCheckpointConfig().setCheckpointTimeout(60000);
 
 // 允许两个连续的 checkpoint 错误
-env.getCheckpointConfig().setTolerableCheckpointFailureNumber(2)
+env.getCheckpointConfig().setTolerableCheckpointFailureNumber(2);
         
 // 同一时间只允许一个 checkpoint 进行
 env.getCheckpointConfig().setMaxConcurrentCheckpoints(1);
 
 // 使用 externalized checkpoints，这样 checkpoint 在作业取消后仍就会被保留
-env.getCheckpointConfig().enableExternalizedCheckpoints(
-        ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION);
+env.getCheckpointConfig().setExternalizedCheckpointRetention(
+        ExternalizedCheckpointRetention.RETAIN_ON_CANCELLATION);
 
 // 开启实验性的 unaligned checkpoints
 env.getCheckpointConfig().enableUnalignedCheckpoints();
@@ -128,8 +139,8 @@ env.getCheckpointConfig().setTolerableCheckpointFailureNumber(2)
 env.getCheckpointConfig.setMaxConcurrentCheckpoints(1)
 
 // 使用 externalized checkpoints，这样 checkpoint 在作业取消后仍就会被保留
-env.getCheckpointConfig().enableExternalizedCheckpoints(
-  ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION)
+env.getCheckpointConfig().setExternalizedCheckpointRetention(
+  ExternalizedCheckpointRetention.RETAIN_ON_CANCELLATION)
 
 // 开启实验性的 unaligned checkpoints
 env.getCheckpointConfig.enableUnalignedCheckpoints()
@@ -161,7 +172,7 @@ env.get_checkpoint_config().set_max_concurrent_checkpoints(1)
 
 # 使用 externalized checkpoints，这样 checkpoint 在作业取消后仍就会被保留
 env.get_checkpoint_config().enable_externalized_checkpoints(
-    ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION)
+    ExternalizedCheckpointRetention.RETAIN_ON_CANCELLATION)
     
 # 开启实验性的 unaligned checkpoints
 env.get_checkpoint_config().enable_unaligned_checkpoints()
@@ -171,7 +182,7 @@ env.get_checkpoint_config().enable_unaligned_checkpoints()
 
 ### 相关的配置选项
 
-更多的属性与默认值能在 `conf/flink-conf.yaml` 中设置（完整教程请阅读 [配置]({{< ref "docs/deployment/config" >}})）。
+更多的属性与默认值能在 [Flink 配置文件]({{< ref "docs/deployment/config#flink-配置文件" >}}) 中设置（完整教程请阅读 [配置]({{< ref "docs/deployment/config" >}})）。
 
 {{< generated/checkpointing_configuration >}}
 
@@ -185,7 +196,12 @@ Flink 的 [checkpointing 机制]({{< ref "docs/learn-flink/fault_tolerance" >}})
 Checkpoint 存储在哪里取决于所配置的 **State Backend**（比如 JobManager memory、 file system、 database）。
 
 默认情况下，状态是保持在 TaskManagers 的内存中，checkpoint 保存在 JobManager 的内存中。为了合适地持久化大体量状态，
-Flink 支持各种各样的途径去存储 checkpoint 状态到其他的 state backends 上。通过 `StreamExecutionEnvironment.setStateBackend(…)` 来配置所选的 state backends。
+Flink 支持各种各样的途径去存储 checkpoint 状态到其他的 state backends 上。可以通过如下代码块来配置：
+```java
+Configuration config = new Configuration();
+config.set(StateBackendOptions.STATE_BACKEND, "hashmap");
+env.configure(config);
+```
 
 阅读 [state backends]({{< ref "docs/ops/state/state_backends" >}}) 来查看在 job 范围和集群范围上可用的 state backends 与选项的更多细节。
 
@@ -194,6 +210,62 @@ Flink 支持各种各样的途径去存储 checkpoint 状态到其他的 state b
 Flink 现在为没有迭代（iterations）的作业提供一致性的处理保证。在迭代作业上开启 checkpoint 会导致异常。为了在迭代程序中强制进行 checkpoint，用户需要在开启 checkpoint 时设置一个特殊的标志： `env.enableCheckpointing(interval, CheckpointingMode.EXACTLY_ONCE, force = true)`。
 
 请注意在环形边上游走的记录（以及与之相关的状态变化）在故障时会丢失。
+
+## 部分任务结束后的 Checkpoint
+
+从版本 1.14 开始 Flink 支持在部分任务结束后继续进行Checkpoint。
+如果一部分数据源是有限数据集，那么就可以出现这种情况。
+从版本 1.15 开始，这一特性被默认打开。如果想要关闭这一功能，可以执行：
+
+```java
+Configuration config = new Configuration();
+config.set(CheckpointingOptions.ENABLE_CHECKPOINTS_AFTER_TASKS_FINISH, false);
+StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment(config);
+```
+
+在这种情况下，结束的任务不会参与 Checkpoint 的过程。在实现自定义的算子或者 UDF （用户自定义函数）时需要考虑这一点。
+
+为了支持部分任务结束后的 Checkpoint 操作，我们调整了 [任务的生命周期]({{<ref "docs/internals/task_lifecycle" >}}) 并且引入了
+{{< javadoc file="org/apache/flink/streaming/api/operators/StreamOperator.html#finish--" name="StreamOperator#finish" >}} 方法。
+在这一方法中，用户需要写出所有缓冲区中的数据。在 finish 方法调用后的 checkpoint 中，这一任务一定不能再有缓冲区中的数据，因为在 `finish()` 后没有办法来输出这些数据。
+在大部分情况下，`finish()` 后这一任务的状态为空，唯一的例外是如果其中某些算子中包含外部系统事务的句柄（例如为了实现恰好一次语义），
+在这种情况下，在 `finish()` 后进行的 checkpoint 操作应该保留这些句柄，并且在结束 checkpoint（即任务退出前所等待的 checkpoint）时提交。
+一个可以参考的例子是满足恰好一次语义的 sink 接口与 `TwoPhaseCommitSinkFunction`。
+
+### 对 operator state 的影响
+
+在部分 Task 结束后的checkpoint中，Flink 对 `UnionListState` 进行了特殊的处理。
+`UnionListState` 一般用于实现对外部系统读取位置的一个全局视图（例如，用于记录所有 Kafka 分区的读取偏移）。
+如果我们在算子的某个并发调用 `close()` 方法后丢弃它的状态，我们就会丢失它所分配的分区的偏移量信息。
+为了解决这一问题，对于使用 `UnionListState` 的算子我们只允许在它的并发都在运行或都已结束的时候才能进行 checkpoint 操作。
+
+`ListState` 一般不会用于类似的场景，但是用户仍然需要注意在调用 `close()` 方法后进行的 checkpoint 会丢弃算子的状态并且
+这些状态在算子重启后不可用。
+
+任何支持并发修改操作的算子也可以支持部分并发实例结束后的恢复操作。从这种类型的快照中恢复等价于将算子的并发改为正在运行的并发实例数。
+
+### 任务结束前等待最后一次 Checkpoint
+
+为了保证使用两阶段提交的算子可以提交所有的数据，任务会在所有算子都调用 `finish()` 方法后等待下一次 checkpoint 成功后退出。
+需要注意的是，这一行为可能会延长任务运行的时间，如果 checkpoint 周期比较大，这一延迟会非常明显。
+极端情况下，如果 checkpoint 的周期被设置为 `Long.MAX_VALUE`，那么任务永远不会结束，因为下一次 checkpoint 不会进行。
+
+##  统一的 checkpoint 文件合并机制 (实验性功能)
+
+Flink 1.20 引入了 MVP 版本的统一 checkpoint 文件合并机制，该机制允许把分散的 checkpoint 小文件合并到大文件中，减少 checkpoint 文件创建删除的次数，
+有助于减轻文件过多问题带来的文件系统元数据管理的压力。可以通过将 `state.checkpoints.file-merging.enabled` 设置为 `true` 来开启该机制。
+**注意**，考虑 trade-off，开启该机制会导致空间放大，即文件系统上的实际占用会比 state size 更大，可以通过设置 `state.checkpoints.file-merging.max-space-amplification`
+来控制文件放大的上限。
+
+该机制适用于 Flink 中的 keyed state、operator state 和 channel state。对 shared scope state 
+提供 subtask 级别的合并；对 private scope state 提供 TaskManager 级别的合并，可以通过
+ `state.checkpoints.file-merging.max-subtasks-per-file` 选项配置单个文件允许写入的最大 subtask 数目。
+
+统一文件合并机制也支持跨 checkpoint 的文件合并，通过设置 `state.checkpoints.file-merging.across-checkpoint-boundary` 为 `true` 开启。
+
+该机制引入了文件池用于处理并发写的场景，文件池有两种模式，Non-blocking 模式的文件池会对每个文件请求即时返回一个物理文件，在频繁请求的情况下会创建出许多物理文件；
+而 Blocking 模式的文件池会一直阻塞文件请求，直到文件池中有返回的文件可用，可以通过设置 `state.checkpoints.file-merging.pool-blocking` 为 `true` 
+选择 Blocking 模式，设置为 `false` 选择 Non-blocking 模式。
 
 {{< top >}}
 

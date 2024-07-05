@@ -21,10 +21,12 @@ package org.apache.flink.runtime.state.filesystem;
 import org.apache.flink.core.fs.FSDataInputStream;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.fs.Path;
+import org.apache.flink.runtime.state.PhysicalStateHandleID;
 import org.apache.flink.runtime.state.StreamStateHandle;
 
 import java.io.IOException;
 import java.util.Optional;
+import java.util.regex.Pattern;
 
 import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
@@ -36,6 +38,8 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 public class FileStateHandle implements StreamStateHandle {
 
     private static final long serialVersionUID = 350284443258002355L;
+
+    private static final Pattern NOT_LOCAL_FILER = Pattern.compile("(?!file\\b)\\w+?://.*");
 
     /** The path to the file in the filesystem, fully describing the file system. */
     private final Path filePath;
@@ -73,6 +77,11 @@ public class FileStateHandle implements StreamStateHandle {
         return Optional.empty();
     }
 
+    @Override
+    public PhysicalStateHandleID getStreamStateHandleID() {
+        return new PhysicalStateHandleID(filePath.toUri().toString());
+    }
+
     /**
      * Discard the state by deleting the file that stores the state. If the parent directory of the
      * state is empty after deleting the state file, it is also deleted.
@@ -81,8 +90,26 @@ public class FileStateHandle implements StreamStateHandle {
      */
     @Override
     public void discardState() throws Exception {
-        FileSystem fs = getFileSystem();
-        fs.delete(filePath, false);
+        final FileSystem fs = getFileSystem();
+
+        IOException actualException = null;
+        boolean success = true;
+        try {
+            success = fs.delete(filePath, false);
+        } catch (IOException e) {
+            actualException = e;
+        }
+
+        if (!success || actualException != null) {
+            if (fs.exists(filePath)) {
+                throw Optional.ofNullable(actualException)
+                        .orElse(
+                                new IOException(
+                                        "Unknown error caused the file '"
+                                                + filePath
+                                                + "' to not be deleted."));
+            }
+        }
     }
 
     /**
@@ -93,6 +120,17 @@ public class FileStateHandle implements StreamStateHandle {
     @Override
     public long getStateSize() {
         return stateSize;
+    }
+
+    @Override
+    public void collectSizeStats(StateObjectSizeStatsCollector collector) {
+        final StateObjectLocation location;
+        if (NOT_LOCAL_FILER.matcher(filePath.toUri().toString()).matches()) {
+            location = StateObjectLocation.REMOTE;
+        } else {
+            location = StateObjectLocation.LOCAL_DISK;
+        }
+        collector.add(location, getStateSize());
     }
 
     /**

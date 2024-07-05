@@ -19,13 +19,17 @@
 package org.apache.flink.table.factories;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.table.catalog.CatalogPartitionSpec;
 
 import java.util.Map;
 
 /**
  * Base interface for configuring a managed dynamic table connector. The managed table factory is
  * used when there is no {@link FactoryUtil#CONNECTOR} option.
+ *
+ * @deprecated This interface will be removed soon. Please see FLIP-346 for more details.
  */
+@Deprecated
 @Internal
 public interface ManagedTableFactory extends DynamicTableFactory {
 
@@ -49,6 +53,13 @@ public interface ManagedTableFactory extends DynamicTableFactory {
 
     /** Notifies the listener that a table drop occurred. */
     void onDropTable(Context context, boolean ignoreIfNotExists);
+
+    /**
+     * Notifies the listener that a table compaction occurred.
+     *
+     * @return dynamic options of the source and sink info for this table.
+     */
+    Map<String, String> onCompactTable(Context context, CatalogPartitionSpec partitionSpec);
 
     /** Discovers the unique implementation of {@link ManagedTableFactory} without identifier. */
     static ManagedTableFactory discoverManagedTableFactory(ClassLoader classLoader) {

@@ -42,11 +42,30 @@ import java.time.Duration;
 @Internal
 public interface TimestampsAndWatermarks<T> {
 
+    /** Lets the owner/creator of the output know about latest emitted watermark. */
+    @Internal
+    interface WatermarkUpdateListener {
+
+        /** It should be called once the idle is changed. */
+        void updateIdle(boolean isIdle);
+
+        /**
+         * Update the effective watermark. If an output becomes idle, please call {@link
+         * this#updateIdle} instead of update the watermark to {@link Long#MAX_VALUE}. Because the
+         * output needs to distinguish between idle and real watermark.
+         */
+        void updateCurrentEffectiveWatermark(long watermark);
+
+        /** Notifies about changes to per split watermarks. */
+        void updateCurrentSplitWatermark(String splitId, long watermark);
+    }
+
     /**
      * Creates the ReaderOutput for the source reader, than internally runs the timestamp extraction
      * and watermark generation.
      */
-    ReaderOutput<T> createMainOutput(PushingAsyncDataInput.DataOutput<T> output);
+    ReaderOutput<T> createMainOutput(
+            PushingAsyncDataInput.DataOutput<T> output, WatermarkUpdateListener watermarkCallback);
 
     /**
      * Starts emitting periodic watermarks, if this implementation produces watermarks, and if
@@ -60,6 +79,9 @@ public interface TimestampsAndWatermarks<T> {
 
     /** Stops emitting periodic watermarks. */
     void stopPeriodicWatermarkEmits();
+
+    /** Emit a watermark immediately. */
+    void emitImmediateWatermark(long wallClockTimestamp);
 
     // ------------------------------------------------------------------------
     //  factories

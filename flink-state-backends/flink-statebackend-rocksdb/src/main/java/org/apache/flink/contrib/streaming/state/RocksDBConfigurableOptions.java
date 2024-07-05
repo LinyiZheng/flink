@@ -18,18 +18,21 @@
 
 package org.apache.flink.contrib.streaming.state;
 
+import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.description.Description;
 import org.apache.flink.util.Preconditions;
 
 import org.rocksdb.CompactionStyle;
+import org.rocksdb.CompressionType;
 import org.rocksdb.InfoLogLevel;
 
 import java.io.File;
 import java.io.Serializable;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 import static org.apache.flink.configuration.ConfigOptions.key;
@@ -39,6 +42,9 @@ import static org.rocksdb.CompactionStyle.FIFO;
 import static org.rocksdb.CompactionStyle.LEVEL;
 import static org.rocksdb.CompactionStyle.NONE;
 import static org.rocksdb.CompactionStyle.UNIVERSAL;
+import static org.rocksdb.CompressionType.LZ4_COMPRESSION;
+import static org.rocksdb.CompressionType.NO_COMPRESSION;
+import static org.rocksdb.CompressionType.SNAPPY_COMPRESSION;
 import static org.rocksdb.InfoLogLevel.INFO_LEVEL;
 
 /**
@@ -48,6 +54,7 @@ import static org.rocksdb.InfoLogLevel.INFO_LEVEL;
  * PredefinedOptions}, and then a user-defined {@link RocksDBOptionsFactory} may override the
  * configurations here.
  */
+@PublicEvolving
 public class RocksDBConfigurableOptions implements Serializable {
 
     // --------------------------------------------------------------------------
@@ -94,7 +101,8 @@ public class RocksDBConfigurableOptions implements Serializable {
                     .withDescription(
                             "The directory for RocksDB's information logging files. "
                                     + "If empty (Flink default setting), log files will be in the same directory as the Flink log. "
-                                    + "If non-empty, this directory will be used and the data directory's absolute path will be used as the prefix of the log file name.");
+                                    + "If non-empty, this directory will be used and the data directory's absolute path will be used as the prefix of the log file name. "
+                                    + "If setting this option as a non-existing location, e.g '/dev/null', RocksDB will then create the log under its own database folder as before.");
 
     public static final ConfigOption<InfoLogLevel> LOG_LEVEL =
             key("state.backend.rocksdb.log.level")
@@ -156,6 +164,44 @@ public class RocksDBConfigurableOptions implements Serializable {
                                             link(
                                                     "https://github.com/facebook/rocksdb/wiki/Leveled-Compaction#level_compaction_dynamic_level_bytes-is-true",
                                                     "RocksDB's doc."))
+                                    .build());
+
+    public static final ConfigOption<List<CompressionType>> COMPRESSION_PER_LEVEL =
+            key("state.backend.rocksdb.compression.per.level")
+                    .enumType(CompressionType.class)
+                    .asList()
+                    .defaultValues(SNAPPY_COMPRESSION)
+                    .withDescription(
+                            Description.builder()
+                                    .text(
+                                            "A semicolon-separated list of Compression Type. Different levels can have different "
+                                                    + "compression policies. In many cases, lower levels use fast compression algorithms,"
+                                                    + " while higher levels with more data use slower but more effective compression algorithms. "
+                                                    + "The N th element in the List corresponds to the compression type of the level N-1"
+                                                    + "When %s is true, compression_per_level[0] still determines L0, but other "
+                                                    + "elements are based on the base level and may not match the level seen in the info log",
+                                            code(USE_DYNAMIC_LEVEL_SIZE.key()))
+                                    .linebreak()
+                                    .text(
+                                            "Note: If the List size is smaller than the level number, the undefined lower level uses the last Compression Type in the List")
+                                    .linebreak()
+                                    .text(
+                                            "Some commonly used compression algorithms for candidates include %s ,%s and %s",
+                                            code(NO_COMPRESSION.name()),
+                                            code(SNAPPY_COMPRESSION.name()),
+                                            code(LZ4_COMPRESSION.name()))
+                                    .linebreak()
+                                    .text(
+                                            "The default value is %s, which means that all data uses the Snappy compression algorithm.",
+                                            code(SNAPPY_COMPRESSION.name()))
+                                    .text(
+                                            "Likewise, if set to %s , means that all data is not compressed, which will achieve faster speed but will bring some space amplification.",
+                                            code(NO_COMPRESSION.name()))
+                                    .text(
+                                            "In addition, if we need to consider both spatial amplification and performance, we can also set it to '%s;%s;%s', which means that L0 and L1 data will not be compressed, and other data will be compressed using LZ4.",
+                                            code(NO_COMPRESSION.name()),
+                                            code(NO_COMPRESSION.name()),
+                                            code(LZ4_COMPRESSION.name()))
                                     .build());
 
     public static final ConfigOption<MemorySize> TARGET_FILE_SIZE_BASE =
@@ -255,6 +301,38 @@ public class RocksDBConfigurableOptions implements Serializable {
                             "If true, RocksDB will use block-based filter instead of full filter, this only take effect when bloom filter is used. "
                                     + "The default value is 'false'.");
 
+    public static final ConfigOption<Double> RESTORE_OVERLAP_FRACTION_THRESHOLD =
+            key("state.backend.rocksdb.restore-overlap-fraction-threshold")
+                    .doubleType()
+                    .defaultValue(0.0)
+                    .withDescription(
+                            "The threshold of overlap fraction between the handle's key-group range and target key-group range. "
+                                    + "When restore base DB, only the handle which overlap fraction greater than or equal to threshold "
+                                    + "has a chance to be an initial handle. "
+                                    + "The default value is 0.0, there is always a handle will be selected for initialization. ");
+
+    public static final ConfigOption<Boolean> USE_INGEST_DB_RESTORE_MODE =
+            key("state.backend.rocksdb.use-ingest-db-restore-mode")
+                    .booleanType()
+                    .defaultValue(Boolean.FALSE)
+                    .withDescription(
+                            "A recovery mode that directly clips and ingests multiple DBs during state recovery if the keys"
+                                    + " in the SST files does not exceed the declared key-group range.");
+
+    public static final ConfigOption<Boolean> INCREMENTAL_RESTORE_ASYNC_COMPACT_AFTER_RESCALE =
+            key("state.backend.rocksdb.incremental-restore-async-compact-after-rescale")
+                    .booleanType()
+                    .defaultValue(Boolean.FALSE)
+                    .withDescription(
+                            "If true, an async compaction of RocksDB is started after every restore after which we detect keys (including tombstones) in the database that are outside the key-groups range of the backend.");
+
+    public static final ConfigOption<Boolean> USE_DELETE_FILES_IN_RANGE_DURING_RESCALING =
+            key("state.backend.rocksdb.rescaling.use-delete-files-in-range")
+                    .booleanType()
+                    .defaultValue(Boolean.FALSE)
+                    .withDescription(
+                            "If true, during rescaling, the deleteFilesInRange API will be invoked to clean up the useless files so that local disk space can be reclaimed more promptly.");
+
     static final ConfigOption<?>[] CANDIDATE_CONFIGS =
             new ConfigOption<?>[] {
                 // configurable DBOptions
@@ -267,6 +345,7 @@ public class RocksDBConfigurableOptions implements Serializable {
 
                 // configurable ColumnFamilyOptions
                 COMPACTION_STYLE,
+                COMPRESSION_PER_LEVEL,
                 USE_DYNAMIC_LEVEL_SIZE,
                 TARGET_FILE_SIZE_BASE,
                 MAX_SIZE_LEVEL_BASE,
@@ -278,7 +357,10 @@ public class RocksDBConfigurableOptions implements Serializable {
                 BLOCK_CACHE_SIZE,
                 USE_BLOOM_FILTER,
                 BLOOM_FILTER_BITS_PER_KEY,
-                BLOOM_FILTER_BLOCK_BASED_MODE
+                BLOOM_FILTER_BLOCK_BASED_MODE,
+                RESTORE_OVERLAP_FRACTION_THRESHOLD,
+                USE_INGEST_DB_RESTORE_MODE,
+                INCREMENTAL_RESTORE_ASYNC_COMPACT_AFTER_RESCALE
             };
 
     private static final Set<ConfigOption<?>> POSITIVE_INT_CONFIG_SET =

@@ -21,6 +21,7 @@ package org.apache.flink.runtime.jobmaster;
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.api.common.time.Time;
 import org.apache.flink.client.program.MiniClusterClient;
+import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.CheckpointMetaData;
 import org.apache.flink.runtime.checkpoint.CheckpointMetrics;
@@ -36,12 +37,14 @@ import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.jobgraph.tasks.AbstractInvokable;
 import org.apache.flink.runtime.jobgraph.tasks.CheckpointCoordinatorConfiguration;
 import org.apache.flink.runtime.jobgraph.tasks.JobCheckpointingSettings;
-import org.apache.flink.test.util.AbstractTestBase;
+import org.apache.flink.test.util.AbstractTestBaseJUnit4;
+import org.apache.flink.testutils.junit.FailsInGHAContainerWithRootUser;
 import org.apache.flink.util.ExceptionUtils;
 
 import org.junit.Assume;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.experimental.categories.Category;
 import org.junit.rules.TemporaryFolder;
 
 import java.io.IOException;
@@ -70,7 +73,7 @@ import static org.junit.Assert.assertTrue;
  *
  * @see org.apache.flink.runtime.jobmaster.JobMaster
  */
-public class JobMasterTriggerSavepointITCase extends AbstractTestBase {
+public class JobMasterTriggerSavepointITCase extends AbstractTestBaseJUnit4 {
 
     private static CountDownLatch invokeLatch;
 
@@ -89,9 +92,9 @@ public class JobMasterTriggerSavepointITCase extends AbstractTestBase {
 
         Assume.assumeTrue(
                 "ClusterClient is not an instance of MiniClusterClient",
-                miniClusterResource.getClusterClient() instanceof MiniClusterClient);
+                MINI_CLUSTER_RESOURCE.getClusterClient() instanceof MiniClusterClient);
 
-        clusterClient = (MiniClusterClient) miniClusterResource.getClusterClient();
+        clusterClient = (MiniClusterClient) MINI_CLUSTER_RESOURCE.getClusterClient();
 
         final JobVertex vertex = new JobVertex("testVertex");
         vertex.setInvokableClass(NoOpBlockingInvokable.class);
@@ -157,6 +160,7 @@ public class JobMasterTriggerSavepointITCase extends AbstractTestBase {
     }
 
     @Test
+    @Category(FailsInGHAContainerWithRootUser.class)
     public void testDoNotCancelJobIfSavepointFails() throws Exception {
         setUpWithCheckpointInterval(10L);
 
@@ -192,7 +196,9 @@ public class JobMasterTriggerSavepointITCase extends AbstractTestBase {
         setUpWithCheckpointInterval(10L);
 
         try {
-            clusterClient.cancelWithSavepoint(jobGraph.getJobID(), null).get();
+            clusterClient
+                    .cancelWithSavepoint(jobGraph.getJobID(), null, SavepointFormatType.CANONICAL)
+                    .get();
         } catch (Exception e) {
             if (!ExceptionUtils.findThrowableWithMessage(e, "savepoint directory").isPresent()) {
                 throw e;
@@ -272,7 +278,9 @@ public class JobMasterTriggerSavepointITCase extends AbstractTestBase {
     private String cancelWithSavepoint() throws Exception {
         return clusterClient
                 .cancelWithSavepoint(
-                        jobGraph.getJobID(), savepointDirectory.toAbsolutePath().toString())
+                        jobGraph.getJobID(),
+                        savepointDirectory.toAbsolutePath().toString(),
+                        SavepointFormatType.CANONICAL)
                 .get();
     }
 }

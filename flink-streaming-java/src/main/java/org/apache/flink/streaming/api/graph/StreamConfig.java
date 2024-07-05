@@ -21,39 +21,43 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.java.functions.KeySelector;
+import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.core.fs.Path;
+import org.apache.flink.core.execution.CheckpointingMode;
 import org.apache.flink.core.memory.ManagedMemoryUseCase;
+import org.apache.flink.runtime.jobgraph.JobVertex;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.operators.util.CorruptConfigurationException;
 import org.apache.flink.runtime.state.CheckpointStorage;
 import org.apache.flink.runtime.state.StateBackend;
-import org.apache.flink.runtime.util.ClassLoaderUtil;
 import org.apache.flink.runtime.util.config.memory.ManagedMemoryUtils;
-import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.TimeCharacteristic;
-import org.apache.flink.streaming.api.environment.ExecutionCheckpointingOptions;
 import org.apache.flink.streaming.api.operators.InternalTimeServiceManager;
 import org.apache.flink.streaming.api.operators.SimpleOperatorFactory;
 import org.apache.flink.streaming.api.operators.StreamOperator;
 import org.apache.flink.streaming.api.operators.StreamOperatorFactory;
 import org.apache.flink.streaming.runtime.tasks.StreamTaskException;
+import org.apache.flink.util.ClassLoaderUtil;
 import org.apache.flink.util.InstantiationUtil;
 import org.apache.flink.util.OutputTag;
-import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.TernaryBoolean;
+import org.apache.flink.util.concurrent.FutureUtils;
 
 import java.io.IOException;
 import java.io.Serializable;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 import static org.apache.flink.util.Preconditions.checkArgument;
@@ -73,7 +77,12 @@ public class StreamConfig implements Serializable {
     //  Config Keys
     // ------------------------------------------------------------------------
 
-    @VisibleForTesting public static final String SERIALIZEDUDF = "serializedUDF";
+    public static final String SERIALIZED_UDF = "serializedUDF";
+    /**
+     * Introduce serializedUdfClassName to avoid unnecessarily heavy {@link
+     * #getStreamOperatorFactory}.
+     */
+    public static final String SERIALIZED_UDF_CLASS = "serializedUdfClass";
 
     private static final String NUMBER_OF_OUTPUTS = "numberOfOutputs";
     private static final String NUMBER_OF_NETWORK_INPUTS = "numberOfNetworkInputs";
@@ -87,8 +96,8 @@ public class StreamConfig implements Serializable {
     private static final String TYPE_SERIALIZER_OUT_1 = "typeSerializer_out";
     private static final String TYPE_SERIALIZER_SIDEOUT_PREFIX = "typeSerializer_sideout_";
     private static final String ITERATON_WAIT = "iterationWait";
-    private static final String NONCHAINED_OUTPUTS = "nonChainedOutputs";
-    private static final String EDGES_IN_ORDER = "edgesInOrder";
+    private static final String OP_NONCHAINED_OUTPUTS = "opNonChainedOutputs";
+    private static final String VERTEX_NONCHAINED_OUTPUTS = "vertexNonChainedOutputs";
     private static final String IN_STREAM_EDGES = "inStreamEdges";
     private static final String OPERATOR_NAME = "operatorName";
     private static final String OPERATOR_ID = "operatorID";
@@ -132,12 +141,86 @@ public class StreamConfig implements Serializable {
 
     private final Configuration config;
 
+    // To make the parallelization of the StreamConfig serialization easier, we use this map
+    // to collect all the need-to-be-serialized objects. These objects will be serialized all at
+    // once then.
+    private final transient Map<String, Object> toBeSerializedConfigObjects = new HashMap<>();
+    private final transient Map<Integer, CompletableFuture<StreamConfig>> chainedTaskFutures =
+            new HashMap<>();
+    private final transient CompletableFuture<StreamConfig> serializationFuture =
+            new CompletableFuture<>();
+
+    /**
+     * In order to release memory during processing data, some keys are removed in {@link
+     * #clearInitialConfigs()}. Recording these keys here to prevent they are accessed after
+     * removing.
+     */
+    private final Set<String> removedKeys = new HashSet<>();
+
     public StreamConfig(Configuration config) {
         this.config = config;
     }
 
     public Configuration getConfiguration() {
         return config;
+    }
+
+    public CompletableFuture<StreamConfig> getSerializationFuture() {
+        return serializationFuture;
+    }
+
+    /** Trigger the object config serialization and return the completable future. */
+    public CompletableFuture<StreamConfig> triggerSerializationAndReturnFuture(
+            Executor ioExecutor) {
+        FutureUtils.combineAll(chainedTaskFutures.values())
+                .thenAcceptAsync(
+                        chainedConfigs -> {
+                            try {
+                                // Serialize all the objects to config.
+                                serializeAllConfigs();
+                                InstantiationUtil.writeObjectToConfig(
+                                        chainedConfigs.stream()
+                                                .collect(
+                                                        Collectors.toMap(
+                                                                StreamConfig::getVertexID,
+                                                                Function.identity())),
+                                        this.config,
+                                        CHAINED_TASK_CONFIG);
+                                serializationFuture.complete(this);
+                            } catch (Throwable throwable) {
+                                serializationFuture.completeExceptionally(throwable);
+                            }
+                        },
+                        ioExecutor);
+        return serializationFuture;
+    }
+
+    /**
+     * Serialize all object configs synchronously. Only used for operators which need to reconstruct
+     * the StreamConfig internally or test.
+     */
+    public void serializeAllConfigs() {
+        toBeSerializedConfigObjects.forEach(
+                (key, object) -> {
+                    try {
+                        InstantiationUtil.writeObjectToConfig(object, this.config, key);
+                    } catch (IOException e) {
+                        throw new StreamTaskException(
+                                String.format("Could not serialize object for key %s.", key), e);
+                    }
+                });
+    }
+
+    @VisibleForTesting
+    public void setAndSerializeTransitiveChainedTaskConfigs(
+            Map<Integer, StreamConfig> chainedTaskConfigs) {
+        try {
+            InstantiationUtil.writeObjectToConfig(
+                    chainedTaskConfigs, this.config, CHAINED_TASK_CONFIG);
+        } catch (IOException e) {
+            throw new StreamTaskException(
+                    "Could not serialize object for key chained task config.", e);
+        }
     }
 
     // ------------------------------------------------------------------------
@@ -164,7 +247,7 @@ public class StreamConfig implements Serializable {
                         "%s should be in range [0.0, 1.0], but was: %s",
                         configOption.key(), fraction));
 
-        config.setDouble(configOption, fraction);
+        config.set(configOption, fraction);
     }
 
     /**
@@ -173,12 +256,14 @@ public class StreamConfig implements Serializable {
      */
     public double getManagedMemoryFractionOperatorUseCaseOfSlot(
             ManagedMemoryUseCase managedMemoryUseCase,
+            Configuration jobConfig,
             Configuration taskManagerConfig,
             ClassLoader cl) {
         return ManagedMemoryUtils.convertToFractionOfSlot(
                 managedMemoryUseCase,
-                config.getDouble(getManagedMemoryFractionConfigOption(managedMemoryUseCase)),
+                config.get(getManagedMemoryFractionConfigOption(managedMemoryUseCase)),
                 getAllManagedMemoryUseCases(),
+                jobConfig,
                 taskManagerConfig,
                 config.getOptional(STATE_BACKEND_USE_MANAGED_MEMORY),
                 cl);
@@ -232,15 +317,11 @@ public class StreamConfig implements Serializable {
     }
 
     private void setTypeSerializer(String key, TypeSerializer<?> typeWrapper) {
-        try {
-            InstantiationUtil.writeObjectToConfig(typeWrapper, this.config, key);
-        } catch (IOException e) {
-            throw new StreamTaskException("Could not serialize type serializer.", e);
-        }
+        toBeSerializedConfigObjects.put(key, typeWrapper);
     }
 
     public <T> TypeSerializer<T> getTypeSerializerSideOut(OutputTag<?> outputTag, ClassLoader cl) {
-        Preconditions.checkNotNull(outputTag, "Side output id must not be null.");
+        checkNotNull(outputTag, "Side output id must not be null.");
         try {
             return InstantiationUtil.readObjectFromConfig(
                     this.config, TYPE_SERIALIZER_SIDEOUT_PREFIX + outputTag.getId(), cl);
@@ -258,11 +339,7 @@ public class StreamConfig implements Serializable {
     }
 
     public void setInputs(InputConfig... inputs) {
-        try {
-            InstantiationUtil.writeObjectToConfig(inputs, this.config, INPUTS);
-        } catch (IOException e) {
-            throw new StreamTaskException("Could not serialize inputs.", e);
-        }
+        toBeSerializedConfigObjects.put(INPUTS, inputs);
     }
 
     public InputConfig[] getInputs(ClassLoader cl) {
@@ -304,12 +381,8 @@ public class StreamConfig implements Serializable {
 
     public void setStreamOperatorFactory(StreamOperatorFactory<?> factory) {
         if (factory != null) {
-            try {
-                InstantiationUtil.writeObjectToConfig(factory, this.config, SERIALIZEDUDF);
-            } catch (IOException e) {
-                throw new StreamTaskException(
-                        "Cannot serialize operator object " + factory.getClass() + ".", e);
-            }
+            toBeSerializedConfigObjects.put(SERIALIZED_UDF, factory);
+            toBeSerializedConfigObjects.put(SERIALIZED_UDF_CLASS, factory.getClass());
         }
     }
 
@@ -321,7 +394,10 @@ public class StreamConfig implements Serializable {
 
     public <T extends StreamOperatorFactory<?>> T getStreamOperatorFactory(ClassLoader cl) {
         try {
-            return InstantiationUtil.readObjectFromConfig(this.config, SERIALIZEDUDF, cl);
+            checkState(
+                    !removedKeys.contains(SERIALIZED_UDF),
+                    String.format("%s has been removed.", SERIALIZED_UDF));
+            return InstantiationUtil.readObjectFromConfig(this.config, SERIALIZED_UDF, cl);
         } catch (ClassNotFoundException e) {
             String classLoaderInfo = ClassLoaderUtil.getUserCodeClassLoaderInfo(cl);
             boolean loadableDoubleCheck = ClassLoaderUtil.validateClassLoadable(e, cl);
@@ -338,6 +414,15 @@ public class StreamConfig implements Serializable {
             throw new StreamTaskException(exceptionMessage, e);
         } catch (Exception e) {
             throw new StreamTaskException("Cannot instantiate user function.", e);
+        }
+    }
+
+    public <T extends StreamOperatorFactory<?>> Class<T> getStreamOperatorFactoryClass(
+            ClassLoader cl) {
+        try {
+            return InstantiationUtil.readObjectFromConfig(this.config, SERIALIZED_UDF_CLASS, cl);
+        } catch (Exception e) {
+            throw new StreamTaskException("Could not instantiate serialized udf class.", e);
         }
     }
 
@@ -373,30 +458,23 @@ public class StreamConfig implements Serializable {
         return config.getInteger(NUMBER_OF_OUTPUTS, 0);
     }
 
-    public void setNonChainedOutputs(List<StreamEdge> outputvertexIDs) {
-        try {
-            InstantiationUtil.writeObjectToConfig(outputvertexIDs, this.config, NONCHAINED_OUTPUTS);
-        } catch (IOException e) {
-            throw new StreamTaskException("Cannot serialize non chained outputs.", e);
-        }
+    /** Sets the operator level non-chained outputs. */
+    public void setOperatorNonChainedOutputs(List<NonChainedOutput> nonChainedOutputs) {
+        toBeSerializedConfigObjects.put(OP_NONCHAINED_OUTPUTS, nonChainedOutputs);
     }
 
-    public List<StreamEdge> getNonChainedOutputs(ClassLoader cl) {
+    public List<NonChainedOutput> getOperatorNonChainedOutputs(ClassLoader cl) {
         try {
-            List<StreamEdge> nonChainedOutputs =
-                    InstantiationUtil.readObjectFromConfig(this.config, NONCHAINED_OUTPUTS, cl);
-            return nonChainedOutputs == null ? new ArrayList<StreamEdge>() : nonChainedOutputs;
+            List<NonChainedOutput> nonChainedOutputs =
+                    InstantiationUtil.readObjectFromConfig(this.config, OP_NONCHAINED_OUTPUTS, cl);
+            return nonChainedOutputs == null ? new ArrayList<>() : nonChainedOutputs;
         } catch (Exception e) {
             throw new StreamTaskException("Could not instantiate non chained outputs.", e);
         }
     }
 
     public void setChainedOutputs(List<StreamEdge> chainedOutputs) {
-        try {
-            InstantiationUtil.writeObjectToConfig(chainedOutputs, this.config, CHAINED_OUTPUTS);
-        } catch (IOException e) {
-            throw new StreamTaskException("Cannot serialize chained outputs.", e);
-        }
+        toBeSerializedConfigObjects.put(CHAINED_OUTPUTS, chainedOutputs);
     }
 
     public List<StreamEdge> getChainedOutputs(ClassLoader cl) {
@@ -410,11 +488,7 @@ public class StreamConfig implements Serializable {
     }
 
     public void setInPhysicalEdges(List<StreamEdge> inEdges) {
-        try {
-            InstantiationUtil.writeObjectToConfig(inEdges, this.config, IN_STREAM_EDGES);
-        } catch (IOException e) {
-            throw new StreamTaskException("Cannot serialize inward edges.", e);
-        }
+        toBeSerializedConfigObjects.put(IN_STREAM_EDGES, inEdges);
     }
 
     public List<StreamEdge> getInPhysicalEdges(ClassLoader cl) {
@@ -451,11 +525,19 @@ public class StreamConfig implements Serializable {
     }
 
     public void setUnalignedCheckpointsEnabled(boolean enabled) {
-        config.setBoolean(ExecutionCheckpointingOptions.ENABLE_UNALIGNED, enabled);
+        config.set(CheckpointingOptions.ENABLE_UNALIGNED, enabled);
     }
 
     public boolean isUnalignedCheckpointsEnabled() {
-        return config.getBoolean(ExecutionCheckpointingOptions.ENABLE_UNALIGNED, false);
+        return config.get(CheckpointingOptions.ENABLE_UNALIGNED, false);
+    }
+
+    public void setUnalignedCheckpointsSplittableTimersEnabled(boolean enabled) {
+        config.setBoolean(CheckpointingOptions.ENABLE_UNALIGNED_INTERRUPTIBLE_TIMERS, enabled);
+    }
+
+    public boolean isUnalignedCheckpointsSplittableTimersEnabled() {
+        return config.get(CheckpointingOptions.ENABLE_UNALIGNED_INTERRUPTIBLE_TIMERS);
     }
 
     public boolean isExactlyOnceCheckpointMode() {
@@ -463,44 +545,64 @@ public class StreamConfig implements Serializable {
     }
 
     public Duration getAlignedCheckpointTimeout() {
-        return config.get(ExecutionCheckpointingOptions.ALIGNED_CHECKPOINT_TIMEOUT);
+        return config.get(CheckpointingOptions.ALIGNED_CHECKPOINT_TIMEOUT);
     }
 
     public void setAlignedCheckpointTimeout(Duration alignedCheckpointTimeout) {
+        config.set(CheckpointingOptions.ALIGNED_CHECKPOINT_TIMEOUT, alignedCheckpointTimeout);
+    }
+
+    public void setMaxConcurrentCheckpoints(int maxConcurrentCheckpoints) {
+        config.set(CheckpointingOptions.MAX_CONCURRENT_CHECKPOINTS, maxConcurrentCheckpoints);
+    }
+
+    public int getMaxConcurrentCheckpoints() {
+        return config.get(
+                CheckpointingOptions.MAX_CONCURRENT_CHECKPOINTS,
+                CheckpointingOptions.MAX_CONCURRENT_CHECKPOINTS.defaultValue());
+    }
+
+    public int getMaxSubtasksPerChannelStateFile() {
+        return config.get(CheckpointingOptions.UNALIGNED_MAX_SUBTASKS_PER_CHANNEL_STATE_FILE);
+    }
+
+    public void setMaxSubtasksPerChannelStateFile(int maxSubtasksPerChannelStateFile) {
         config.set(
-                ExecutionCheckpointingOptions.ALIGNED_CHECKPOINT_TIMEOUT, alignedCheckpointTimeout);
+                CheckpointingOptions.UNALIGNED_MAX_SUBTASKS_PER_CHANNEL_STATE_FILE,
+                maxSubtasksPerChannelStateFile);
     }
 
-    public void setOutEdgesInOrder(List<StreamEdge> outEdgeList) {
-        try {
-            InstantiationUtil.writeObjectToConfig(outEdgeList, this.config, EDGES_IN_ORDER);
-        } catch (IOException e) {
-            throw new StreamTaskException("Could not serialize outputs in order.", e);
-        }
+    /**
+     * Sets the job vertex level non-chained outputs. The given output list must have the same order
+     * with {@link JobVertex#getProducedDataSets()}.
+     */
+    public void setVertexNonChainedOutputs(List<NonChainedOutput> nonChainedOutputs) {
+        toBeSerializedConfigObjects.put(VERTEX_NONCHAINED_OUTPUTS, nonChainedOutputs);
     }
 
-    public List<StreamEdge> getOutEdgesInOrder(ClassLoader cl) {
+    public List<NonChainedOutput> getVertexNonChainedOutputs(ClassLoader cl) {
         try {
-            List<StreamEdge> outEdgesInOrder =
-                    InstantiationUtil.readObjectFromConfig(this.config, EDGES_IN_ORDER, cl);
-            return outEdgesInOrder == null ? new ArrayList<StreamEdge>() : outEdgesInOrder;
+            List<NonChainedOutput> nonChainedOutputs =
+                    InstantiationUtil.readObjectFromConfig(
+                            this.config, VERTEX_NONCHAINED_OUTPUTS, cl);
+            return nonChainedOutputs == null ? new ArrayList<>() : nonChainedOutputs;
         } catch (Exception e) {
             throw new StreamTaskException("Could not instantiate outputs in order.", e);
         }
     }
 
     public void setTransitiveChainedTaskConfigs(Map<Integer, StreamConfig> chainedTaskConfigs) {
-
-        try {
-            InstantiationUtil.writeObjectToConfig(
-                    chainedTaskConfigs, this.config, CHAINED_TASK_CONFIG);
-        } catch (IOException e) {
-            throw new StreamTaskException("Could not serialize configuration.", e);
+        if (chainedTaskConfigs != null) {
+            chainedTaskConfigs.forEach(
+                    (id, config) -> chainedTaskFutures.put(id, config.getSerializationFuture()));
         }
     }
 
     public Map<Integer, StreamConfig> getTransitiveChainedTaskConfigs(ClassLoader cl) {
         try {
+            checkState(
+                    !removedKeys.contains(CHAINED_TASK_CONFIG),
+                    String.format("%s has been removed.", CHAINED_TASK_CONFIG));
             Map<Integer, StreamConfig> confs =
                     InstantiationUtil.readObjectFromConfig(this.config, CHAINED_TASK_CONFIG, cl);
             return confs == null ? new HashMap<Integer, StreamConfig>() : confs;
@@ -522,7 +624,7 @@ public class StreamConfig implements Serializable {
 
     public OperatorID getOperatorID() {
         byte[] operatorIDBytes = config.getBytes(OPERATOR_ID, null);
-        return new OperatorID(Preconditions.checkNotNull(operatorIDBytes));
+        return new OperatorID(checkNotNull(operatorIDBytes));
     }
 
     public void setOperatorName(String name) {
@@ -547,28 +649,18 @@ public class StreamConfig implements Serializable {
 
     public void setStateBackend(StateBackend backend) {
         if (backend != null) {
-            try {
-                InstantiationUtil.writeObjectToConfig(backend, this.config, STATE_BACKEND);
-                setStateBackendUsesManagedMemory(backend.useManagedMemory());
-            } catch (Exception e) {
-                throw new StreamTaskException("Could not serialize stateHandle provider.", e);
-            }
+            toBeSerializedConfigObjects.put(STATE_BACKEND, backend);
+            setStateBackendUsesManagedMemory(backend.useManagedMemory());
         }
     }
 
     public void setChangelogStateBackendEnabled(TernaryBoolean enabled) {
-        try {
-            InstantiationUtil.writeObjectToConfig(
-                    enabled, this.config, ENABLE_CHANGE_LOG_STATE_BACKEND);
-        } catch (Exception e) {
-            throw new StreamTaskException(
-                    "Could not serialize change log state backend enable flag.", e);
-        }
+        toBeSerializedConfigObjects.put(ENABLE_CHANGE_LOG_STATE_BACKEND, enabled);
     }
 
     @VisibleForTesting
     public void setStateBackendUsesManagedMemory(boolean usesManagedMemory) {
-        this.config.setBoolean(STATE_BACKEND_USE_MANAGED_MEMORY, usesManagedMemory);
+        this.config.set(STATE_BACKEND_USE_MANAGED_MEMORY, usesManagedMemory);
     }
 
     public StateBackend getStateBackend(ClassLoader cl) {
@@ -589,31 +681,9 @@ public class StreamConfig implements Serializable {
         }
     }
 
-    public void setSavepointDir(Path directory) {
-        if (directory != null) {
-            try {
-                InstantiationUtil.writeObjectToConfig(directory, config, SAVEPOINT_DIR);
-            } catch (Exception e) {
-                throw new StreamTaskException("Could not serialize savepoint directory.", e);
-            }
-        }
-    }
-
-    public Path getSavepointDir(ClassLoader cl) {
-        try {
-            return InstantiationUtil.readObjectFromConfig(this.config, SAVEPOINT_DIR, cl);
-        } catch (Exception e) {
-            throw new StreamTaskException("Could not instantiate savepoint directory.", e);
-        }
-    }
-
     public void setCheckpointStorage(CheckpointStorage storage) {
         if (storage != null) {
-            try {
-                InstantiationUtil.writeObjectToConfig(storage, config, CHECKPOINT_STORAGE);
-            } catch (Exception e) {
-                throw new StreamTaskException("Could not serialize checkpoint storage.", e);
-            }
+            toBeSerializedConfigObjects.put(CHECKPOINT_STORAGE, storage);
         }
     }
 
@@ -627,12 +697,7 @@ public class StreamConfig implements Serializable {
 
     public void setTimerServiceProvider(InternalTimeServiceManager.Provider timerServiceProvider) {
         if (timerServiceProvider != null) {
-            try {
-                InstantiationUtil.writeObjectToConfig(
-                        timerServiceProvider, this.config, TIMER_SERVICE_PROVIDER);
-            } catch (Exception e) {
-                throw new StreamTaskException("Could not serialize timer service provider.", e);
-            }
+            toBeSerializedConfigObjects.put(TIMER_SERVICE_PROVIDER, timerServiceProvider);
         }
     }
 
@@ -645,12 +710,7 @@ public class StreamConfig implements Serializable {
     }
 
     public void setStatePartitioner(int input, KeySelector<?, ?> partitioner) {
-        try {
-            InstantiationUtil.writeObjectToConfig(
-                    partitioner, this.config, STATE_PARTITIONER + input);
-        } catch (IOException e) {
-            throw new StreamTaskException("Could not serialize state partitioner.", e);
-        }
+        toBeSerializedConfigObjects.put(STATE_PARTITIONER + input, partitioner);
     }
 
     public <IN, K extends Serializable> KeySelector<IN, K> getStatePartitioner(
@@ -664,11 +724,7 @@ public class StreamConfig implements Serializable {
     }
 
     public void setStateKeySerializer(TypeSerializer<?> serializer) {
-        try {
-            InstantiationUtil.writeObjectToConfig(serializer, this.config, STATE_KEY_SERIALIZER);
-        } catch (IOException e) {
-            throw new StreamTaskException("Could not serialize state key serializer.", e);
-        }
+        toBeSerializedConfigObjects.put(STATE_KEY_SERIALIZER, serializer);
     }
 
     public <K> TypeSerializer<K> getStateKeySerializer(ClassLoader cl) {
@@ -711,18 +767,18 @@ public class StreamConfig implements Serializable {
         builder.append("=======================");
         builder.append("\nNumber of non-chained inputs: ").append(getNumberOfNetworkInputs());
         builder.append("\nNumber of non-chained outputs: ").append(getNumberOfOutputs());
-        builder.append("\nOutput names: ").append(getNonChainedOutputs(cl));
+        builder.append("\nOutput names: ").append(getOperatorNonChainedOutputs(cl));
         builder.append("\nPartitioning:");
-        for (StreamEdge output : getNonChainedOutputs(cl)) {
-            int outputname = output.getTargetId();
-            builder.append("\n\t").append(outputname).append(": ").append(output.getPartitioner());
+        for (NonChainedOutput output : getOperatorNonChainedOutputs(cl)) {
+            String outputName = output.getDataSetId().toString();
+            builder.append("\n\t").append(outputName).append(": ").append(output.getPartitioner());
         }
 
         builder.append("\nChained subtasks: ").append(getChainedOutputs(cl));
 
         try {
             builder.append("\nOperator: ")
-                    .append(getStreamOperatorFactory(cl).getClass().getSimpleName());
+                    .append(getStreamOperatorFactoryClass(cl).getSimpleName());
         } catch (Exception e) {
             builder.append("\nOperator: Missing");
         }
@@ -742,6 +798,23 @@ public class StreamConfig implements Serializable {
 
     public boolean isGraphContainingLoops() {
         return config.getBoolean(GRAPH_CONTAINING_LOOPS, false);
+    }
+
+    /**
+     * In general, we don't clear any configuration. However, the {@link #SERIALIZED_UDF} may be
+     * very large when operator includes some large objects, the SERIALIZED_UDF is used to create a
+     * StreamOperator and usually only needs to be called once. {@link #CHAINED_TASK_CONFIG} may be
+     * large as well due to the StreamConfig of all non-head operators in OperatorChain will be
+     * serialized and stored in CHAINED_TASK_CONFIG. They can be cleared to reduce the memory after
+     * StreamTask is initialized. If so, TM will have more memory during running. See FLINK-33315
+     * and FLINK-33317 for more information.
+     */
+    public void clearInitialConfigs() {
+        removedKeys.add(SERIALIZED_UDF);
+        config.removeKey(SERIALIZED_UDF);
+
+        removedKeys.add(CHAINED_TASK_CONFIG);
+        config.removeKey(CHAINED_TASK_CONFIG);
     }
 
     /**

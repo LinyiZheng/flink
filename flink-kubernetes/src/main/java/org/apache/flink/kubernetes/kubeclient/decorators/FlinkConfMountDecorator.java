@@ -20,13 +20,18 @@ package org.apache.flink.kubernetes.kubeclient.decorators;
 
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.ConfigurationUtils;
 import org.apache.flink.configuration.DeploymentOptionsInternal;
+import org.apache.flink.configuration.GlobalConfiguration;
+import org.apache.flink.configuration.JobManagerOptions;
+import org.apache.flink.configuration.RestOptions;
+import org.apache.flink.configuration.TaskManagerOptions;
 import org.apache.flink.kubernetes.configuration.KubernetesConfigOptions;
 import org.apache.flink.kubernetes.kubeclient.FlinkPod;
 import org.apache.flink.kubernetes.kubeclient.parameters.AbstractKubernetesParameters;
 import org.apache.flink.kubernetes.utils.Constants;
 
-import org.apache.flink.shaded.guava30.com.google.common.io.Files;
+import org.apache.flink.shaded.guava31.com.google.common.io.Files;
 
 import io.fabric8.kubernetes.api.model.ConfigMap;
 import io.fabric8.kubernetes.api.model.ConfigMapBuilder;
@@ -52,7 +57,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-import static org.apache.flink.configuration.GlobalConfiguration.FLINK_CONF_FILENAME;
 import static org.apache.flink.kubernetes.utils.Constants.CONFIG_FILE_LOG4J_NAME;
 import static org.apache.flink.kubernetes.utils.Constants.CONFIG_FILE_LOGBACK_NAME;
 import static org.apache.flink.kubernetes.utils.Constants.CONFIG_MAP_PREFIX;
@@ -60,7 +64,7 @@ import static org.apache.flink.kubernetes.utils.Constants.FLINK_CONF_VOLUME;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
- * Mounts the log4j.properties, logback.xml, and flink-conf.yaml configuration on the JobManager or
+ * Mounts the log4j.properties, logback.xml, and config.yaml configuration on the JobManager or
  * TaskManager pod.
  */
 public class FlinkConfMountDecorator extends AbstractKubernetesStepDecorator {
@@ -101,8 +105,8 @@ public class FlinkConfMountDecorator extends AbstractKubernetesStepDecorator {
                         .collect(Collectors.toList());
         keyToPaths.add(
                 new KeyToPathBuilder()
-                        .withKey(FLINK_CONF_FILENAME)
-                        .withPath(FLINK_CONF_FILENAME)
+                        .withKey(GlobalConfiguration.getFlinkConfFilename())
+                        .withPath(GlobalConfiguration.getFlinkConfFilename())
                         .build());
 
         final Volume flinkConfVolume =
@@ -133,9 +137,9 @@ public class FlinkConfMountDecorator extends AbstractKubernetesStepDecorator {
             data.put(file.getName(), Files.toString(file, StandardCharsets.UTF_8));
         }
 
-        final Map<String, String> propertiesMap =
-                getClusterSidePropertiesMap(kubernetesComponentConf.getFlinkConfiguration());
-        data.put(FLINK_CONF_FILENAME, getFlinkConfData(propertiesMap));
+        final List<String> confData =
+                getClusterSideConfData(kubernetesComponentConf.getFlinkConfiguration());
+        data.put(GlobalConfiguration.getFlinkConfFilename(), getFlinkConfData(confData));
 
         final ConfigMap flinkConfConfigMap =
                 new ConfigMapBuilder()
@@ -151,24 +155,23 @@ public class FlinkConfMountDecorator extends AbstractKubernetesStepDecorator {
     }
 
     /** Get properties map for the cluster-side after removal of some keys. */
-    private Map<String, String> getClusterSidePropertiesMap(Configuration flinkConfig) {
+    private List<String> getClusterSideConfData(Configuration flinkConfig) {
         final Configuration clusterSideConfig = flinkConfig.clone();
         // Remove some configuration options that should not be taken to cluster side.
         clusterSideConfig.removeConfig(KubernetesConfigOptions.KUBE_CONFIG_FILE);
         clusterSideConfig.removeConfig(DeploymentOptionsInternal.CONF_DIR);
-        return clusterSideConfig.toMap();
+        clusterSideConfig.removeConfig(RestOptions.BIND_ADDRESS);
+        clusterSideConfig.removeConfig(JobManagerOptions.BIND_HOST);
+        clusterSideConfig.removeConfig(TaskManagerOptions.BIND_HOST);
+        clusterSideConfig.removeConfig(TaskManagerOptions.HOST);
+        return ConfigurationUtils.convertConfigToWritableLines(clusterSideConfig, false);
     }
 
     @VisibleForTesting
-    String getFlinkConfData(Map<String, String> propertiesMap) throws IOException {
+    String getFlinkConfData(List<String> confData) throws IOException {
         try (StringWriter sw = new StringWriter();
                 PrintWriter out = new PrintWriter(sw)) {
-            propertiesMap.forEach(
-                    (k, v) -> {
-                        out.print(k);
-                        out.print(": ");
-                        out.println(v);
-                    });
+            confData.forEach(out::println);
 
             return sw.toString();
         }

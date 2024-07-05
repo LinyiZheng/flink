@@ -15,35 +15,39 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.runtime.stream.table
 
 import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.api.scala._
+import org.apache.flink.core.testutils.EachCallbackWrapper
+import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration
 import org.apache.flink.streaming.api.scala.StreamExecutionEnvironment
 import org.apache.flink.table.api._
 import org.apache.flink.table.api.bridge.scala._
 import org.apache.flink.table.api.internal.TableEnvironmentInternal
-import org.apache.flink.table.planner.runtime.utils.TestData.{smallTupleData3, tupleData3, tupleData5}
 import org.apache.flink.table.planner.runtime.utils.{TestingAppendTableSink, TestingRetractTableSink, TestingUpsertTableSink}
+import org.apache.flink.table.planner.runtime.utils.TestData.{smallTupleData3, tupleData3, tupleData5}
 import org.apache.flink.table.planner.utils.{MemoryTableSourceSinkUtil, TableTestUtil}
 import org.apache.flink.table.sinks._
-import org.apache.flink.table.utils.LegacyRowResource
-import org.apache.flink.test.util.{AbstractTestBase, TestBaseUtils}
+import org.apache.flink.table.utils.LegacyRowExtension
+import org.apache.flink.test.junit5.MiniClusterExtension
+import org.apache.flink.test.util.TestBaseUtils
 import org.apache.flink.types.Row
 
-import org.junit.Assert._
-import org.junit.{Rule, Test}
+import org.assertj.core.api.Assertions.assertThatExceptionOfType
+import org.junit.jupiter.api.Assertions._
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.extension.RegisterExtension
 
 import java.io.File
 import java.util.TimeZone
 
 import scala.collection.JavaConverters._
 
-class LegacyTableSinkITCase extends AbstractTestBase {
+class LegacyTableSinkITCase {
 
-  @Rule
-  def usesLegacyRows: LegacyRowResource = LegacyRowResource.INSTANCE
+  @RegisterExtension private val _: EachCallbackWrapper[LegacyRowExtension] =
+    new EachCallbackWrapper[LegacyRowExtension](new LegacyRowExtension)
 
   @Test
   def testStreamTableSink(): Unit = {
@@ -59,17 +63,22 @@ class LegacyTableSinkITCase extends AbstractTestBase {
     val tEnv = StreamTableEnvironment.create(env, TableTestUtil.STREAM_SETTING)
     env.setParallelism(4)
 
-    tEnv.asInstanceOf[TableEnvironmentInternal].registerTableSinkInternal(
-      "csvSink",
-      new CsvTableSink(path).configure(
-        Array[String]("nullableCol", "c", "b"),
-        Array[TypeInformation[_]](Types.INT, Types.STRING, Types.SQL_TIMESTAMP)))
+    tEnv
+      .asInstanceOf[TableEnvironmentInternal]
+      .registerTableSinkInternal(
+        "csvSink",
+        new CsvTableSink(path).configure(
+          Array[String]("nullableCol", "c", "b"),
+          Array[TypeInformation[_]](Types.INT, Types.STRING, Types.SQL_TIMESTAMP)))
 
-    val input = env.fromCollection(tupleData3)
+    val input = env
+      .fromCollection(tupleData3)
       .assignAscendingTimestamps(_._2)
-      .map(x => x).setParallelism(4) // increase DOP to 4
+      .map(x => x)
+      .setParallelism(4) // increase DOP to 4
 
-    val table = input.toTable(tEnv, 'a, 'b.rowtime, 'c)
+    val table = input
+      .toTable(tEnv, 'a, 'b.rowtime, 'c)
       .where('a < 5 || 'a > 17)
       .select(ifThenElse('a < 4, nullOf(Types.INT()), 'a), 'c, 'b)
     table.executeInsert("csvSink").await()
@@ -82,7 +91,8 @@ class LegacyTableSinkITCase extends AbstractTestBase {
       "19,Comment#13,1970-01-01 00:00:00.006",
       "20,Comment#14,1970-01-01 00:00:00.006",
       "21,Comment#15,1970-01-01 00:00:00.006",
-      "4,Hello world, how are you?,1970-01-01 00:00:00.003").mkString("\n")
+      "4,Hello world, how are you?,1970-01-01 00:00:00.003"
+    ).mkString("\n")
 
     TestBaseUtils.compareResultsByLinesInMemory(expected, path)
   }
@@ -93,20 +103,24 @@ class LegacyTableSinkITCase extends AbstractTestBase {
     env.getConfig.enableObjectReuse()
     val tEnv = StreamTableEnvironment.create(env, TableTestUtil.STREAM_SETTING)
 
-    val t = env.fromCollection(tupleData3)
+    val t = env
+      .fromCollection(tupleData3)
       .assignAscendingTimestamps(_._1.toLong)
       .toTable(tEnv, 'id, 'num, 'text, 'rowtime.rowtime)
 
     val sink = new TestingAppendTableSink(TimeZone.getDefault)
-    tEnv.asInstanceOf[TableEnvironmentInternal].registerTableSinkInternal(
-      "appendSink",
-      sink.configure(
-        Array[String]("t", "icnt", "nsum"),
-        Array[TypeInformation[_]](Types.SQL_TIMESTAMP, Types.LONG, Types.LONG)))
+    tEnv
+      .asInstanceOf[TableEnvironmentInternal]
+      .registerTableSinkInternal(
+        "appendSink",
+        sink.configure(
+          Array[String]("t", "icnt", "nsum"),
+          Array[TypeInformation[_]](Types.SQL_TIMESTAMP, Types.LONG, Types.LONG)))
 
-    val table = t.window(Tumble over 5.millis on 'rowtime as 'w)
+    val table = t
+      .window(Tumble.over(5.millis).on('rowtime).as('w))
       .groupBy('w)
-      .select('w.end as 't, 'id.count as 'icnt, 'num.sum as 'nsum)
+      .select('w.end.as('t), 'id.count.as('icnt), 'num.sum.as('nsum))
     table.executeInsert("appendSink").await()
 
     val result = sink.getAppendResults.sorted
@@ -115,11 +129,10 @@ class LegacyTableSinkITCase extends AbstractTestBase {
       "1970-01-01 00:00:00.010,5,18",
       "1970-01-01 00:00:00.015,5,24",
       "1970-01-01 00:00:00.020,5,29",
-      "1970-01-01 00:00:00.025,2,12")
-      .sorted
+      "1970-01-01 00:00:00.025,2,12"
+    ).sorted
     assertEquals(expected, result)
   }
-
 
   @Test
   def testAppendSinkWithNestedRow(): Unit = {
@@ -127,24 +140,24 @@ class LegacyTableSinkITCase extends AbstractTestBase {
     env.getConfig.enableObjectReuse()
     val tEnv = StreamTableEnvironment.create(env, TableTestUtil.STREAM_SETTING)
 
-    val t = env.fromCollection(smallTupleData3)
+    val t = env
+      .fromCollection(smallTupleData3)
       .toTable(tEnv, 'id, 'num, 'text)
-    tEnv.registerTable("src", t)
+    tEnv.createTemporaryView("src", t)
 
     val sink = new TestingAppendTableSink()
-    tEnv.asInstanceOf[TableEnvironmentInternal].registerTableSinkInternal(
-      "appendSink",
-      sink.configure(
-        Array[String]("t", "item"),
-        Array[TypeInformation[_]](Types.INT(), Types.ROW(Types.LONG, Types.STRING()))))
+    tEnv
+      .asInstanceOf[TableEnvironmentInternal]
+      .registerTableSinkInternal(
+        "appendSink",
+        sink.configure(
+          Array[String]("t", "item"),
+          Array[TypeInformation[_]](Types.INT(), Types.ROW(Types.LONG, Types.STRING()))))
 
     tEnv.executeSql("INSERT INTO appendSink SELECT id, ROW(num, text) FROM src").await()
 
     val result = sink.getAppendResults.sorted
-    val expected = List(
-      "1,1,Hi",
-      "2,2,Hello",
-      "3,2,Hello world").sorted
+    val expected = List("1,1,Hi", "2,2,Hello", "3,2,Hello world").sorted
     assertEquals(expected, result)
   }
 
@@ -158,13 +171,17 @@ class LegacyTableSinkITCase extends AbstractTestBase {
     val ds2 = env.fromCollection(tupleData5).toTable(tEnv, 'd, 'e, 'f, 'g, 'h)
 
     val sink = new TestingAppendTableSink
-    tEnv.asInstanceOf[TableEnvironmentInternal].registerTableSinkInternal(
-      "appendSink",
-      sink.configure(
-        Array[String]("c", "g"),
-        Array[TypeInformation[_]](Types.STRING, Types.STRING)))
+    tEnv
+      .asInstanceOf[TableEnvironmentInternal]
+      .registerTableSinkInternal(
+        "appendSink",
+        sink.configure(
+          Array[String]("c", "g"),
+          Array[TypeInformation[_]](Types.STRING, Types.STRING)))
 
-    val table = ds1.join(ds2).where('b === 'e)
+    val table = ds1
+      .join(ds2)
+      .where('b === 'e)
       .select('c, 'g)
     table.executeInsert("appendSink").await()
 
@@ -179,20 +196,24 @@ class LegacyTableSinkITCase extends AbstractTestBase {
     env.getConfig.enableObjectReuse()
     val tEnv = StreamTableEnvironment.create(env, TableTestUtil.STREAM_SETTING)
 
-    val t = env.fromCollection(tupleData3)
+    val t = env
+      .fromCollection(tupleData3)
       .assignAscendingTimestamps(_._1.toLong)
       .toTable(tEnv, 'id, 'num, 'text)
 
     val sink = new TestingRetractTableSink()
-    tEnv.asInstanceOf[TableEnvironmentInternal].registerTableSinkInternal(
-      "retractSink",
-      sink.configure(
-        Array[String]("len", "icnt", "nsum"),
-        Array[TypeInformation[_]](Types.INT, Types.LONG, Types.DECIMAL())))
+    tEnv
+      .asInstanceOf[TableEnvironmentInternal]
+      .registerTableSinkInternal(
+        "retractSink",
+        sink.configure(
+          Array[String]("len", "icnt", "nsum"),
+          Array[TypeInformation[_]](Types.INT, Types.LONG, Types.DECIMAL())))
 
-    val table = t.select('id, 'num, 'text.charLength() as 'len)
+    val table = t
+      .select('id, 'num, 'text.charLength().as('len))
       .groupBy('len)
-      .select('len, 'id.count as 'icnt, 'num.sum as 'nsum)
+      .select('len, 'id.count.as('icnt), 'num.sum.as('nsum))
     table.executeInsert("retractSink").await()
 
     val retracted = sink.getRetractResults.sorted
@@ -203,7 +224,8 @@ class LegacyTableSinkITCase extends AbstractTestBase {
       "25,1,3.000000000000000000",
       "10,7,39.000000000000000000",
       "14,1,3.000000000000000000",
-      "9,9,41.000000000000000000").sorted
+      "9,9,41.000000000000000000"
+    ).sorted
     assertEquals(expected, retracted)
 
   }
@@ -214,25 +236,29 @@ class LegacyTableSinkITCase extends AbstractTestBase {
     env.getConfig.enableObjectReuse()
     val tEnv = StreamTableEnvironment.create(env, TableTestUtil.STREAM_SETTING)
 
-    val t = env.fromCollection(tupleData3)
+    val t = env
+      .fromCollection(tupleData3)
       .assignAscendingTimestamps(_._1.toLong)
       .toTable(tEnv, 'id, 'num, 'text, 'rowtime.rowtime)
 
     val sink = new TestingRetractTableSink(TimeZone.getDefault)
-    tEnv.asInstanceOf[TableEnvironmentInternal].registerTableSinkInternal(
-      "retractSink",
-      sink.configure(
-        Array[String]("t", "icnt", "nsum"),
-        Array[TypeInformation[_]](Types.SQL_TIMESTAMP, Types.LONG, Types.LONG)))
+    tEnv
+      .asInstanceOf[TableEnvironmentInternal]
+      .registerTableSinkInternal(
+        "retractSink",
+        sink.configure(
+          Array[String]("t", "icnt", "nsum"),
+          Array[TypeInformation[_]](Types.SQL_TIMESTAMP, Types.LONG, Types.LONG)))
 
-    val table = t.window(Tumble over 5.millis on 'rowtime as 'w)
+    val table = t
+      .window(Tumble.over(5.millis).on('rowtime).as('w))
       .groupBy('w)
-      .select('w.end as 't, 'id.count as 'icnt, 'num.sum as 'nsum)
+      .select('w.end.as('t), 'id.count.as('icnt), 'num.sum.as('nsum))
     table.executeInsert("retractSink").await()
 
     assertFalse(
-      "Received retraction messages for append only table",
-      sink.getRawResults.exists(_.startsWith("(false,")))
+      sink.getRawResults.exists(_.startsWith("(false,")),
+      "Received retraction messages for append only table")
 
     val retracted = sink.getRetractResults.sorted
     val expected = List(
@@ -240,8 +266,8 @@ class LegacyTableSinkITCase extends AbstractTestBase {
       "1970-01-01 00:00:00.010,5,18",
       "1970-01-01 00:00:00.015,5,24",
       "1970-01-01 00:00:00.020,5,29",
-      "1970-01-01 00:00:00.025,2,12")
-      .sorted
+      "1970-01-01 00:00:00.025,2,12"
+    ).sorted
     assertEquals(expected, retracted)
 
   }
@@ -252,7 +278,8 @@ class LegacyTableSinkITCase extends AbstractTestBase {
     env.getConfig.enableObjectReuse()
     val tEnv = StreamTableEnvironment.create(env, TableTestUtil.STREAM_SETTING)
 
-    val t = env.fromCollection(tupleData3)
+    val t = env
+      .fromCollection(tupleData3)
       .assignAscendingTimestamps(_._1.toLong)
       .toTable(tEnv, 'id, 'num, 'text)
 
@@ -263,17 +290,18 @@ class LegacyTableSinkITCase extends AbstractTestBase {
     sink.expectedIsAppendOnly = Some(false)
     tEnv.asInstanceOf[TableEnvironmentInternal].registerTableSinkInternal("upsertSink", sink)
 
-    val table = t.select('id, 'num, 'text.charLength() as 'len, ('id > 0) as 'cTrue)
+    val table = t
+      .select('id, 'num, 'text.charLength().as('len), ('id > 0).as('cTrue))
       .groupBy('len, 'cTrue)
       // test query field name is different with registered sink field name
-      .select('len, 'id.count as 'count, 'cTrue)
+      .select('len, 'id.count.as('count), 'cTrue)
       .groupBy('count, 'cTrue)
-      .select('count, 'len.count as 'lencnt, 'cTrue)
+      .select('count, 'len.count.as('lencnt), 'cTrue)
     table.executeInsert("upsertSink").await()
 
     assertTrue(
-      "Results must include delete messages",
-      sink.getRawResults.exists(_.startsWith("(false,")))
+      sink.getRawResults.exists(_.startsWith("(false,")),
+      "Results must include delete messages")
 
     val retracted = sink.getUpsertResults.sorted
     val expected = List(
@@ -290,7 +318,8 @@ class LegacyTableSinkITCase extends AbstractTestBase {
     env.getConfig.enableObjectReuse()
     val tEnv = StreamTableEnvironment.create(env, TableTestUtil.STREAM_SETTING)
 
-    val t = env.fromCollection(tupleData3)
+    val t = env
+      .fromCollection(tupleData3)
       .assignAscendingTimestamps(_._1.toLong)
       .toTable(tEnv, 'id, 'num, 'text, 'rowtime.rowtime)
 
@@ -301,15 +330,16 @@ class LegacyTableSinkITCase extends AbstractTestBase {
     sink.expectedIsAppendOnly = Some(true)
     tEnv.asInstanceOf[TableEnvironmentInternal].registerTableSinkInternal("upsertSink", sink)
 
-    val table = t.window(Tumble over 5.millis on 'rowtime as 'w)
+    val table = t
+      .window(Tumble.over(5.millis).on('rowtime).as('w))
       .groupBy('w, 'num)
       // test query field name is different with registered sink field name
-      .select('num, 'w.end as 'window_end, 'id.count as 'icnt)
+      .select('num, 'w.end.as('window_end), 'id.count.as('icnt))
     table.executeInsert("upsertSink").await()
 
     assertFalse(
-      "Received retraction messages for append only table",
-      sink.getRawResults.exists(_.startsWith("(false,")))
+      sink.getRawResults.exists(_.startsWith("(false,")),
+      "Received retraction messages for append only table")
 
     val retracted = sink.getUpsertResults.sorted
     val expected = List(
@@ -322,7 +352,8 @@ class LegacyTableSinkITCase extends AbstractTestBase {
       "5,1970-01-01 00:00:00.015,4",
       "5,1970-01-01 00:00:00.020,1",
       "6,1970-01-01 00:00:00.020,4",
-      "6,1970-01-01 00:00:00.025,2").sorted
+      "6,1970-01-01 00:00:00.025,2"
+    ).sorted
     assertEquals(expected, retracted)
   }
 
@@ -332,28 +363,36 @@ class LegacyTableSinkITCase extends AbstractTestBase {
     env.getConfig.enableObjectReuse()
     val tEnv = StreamTableEnvironment.create(env, TableTestUtil.STREAM_SETTING)
 
-    val t = env.fromCollection(tupleData3)
+    val t = env
+      .fromCollection(tupleData3)
       .assignAscendingTimestamps(_._1.toLong)
       .toTable(tEnv, 'id, 'num, 'text, 'rowtime.rowtime)
 
     val sink = new TestingUpsertTableSink(Array(0, 1, 2), TimeZone.getDefault)
     sink.expectedKeys = Some(Array("wend", "num"))
     sink.expectedIsAppendOnly = Some(true)
-    tEnv.asInstanceOf[TableEnvironmentInternal].registerTableSinkInternal(
-      "upsertSink",
-      sink.configure(
-        Array[String]("wstart", "wend", "num", "icnt"),
-        Array[TypeInformation[_]]
-          (Types.SQL_TIMESTAMP, Types.SQL_TIMESTAMP, Types.LONG, Types.LONG)))
+    tEnv
+      .asInstanceOf[TableEnvironmentInternal]
+      .registerTableSinkInternal(
+        "upsertSink",
+        sink.configure(
+          Array[String]("wstart", "wend", "num", "icnt"),
+          Array[TypeInformation[_]](
+            Types.SQL_TIMESTAMP,
+            Types.SQL_TIMESTAMP,
+            Types.LONG,
+            Types.LONG))
+      )
 
-    val table = t.window(Tumble over 5.millis on 'rowtime as 'w)
+    val table = t
+      .window(Tumble.over(5.millis).on('rowtime).as('w))
       .groupBy('w, 'num)
-      .select('w.start as 'wstart, 'w.end as 'wend, 'num, 'id.count as 'icnt)
+      .select('w.start.as('wstart), 'w.end.as('wend), 'num, 'id.count.as('icnt))
     table.executeInsert("upsertSink").await()
 
     assertFalse(
-      "Received retraction messages for append only table",
-      sink.getRawResults.exists(_.startsWith("(false,")))
+      sink.getRawResults.exists(_.startsWith("(false,")),
+      "Received retraction messages for append only table")
 
     val retracted = sink.getUpsertResults.sorted
     val expected = List(
@@ -366,7 +405,8 @@ class LegacyTableSinkITCase extends AbstractTestBase {
       "1970-01-01 00:00:00.010,1970-01-01 00:00:00.015,5,4",
       "1970-01-01 00:00:00.015,1970-01-01 00:00:00.020,5,1",
       "1970-01-01 00:00:00.015,1970-01-01 00:00:00.020,6,4",
-      "1970-01-01 00:00:00.020,1970-01-01 00:00:00.025,6,2").sorted
+      "1970-01-01 00:00:00.020,1970-01-01 00:00:00.025,6,2"
+    ).sorted
     assertEquals(expected, retracted)
   }
 
@@ -376,26 +416,30 @@ class LegacyTableSinkITCase extends AbstractTestBase {
     env.getConfig.enableObjectReuse()
     val tEnv = StreamTableEnvironment.create(env, TableTestUtil.STREAM_SETTING)
 
-    val t = env.fromCollection(tupleData3)
+    val t = env
+      .fromCollection(tupleData3)
       .assignAscendingTimestamps(_._1.toLong)
       .toTable(tEnv, 'id, 'num, 'text, 'rowtime.rowtime)
 
     val sink = new TestingUpsertTableSink(Array(0), TimeZone.getDefault)
     sink.expectedIsAppendOnly = Some(true)
-    tEnv.asInstanceOf[TableEnvironmentInternal].registerTableSinkInternal(
-      "upsertSink",
-      sink.configure(
-        Array[String]("wend", "cnt"),
-        Array[TypeInformation[_]](Types.SQL_TIMESTAMP, Types.LONG)))
+    tEnv
+      .asInstanceOf[TableEnvironmentInternal]
+      .registerTableSinkInternal(
+        "upsertSink",
+        sink.configure(
+          Array[String]("wend", "cnt"),
+          Array[TypeInformation[_]](Types.SQL_TIMESTAMP, Types.LONG)))
 
-    val table = t.window(Tumble over 5.millis on 'rowtime as 'w)
+    val table = t
+      .window(Tumble.over(5.millis).on('rowtime).as('w))
       .groupBy('w, 'num)
-      .select('w.end as 'wend, 'id.count as 'cnt)
+      .select('w.end.as('wend), 'id.count.as('cnt))
     table.executeInsert("upsertSink").await()
 
     assertFalse(
-      "Received retraction messages for append only table",
-      sink.getRawResults.exists(_.startsWith("(false,")))
+      sink.getRawResults.exists(_.startsWith("(false,")),
+      "Received retraction messages for append only table")
 
     val retracted = sink.getRawResults.sorted
     val expected = List(
@@ -408,7 +452,8 @@ class LegacyTableSinkITCase extends AbstractTestBase {
       "(true,1970-01-01 00:00:00.015,4)",
       "(true,1970-01-01 00:00:00.020,1)",
       "(true,1970-01-01 00:00:00.020,4)",
-      "(true,1970-01-01 00:00:00.025,2)").sorted
+      "(true,1970-01-01 00:00:00.025,2)"
+    ).sorted
     assertEquals(expected, retracted)
   }
 
@@ -418,26 +463,30 @@ class LegacyTableSinkITCase extends AbstractTestBase {
     env.getConfig.enableObjectReuse()
     val tEnv = StreamTableEnvironment.create(env, TableTestUtil.STREAM_SETTING)
 
-    val t = env.fromCollection(tupleData3)
+    val t = env
+      .fromCollection(tupleData3)
       .assignAscendingTimestamps(_._1.toLong)
       .toTable(tEnv, 'id, 'num, 'text, 'rowtime.rowtime)
 
     val sink = new TestingUpsertTableSink(Array(0), TimeZone.getDefault)
     sink.expectedIsAppendOnly = Some(true)
-    tEnv.asInstanceOf[TableEnvironmentInternal].registerTableSinkInternal(
-      "upsertSink",
-      sink.configure(
-        Array[String]("num", "cnt"),
-        Array[TypeInformation[_]](Types.LONG, Types.LONG)))
+    tEnv
+      .asInstanceOf[TableEnvironmentInternal]
+      .registerTableSinkInternal(
+        "upsertSink",
+        sink.configure(
+          Array[String]("num", "cnt"),
+          Array[TypeInformation[_]](Types.LONG, Types.LONG)))
 
-    val table = t.window(Tumble over 5.millis on 'rowtime as 'w)
+    val table = t
+      .window(Tumble.over(5.millis).on('rowtime).as('w))
       .groupBy('w, 'num)
-      .select('num, 'id.count as 'cnt)
+      .select('num, 'id.count.as('cnt))
     table.executeInsert("upsertSink").await()
 
     assertFalse(
-      "Received retraction messages for append only table",
-      sink.getRawResults.exists(_.startsWith("(false,")))
+      sink.getRawResults.exists(_.startsWith("(false,")),
+      "Received retraction messages for append only table")
 
     val retracted = sink.getRawResults.sorted
     val expected = List(
@@ -462,17 +511,20 @@ class LegacyTableSinkITCase extends AbstractTestBase {
     val tEnv = StreamTableEnvironment.create(env, TableTestUtil.STREAM_SETTING)
     env.setParallelism(4)
 
-    val t = env.fromCollection(tupleData3)
+    val t = env
+      .fromCollection(tupleData3)
       .assignAscendingTimestamps(_._1.toLong)
       .toTable(tEnv, 'id, 'num, 'text)
 
     val sink = new TestingUpsertTableSink(Array(0))
     sink.expectedIsAppendOnly = Some(false)
-    tEnv.asInstanceOf[TableEnvironmentInternal].registerTableSinkInternal(
-      "upsertSink",
-      sink.configure(
-        Array[String]("num", "cnt"),
-        Array[TypeInformation[_]](Types.LONG, Types.LONG)))
+    tEnv
+      .asInstanceOf[TableEnvironmentInternal]
+      .registerTableSinkInternal(
+        "upsertSink",
+        sink.configure(
+          Array[String]("num", "cnt"),
+          Array[TypeInformation[_]](Types.LONG, Types.LONG)))
 
     // num, cnt
     //   1, 1
@@ -482,8 +534,9 @@ class LegacyTableSinkITCase extends AbstractTestBase {
     //   5, 5
     //   6, 6
 
-    val table = t.groupBy('num)
-      .select('num, 'id.count as 'cnt)
+    val table = t
+      .groupBy('num)
+      .select('num, 'id.count.as('cnt))
       .where('cnt <= 3)
     table.executeInsert("upsertSink").await()
 
@@ -491,40 +544,44 @@ class LegacyTableSinkITCase extends AbstractTestBase {
     assertEquals(expectedWithFilter.sorted, sink.getUpsertResults.sorted)
   }
 
-  @Test(expected = classOf[TableException])
-  def testToAppendStreamMultiRowtime(): Unit = {
+  @Test
+  def testToDataStreamMultiRowtime(): Unit = {
     val env = StreamExecutionEnvironment.getExecutionEnvironment
     env.getConfig.enableObjectReuse()
     val tEnv = StreamTableEnvironment.create(env, TableTestUtil.STREAM_SETTING)
 
-    val t = env.fromCollection(tupleData3)
+    val t = env
+      .fromCollection(tupleData3)
       .assignAscendingTimestamps(_._1.toLong)
       .toTable(tEnv, 'id, 'num, 'text, 'rowtime.rowtime)
 
     val r = t
-      .window(Tumble over 5.milli on 'rowtime as 'w)
+      .window(Tumble.over(5.milli).on('rowtime).as('w))
       .groupBy('num, 'w)
-      .select('num, 'w.rowtime, 'w.rowtime as 'rowtime2)
+      .select('num, 'w.rowtime, 'w.rowtime.as('rowtime2))
 
-    r.toAppendStream[Row]
+    assertThatExceptionOfType(classOf[TableException])
+      .isThrownBy(() => r.toDataStream)
   }
 
-  @Test(expected = classOf[TableException])
+  @Test
   def testToRetractStreamMultiRowtime(): Unit = {
     val env = StreamExecutionEnvironment.getExecutionEnvironment
     env.getConfig.enableObjectReuse()
     val tEnv = StreamTableEnvironment.create(env, TableTestUtil.STREAM_SETTING)
 
-    val t = env.fromCollection(tupleData3)
+    val t = env
+      .fromCollection(tupleData3)
       .assignAscendingTimestamps(_._1.toLong)
       .toTable(tEnv, 'id, 'num, 'text, 'rowtime.rowtime)
 
     val r = t
-      .window(Tumble over 5.milli on 'rowtime as 'w)
+      .window(Tumble.over(5.milli).on('rowtime).as('w))
       .groupBy('num, 'w)
-      .select('num, 'w.rowtime, 'w.rowtime as 'rowtime2)
+      .select('num, 'w.rowtime, 'w.rowtime.as('rowtime2))
 
-    r.toRetractStream[Row]
+    assertThatExceptionOfType(classOf[TableException])
+      .isThrownBy(() => r.toRetractStream[Row])
   }
 
   @Test
@@ -534,16 +591,17 @@ class LegacyTableSinkITCase extends AbstractTestBase {
 
     MemoryTableSourceSinkUtil.clear()
 
-    val schema = TableSchema.builder()
-        .field("c", DataTypes.VARCHAR(5))
-        .field("b", DataTypes.DECIMAL(10, 0))
-        .field("d", DataTypes.CHAR(5))
-        .build()
+    val schema = TableSchema
+      .builder()
+      .field("c", DataTypes.VARCHAR(5))
+      .field("b", DataTypes.DECIMAL(10, 0))
+      .field("d", DataTypes.CHAR(5))
+      .build()
 
-    MemoryTableSourceSinkUtil.createDataTypeAppendStreamTable(
-      tEnv, schema, "testSink")
+    MemoryTableSourceSinkUtil.createDataTypeAppendStreamTable(tEnv, schema, "testSink")
 
-    val table = env.fromCollection(tupleData3)
+    val table = env
+      .fromCollection(tupleData3)
       .toTable(tEnv, 'a, 'b, 'c)
       .where('a > 20)
       .select("12345", 55.cast(DataTypes.DECIMAL(10, 0)), "12345".cast(DataTypes.CHAR(5)))
@@ -554,4 +612,15 @@ class LegacyTableSinkITCase extends AbstractTestBase {
 
     TestBaseUtils.compareResultAsText(results, expected)
   }
+}
+
+object LegacyTableSinkITCase {
+
+  @RegisterExtension
+  private val _: MiniClusterExtension = new MiniClusterExtension(
+    () =>
+      new MiniClusterResourceConfiguration.Builder()
+        .setNumberTaskManagers(1)
+        .setNumberSlotsPerTaskManager(4)
+        .build())
 }

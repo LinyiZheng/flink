@@ -25,47 +25,50 @@ import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.expressions.CallExpression;
 import org.apache.flink.table.expressions.ValueLiteralExpression;
 import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
+import org.apache.flink.table.planner.calcite.FlinkTypeFactory;
 import org.apache.flink.table.planner.expressions.converter.CallExpressionConvertRule;
 import org.apache.flink.table.planner.functions.sql.FlinkSqlOperatorTable;
+import org.apache.flink.table.planner.typeutils.SymbolUtil;
 
+import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rex.RexNode;
-import org.apache.calcite.sql.SqlJsonQueryEmptyOrErrorBehavior;
-import org.apache.calcite.sql.SqlJsonQueryWrapperBehavior;
 
 import java.util.LinkedList;
 import java.util.List;
+
+import static org.apache.flink.table.planner.utils.ShortcutUtils.unwrapTypeFactory;
 
 /** Conversion for {@link BuiltInFunctionDefinitions#JSON_QUERY}. */
 @Internal
 class JsonQueryConverter extends CustomizedConverter {
     @Override
     public RexNode convert(CallExpression call, CallExpressionConvertRule.ConvertContext context) {
-        checkArgumentNumber(call, 5);
+        checkArgumentNumber(call, 6);
 
         final List<RexNode> operands = new LinkedList<>();
         operands.add(context.toRexNode(call.getChildren().get(0)));
         operands.add(context.toRexNode(call.getChildren().get(1)));
 
-        final SqlJsonQueryWrapperBehavior wrappingBehavior =
-                ((ValueLiteralExpression) call.getChildren().get(2))
+        final Enum<?> wrappingBehavior =
+                ((ValueLiteralExpression) call.getChildren().get(3))
                         .getValueAs(JsonQueryWrapper.class)
-                        .map(this::convertWrappingBehavior)
+                        .map(SymbolUtil::commonToCalcite)
                         .orElseThrow(
                                 () ->
                                         new TableException(
                                                 "Missing argument for wrapping behavior."));
-        final SqlJsonQueryEmptyOrErrorBehavior onEmpty =
-                ((ValueLiteralExpression) call.getChildren().get(3))
+        final Enum<?> onEmpty =
+                ((ValueLiteralExpression) call.getChildren().get(4))
                         .getValueAs(JsonQueryOnEmptyOrError.class)
-                        .map(this::convertEmptyOrErrorBehavior)
+                        .map(SymbolUtil::commonToCalcite)
                         .orElseThrow(
                                 () ->
                                         new TableException(
                                                 "Missing argument for ON EMPTY behavior."));
-        final SqlJsonQueryEmptyOrErrorBehavior onError =
-                ((ValueLiteralExpression) call.getChildren().get(4))
+        final Enum<?> onError =
+                ((ValueLiteralExpression) call.getChildren().get(5))
                         .getValueAs(JsonQueryOnEmptyOrError.class)
-                        .map(this::convertEmptyOrErrorBehavior)
+                        .map(SymbolUtil::commonToCalcite)
                         .orElseThrow(
                                 () ->
                                         new TableException(
@@ -75,37 +78,14 @@ class JsonQueryConverter extends CustomizedConverter {
         operands.add(context.getRelBuilder().getRexBuilder().makeFlag(onEmpty));
         operands.add(context.getRelBuilder().getRexBuilder().makeFlag(onError));
 
+        // add the explicit type, in Calcite it comes last
+        final FlinkTypeFactory typeFactory = unwrapTypeFactory(context.getRelBuilder());
+        final RelDataType returnRelType =
+                typeFactory.createFieldTypeFromLogicalType(
+                        call.getOutputDataType().getLogicalType());
+
         return context.getRelBuilder()
                 .getRexBuilder()
-                .makeCall(FlinkSqlOperatorTable.JSON_QUERY, operands);
-    }
-
-    private SqlJsonQueryWrapperBehavior convertWrappingBehavior(JsonQueryWrapper wrappingBehavior) {
-        switch (wrappingBehavior) {
-            case WITHOUT_ARRAY:
-                return SqlJsonQueryWrapperBehavior.WITHOUT_ARRAY;
-            case CONDITIONAL_ARRAY:
-                return SqlJsonQueryWrapperBehavior.WITH_CONDITIONAL_ARRAY;
-            case UNCONDITIONAL_ARRAY:
-                return SqlJsonQueryWrapperBehavior.WITH_UNCONDITIONAL_ARRAY;
-            default:
-                throw new TableException("Unknown wrapping behavior: " + wrappingBehavior);
-        }
-    }
-
-    private SqlJsonQueryEmptyOrErrorBehavior convertEmptyOrErrorBehavior(
-            JsonQueryOnEmptyOrError onEmptyOrError) {
-        switch (onEmptyOrError) {
-            case NULL:
-                return SqlJsonQueryEmptyOrErrorBehavior.NULL;
-            case EMPTY_ARRAY:
-                return SqlJsonQueryEmptyOrErrorBehavior.EMPTY_ARRAY;
-            case EMPTY_OBJECT:
-                return SqlJsonQueryEmptyOrErrorBehavior.EMPTY_OBJECT;
-            case ERROR:
-                return SqlJsonQueryEmptyOrErrorBehavior.ERROR;
-            default:
-                throw new TableException("Unknown ON EMPTY/ERROR behavior: " + onEmptyOrError);
-        }
+                .makeCall(returnRelType, FlinkSqlOperatorTable.JSON_QUERY, operands);
     }
 }

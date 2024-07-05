@@ -19,7 +19,6 @@
 package org.apache.flink.runtime.taskexecutor.slot;
 
 import org.apache.flink.api.common.JobID;
-import org.apache.flink.api.common.time.Time;
 import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.clusterframework.types.ResourceProfile;
@@ -32,6 +31,7 @@ import org.apache.flink.util.Preconditions;
 
 import javax.annotation.Nullable;
 
+import java.time.Duration;
 import java.util.Iterator;
 import java.util.Set;
 import java.util.UUID;
@@ -62,7 +62,7 @@ public class ThreadSafeTaskSlotTable<T extends TaskSlotPayload> implements TaskS
         try {
             return mainThreadExecutable
                     .callAsync(
-                            callable, Time.days(1) // practically infinite timeout
+                            callable, Duration.ofDays(1) // practically infinite timeout
                             )
                     .get();
         } catch (InterruptedException | ExecutionException e) {
@@ -98,7 +98,7 @@ public class ThreadSafeTaskSlotTable<T extends TaskSlotPayload> implements TaskS
 
     @Override
     public boolean allocateSlot(
-            int index, JobID jobId, AllocationID allocationId, Time slotTimeout) {
+            int index, JobID jobId, AllocationID allocationId, Duration slotTimeout) {
         return callAsync(() -> taskSlotTable.allocateSlot(index, jobId, allocationId, slotTimeout));
     }
 
@@ -108,7 +108,7 @@ public class ThreadSafeTaskSlotTable<T extends TaskSlotPayload> implements TaskS
             JobID jobId,
             AllocationID allocationId,
             ResourceProfile resourceProfile,
-            Time slotTimeout) {
+            Duration slotTimeout) {
         return callAsync(
                 () ->
                         taskSlotTable.allocateSlot(
@@ -121,7 +121,7 @@ public class ThreadSafeTaskSlotTable<T extends TaskSlotPayload> implements TaskS
     }
 
     @Override
-    public boolean markSlotInactive(AllocationID allocationId, Time slotTimeout)
+    public boolean markSlotInactive(AllocationID allocationId, Duration slotTimeout)
             throws SlotNotFoundException {
         return callAsync(() -> taskSlotTable.markSlotInactive(allocationId, slotTimeout));
     }

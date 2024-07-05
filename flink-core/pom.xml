@@ -25,8 +25,7 @@ under the License.
 	<parent>
 		<groupId>org.apache.flink</groupId>
 		<artifactId>flink-parent</artifactId>
-		<version>1.15-SNAPSHOT</version>
-		<relativePath>..</relativePath>
+		<version>2.0-SNAPSHOT</version>
 	</parent>
 
 	<artifactId>flink-core</artifactId>
@@ -34,28 +33,80 @@ under the License.
 
 	<packaging>jar</packaging>
 
+	<properties>
+		<!--
+		Two properties below should be merged once support for jdk8 and jdk11 is dropped.
+		The reason of extraction into a separate property with profile is that
+		specifying -Djava.security.manager=allow within ${surefire.module.config} leads to
+		hanging of surefire for jdk8 and jdk11
+		-->
+		<surefire.module.config.jdk21></surefire.module.config.jdk21>
+		<surefire.module.config> ${surefire.module.config.jdk21} <!--
+			required by JmxServer
+			-->--add-exports=java.rmi/sun.rmi.registry=ALL-UNNAMED <!--
+			PluginConfigTest (CommonTestUtils#setEnv)
+			-->--add-opens=java.base/java.util=ALL-UNNAMED <!--
+			ExceptionUtilsTest
+			-->--add-opens=java.base/java.lang=ALL-UNNAMED <!--
+			StateDescriptorTest (Kryo serialization of File)
+			-->--add-opens=java.base/java.io=ALL-UNNAMED <!--
+			SerializersTest (Kryo serialization of Nested1->Path->URI)
+			-->--add-opens=java.base/java.net=ALL-UNNAMED <!--
+			InitOutputPathTest
+			-->--add-opens=java.base/java.util.concurrent.locks=ALL-UNNAMED <!--
+			-->--add-opens=java.base/java.lang.reflect=ALL-UNNAMED
+		</surefire.module.config>
+	</properties>
+
 	<dependencies>
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-core-api</artifactId>
+			<version>${project.version}</version>
+		</dependency>
+
 		<dependency>
 			<groupId>org.apache.flink</groupId>
 			<artifactId>flink-annotations</artifactId>
 			<version>${project.version}</version>
 		</dependency>
 
+		<!-- ArchUnit test dependencies -->
+
 		<dependency>
 			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-metrics-core</artifactId>
-			<version>${project.version}</version>
+			<artifactId>flink-architecture-tests-test</artifactId>
+			<scope>test</scope>
 		</dependency>
 
 		<dependency>
 			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-shaded-asm-7</artifactId>
+			<artifactId>flink-shaded-asm-9</artifactId>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-shaded-jackson</artifactId>
 		</dependency>
 
 		<!-- standard utilities -->
 		<dependency>
 			<groupId>org.apache.commons</groupId>
 			<artifactId>commons-lang3</artifactId>
+			<!-- managed version -->
+		</dependency>
+
+		<!-- YAML parser utilities -->
+		<dependency>
+			<groupId>org.snakeyaml</groupId>
+			<artifactId>snakeyaml-engine</artifactId>
+			<version>2.6</version>
+		</dependency>
+
+		<!-- standard utilities -->
+		<dependency>
+			<groupId>org.apache.commons</groupId>
+			<artifactId>commons-text</artifactId>
 			<!-- managed version -->
 		</dependency>
 
@@ -116,18 +167,30 @@ under the License.
 		</dependency>
 
 		<dependency>
-			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-shaded-jackson</artifactId>
+			<groupId>org.projectlombok</groupId>
+			<artifactId>lombok</artifactId>
+			<version>1.18.30</version>
 			<scope>test</scope>
 		</dependency>
 
 		<dependency>
-			<groupId>org.projectlombok</groupId>
-			<artifactId>lombok</artifactId>
-			<version>1.18.22</version>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-migration-test-utils</artifactId>
+			<version>${project.version}</version>
 			<scope>test</scope>
 		</dependency>
 
+		<dependency>
+			<groupId>org.powermock</groupId>
+			<artifactId>powermock-module-junit4</artifactId>
+			<scope>test</scope>
+		</dependency>
+
+		<dependency>
+			<groupId>org.powermock</groupId>
+			<artifactId>powermock-api-mockito2</artifactId>
+			<scope>test</scope>
+		</dependency>
 	</dependencies>
 
 	<build>
@@ -138,76 +201,6 @@ under the License.
 
 				<configuration>
 					<suppressionsLocation combine.self="override">/tools/maven/suppressions-core.xml</suppressionsLocation>
-				</configuration>
-			</plugin>
-
-			<!-- activate API compatibility checks -->
-			<plugin>
-				<groupId>com.github.siom79.japicmp</groupId>
-				<artifactId>japicmp-maven-plugin</artifactId>
-				<configuration>
-					<parameter>
-						<excludes combine.children="append">
-							<exclude>org.apache.flink.api.common.ExecutionConfig#CONFIG_KEY</exclude>
-							<exclude>org.apache.flink.core.fs.FileSystem\$FSKey</exclude>
-							<exclude>org.apache.flink.core.fs.FileSystem#initialize(java.net.URI)</exclude>
-							<exclude>org.apache.flink.core.fs.FileSystem#isFlinkSupportedScheme(java.lang.String)</exclude>
-							<exclude>org.apache.flink.core.fs.FileSystem#setDefaultScheme(org.apache.flink.configuration.Configuration)</exclude>
-							<exclude>org.apache.flink.api.java.typeutils.WritableTypeInfo</exclude>
-							<exclude>org.apache.flink.api.java.typeutils.AvroTypeInfo</exclude>
-							<!-- Breaking changes between 1.1 and 1.2.
-							We ignore these changes because these are low-level, internal runtime configuration parameters -->
-							<exclude>org.apache.flink.configuration.ConfigConstants#DEFAULT_NETWORK_REQUEST_BACKOFF_INITIAL</exclude>
-							<exclude>org.apache.flink.configuration.ConfigConstants#DEFAULT_NETWORK_REQUEST_BACKOFF_MAX</exclude>
-							<exclude>org.apache.flink.configuration.ConfigConstants#DEFAULT_TASK_CANCELLATION_TIMEOUT_MILLIS</exclude>
-							<exclude>org.apache.flink.configuration.ConfigConstants#ENABLE_QUARANTINE_MONITOR</exclude>
-							<exclude>org.apache.flink.configuration.ConfigConstants#NETWORK_REQUEST_BACKOFF_INITIAL_KEY</exclude>
-							<exclude>org.apache.flink.configuration.ConfigConstants#NETWORK_REQUEST_BACKOFF_MAX_KEY</exclude>
-
-							<!-- fields that were accidentally not final in the beginning -->
-							<exclude>org.apache.flink.configuration.ConfigConstants.DEFAULT_AKKA_WATCH_THRESHOLD</exclude>
-							<exclude>org.apache.flink.configuration.ConfigConstants.DEFAULT_AKKA_DISPATCHER_THROUGHPUT</exclude>
-							<exclude>org.apache.flink.configuration.ConfigConstants.DEFAULT_SECURITY_SSL_VERIFY_HOSTNAME</exclude>
-							<exclude>org.apache.flink.configuration.ConfigConstants.DEFAULT_AKKA_LOOKUP_TIMEOUT</exclude>
-							<exclude>org.apache.flink.configuration.ConfigConstants.DEFAULT_AKKA_TRANSPORT_HEARTBEAT_INTERVAL</exclude>
-							<exclude>org.apache.flink.configuration.ConfigConstants.DEFAULT_RECOVERY_MODE</exclude>
-							<exclude>org.apache.flink.configuration.ConfigConstants.DEFAULT_SECURITY_SSL_ENABLED</exclude>
-							<exclude>org.apache.flink.configuration.ConfigConstants.DEFAULT_AKKA_CLIENT_TIMEOUT</exclude>
-							<exclude>org.apache.flink.configuration.ConfigConstants.DEFAULT_STATE_BACKEND</exclude>
-							<exclude>org.apache.flink.configuration.ConfigConstants.DEFAULT_AKKA_ASK_TIMEOUT</exclude>
-							<exclude>org.apache.flink.configuration.ConfigConstants.DEFAULT_AKKA_TRANSPORT_THRESHOLD</exclude>
-							<exclude>org.apache.flink.configuration.ConfigConstants.DEFAULT_AKKA_FRAMESIZE</exclude>
-							<exclude>org.apache.flink.configuration.ConfigConstants.DEFAULT_SECURITY_SSL_PROTOCOL</exclude>
-							<exclude>org.apache.flink.configuration.ConfigConstants.DEFAULT_AKKA_LOG_LIFECYCLE_EVENTS</exclude>
-							<exclude>org.apache.flink.configuration.ConfigConstants.DEFAULT_SECURITY_SSL_ALGORITHMS</exclude>
-							<exclude>org.apache.flink.configuration.ConfigConstants.DEFAULT_AKKA_TRANSPORT_HEARTBEAT_PAUSE</exclude>
-							<exclude>org.apache.flink.configuration.ConfigConstants.DEFAULT_AKKA_SSL_ENABLED</exclude>
-
-							<!-- apparently there is a bug in the plugin which makes it fail on this new file, event though
-								its new, and not conflicting/breaking -->
-							<exclude>org.apache.flink.api.common.serialization.DeserializationSchema</exclude>
-							<exclude>org.apache.flink.api.common.serialization.SerializationSchema</exclude>
-
-							<!-- leaked constructor in TypeHint -->
-							<exclude>org.apache.flink.api.common.typeinfo.TypeHint</exclude>
-							<exclude>org.apache.flink.api.java.typeutils.TypeInfoParser</exclude>
-
-							<!-- removed in 1.12, before that the settings were ineffective anyway -->
-							<exclude>org.apache.flink.api.common.ExecutionConfig#disableSysoutLogging()</exclude>
-							<exclude>org.apache.flink.api.common.ExecutionConfig#enableSysoutLogging()</exclude>
-							<exclude>org.apache.flink.api.common.ExecutionConfig#isSysoutLoggingEnabled()</exclude>
-
-							<!-- it was decided to remove the fold opperations in 1.12 -->
-							<exclude>org.apache.flink.api.common.functions.FoldFunction</exclude>
-							<exclude>org.apache.flink.api.common.functions.RichFoldFunction</exclude>
-
-							<!-- added method to interface in 1.13 -->
-							<exclude>org.apache.flink.api.common.functions.RuntimeContext#getJobId()</exclude>
-
-							<!-- added method to interface in 1.14 through FLIP-180 -->
-							<exclude>org.apache.flink.api.common.eventtime.WatermarkOutput#markActive()</exclude>
-						</excludes>
-					</parameter>
 				</configuration>
 			</plugin>
 
@@ -227,4 +220,59 @@ under the License.
 
 	</build>
 
+	<profiles>
+		<profile>
+			<id>generate-migration-test-data</id>
+			<build>
+				<plugins>
+					<plugin>
+						<artifactId>maven-antrun-plugin</artifactId>
+						<executions>
+							<execution>
+								<id>generate-migration-test-data</id>
+								<phase>package</phase>
+								<goals>
+									<goal>run</goal>
+								</goals>
+								<configuration>
+									<target>
+										<condition property="optional.classes" value="--classes '${generate.classes}'"
+												   else="">
+											<isset property="generate.classes"/>
+										</condition>
+										<condition property="optional.prefixes"
+												   value="--prefixes '${generate.prefixes}'" else="">
+											<isset property="generate.prefixes"/>
+										</condition>
+										<java classname="org.apache.flink.test.migration.MigrationTestsSnapshotGenerator"
+											  fork="true" failonerror="true" dir="${project.basedir}">
+											<classpath refid="maven.test.classpath"/>
+											<arg value="--dir"/>
+											<arg line="${project.basedir}"/>
+											<arg value="--version"/>
+											<arg value="${generate.version}"/>
+											<arg line="${optional.classes}"/>
+											<arg line="${optional.prefixes}"/>
+										</java>
+									</target>
+								</configuration>
+							</execution>
+						</executions>
+					</plugin>
+				</plugins>
+			</build>
+		</profile>
+		<profile>
+			<id>java21</id>
+			<activation>
+				<jdk>[21,)</jdk>
+			</activation>
+
+			<properties>
+				<surefire.module.config.jdk21> <!--
+				    required by FlinkSecurityManagerTest-->
+					-Djava.security.manager=allow</surefire.module.config.jdk21>
+			</properties>
+		</profile>
+	</profiles>
 </project>

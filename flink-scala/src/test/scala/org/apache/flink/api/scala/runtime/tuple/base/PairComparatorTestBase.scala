@@ -17,16 +17,13 @@
  */
 package org.apache.flink.api.scala.runtime.tuple.base
 
-import org.apache.flink.util.TestLogger
-import org.junit.Assert.assertTrue
-import org.junit.Assert.fail
 import org.apache.flink.api.common.typeutils.TypePairComparator
-import org.junit.Test
 
-/**
- * Abstract test base for PairComparators.
- */
-abstract class PairComparatorTestBase[T, R] extends TestLogger {
+import org.assertj.core.api.Assertions.{assertThat, fail}
+import org.junit.jupiter.api.Test
+
+/** Abstract test base for PairComparators. */
+abstract class PairComparatorTestBase[T, R] {
   protected def createComparator(ascending: Boolean): TypePairComparator[T, R]
 
   protected def getSortedTestData: (Array[T], Array[R])
@@ -35,18 +32,17 @@ abstract class PairComparatorTestBase[T, R] extends TestLogger {
   def testEqualityWithReference(): Unit = {
     try {
       val comparator = getComparator(ascending = true)
-      
+
       val (dataT, dataR) = getSortedData
-      for (i <- 0 until dataT.length) {
+      for (i <- dataT.indices) {
         comparator.setReference(dataT(i))
-        assertTrue(comparator.equalToReference(dataR(i)))
+        assertThat(comparator.equalToReference(dataR(i))).isTrue
       }
     } catch {
-      case e: Exception => {
+      case e: Exception =>
         System.err.println(e.getMessage)
         e.printStackTrace()
         fail("Exception in test: " + e.getMessage)
-      }
     }
   }
 
@@ -56,7 +52,7 @@ abstract class PairComparatorTestBase[T, R] extends TestLogger {
     testGreatSmallAscDescWithReference(ascending = false)
   }
 
-  protected def testGreatSmallAscDescWithReference(ascending: Boolean) {
+  protected def testGreatSmallAscDescWithReference(ascending: Boolean): Unit = {
     try {
       val (dataT, dataR) = getSortedData
       val comparator = getComparator(ascending)
@@ -64,19 +60,17 @@ abstract class PairComparatorTestBase[T, R] extends TestLogger {
         for (y <- (x + 1) until dataR.length) {
           comparator.setReference(dataT(x))
           if (ascending) {
-            assertTrue(comparator.compareToReference(dataR(y)) > 0)
-          }
-          else {
-            assertTrue(comparator.compareToReference(dataR(y)) < 0)
+            assertThat(comparator.compareToReference(dataR(y))).isGreaterThan(0)
+          } else {
+            assertThat(comparator.compareToReference(dataR(y))).isLessThan(0)
           }
         }
       }
     } catch {
-      case e: Exception => {
+      case e: Exception =>
         System.err.println(e.getMessage)
         e.printStackTrace()
         fail("Exception in test: " + e.getMessage)
-      }
     }
   }
 
@@ -100,4 +94,3 @@ abstract class PairComparatorTestBase[T, R] extends TestLogger {
     (dataT, dataR)
   }
 }
-

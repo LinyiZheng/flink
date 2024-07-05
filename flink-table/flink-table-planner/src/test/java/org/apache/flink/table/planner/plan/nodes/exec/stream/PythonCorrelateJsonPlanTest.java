@@ -18,8 +18,6 @@
 
 package org.apache.flink.table.planner.plan.nodes.exec.stream;
 
-import org.apache.flink.api.common.typeinfo.Types;
-import org.apache.flink.api.java.typeutils.RowTypeInfo;
 import org.apache.flink.table.api.TableConfig;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.planner.runtime.utils.JavaUserDefinedScalarFunctions.PythonScalarFunction;
@@ -27,22 +25,21 @@ import org.apache.flink.table.planner.utils.MockPythonTableFunction;
 import org.apache.flink.table.planner.utils.StreamTableTestUtil;
 import org.apache.flink.table.planner.utils.TableTestBase;
 
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 /** Test json serialization/deserialization for correlate. */
-public class PythonCorrelateJsonPlanTest extends TableTestBase {
+class PythonCorrelateJsonPlanTest extends TableTestBase {
     private StreamTableTestUtil util;
     private TableEnvironment tEnv;
 
-    @Before
-    public void setup() {
+    @BeforeEach
+    void setup() {
         TableConfig tableConfig = TableConfig.getDefault();
         util = streamTestUtil(tableConfig);
-        util.addFunction(
-                "TableFunc", new MockPythonTableFunction(), new RowTypeInfo(Types.INT, Types.INT));
-        util.addFunction("pyFunc", new PythonScalarFunction("pyFunc"));
         tEnv = util.getTableEnv();
+        tEnv.createTemporaryFunction("TableFunc", new MockPythonTableFunction());
+        tEnv.createTemporaryFunction("pyFunc", new PythonScalarFunction("pyFunc"));
 
         String srcTableDdl =
                 "CREATE TABLE MyTable (\n"
@@ -57,7 +54,7 @@ public class PythonCorrelateJsonPlanTest extends TableTestBase {
     }
 
     @Test
-    public void testPythonTableFunction() {
+    void testPythonTableFunction() {
         String sinkTableDdl =
                 "CREATE TABLE MySink (\n"
                         + "  a int,\n"
@@ -74,7 +71,7 @@ public class PythonCorrelateJsonPlanTest extends TableTestBase {
     }
 
     @Test
-    public void testJoinWithFilter() {
+    void testJoinWithFilter() {
         String sinkTableDdl =
                 "CREATE TABLE MySink (\n"
                         + "  a int,\n"

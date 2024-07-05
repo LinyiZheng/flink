@@ -15,10 +15,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.stream.sql
 
 import org.apache.flink.api.scala._
+import org.apache.flink.table.annotation.{DataTypeHint, FunctionHint}
 import org.apache.flink.table.api._
 import org.apache.flink.table.api.internal.TableEnvironmentInternal
 import org.apache.flink.table.data.TimestampData
@@ -27,18 +27,16 @@ import org.apache.flink.table.planner.plan.stream.sql.RelTimeIndicatorConverterT
 import org.apache.flink.table.planner.utils.TableTestBase
 import org.apache.flink.table.types.logical.BigIntType
 
-import org.junit.Test
+import org.junit.jupiter.api.Test
 
 import java.sql.Timestamp
 
-/**
-  * Tests for [[org.apache.flink.table.planner.calcite.RelTimeIndicatorConverter]].
-  */
+/** Tests for [[org.apache.flink.table.planner.calcite.RelTimeIndicatorConverter]]. */
 class RelTimeIndicatorConverterTest extends TableTestBase {
 
   private val util = streamTestUtil()
-  util.addDataStream[(Long, Long, Int)](
-    "MyTable", 'rowtime.rowtime, 'long, 'int, 'proctime.proctime)
+  util
+    .addDataStream[(Long, Long, Int)]("MyTable", 'rowtime.rowtime, 'long, 'int, 'proctime.proctime)
   util.addDataStream[(Long, Long, Int)]("MyTable1", 'rowtime.rowtime, 'long, 'int)
   util.addDataStream[(Long, Int)]("MyTable2", 'long, 'int, 'proctime.proctime)
 
@@ -74,7 +72,6 @@ class RelTimeIndicatorConverterTest extends TableTestBase {
     util.verifyExecPlan("SELECT MIN(rowtime) FROM MyTable1 GROUP BY long")
   }
 
-
   @Test
   def testGroupingOnProctime(): Unit = {
     util.verifyExecPlan("SELECT COUNT(long) FROM MyTable2 GROUP BY proctime")
@@ -87,7 +84,7 @@ class RelTimeIndicatorConverterTest extends TableTestBase {
 
   @Test
   def testTableFunction(): Unit = {
-    util.addFunction("tableFunc", new TableFunc)
+    util.addTemporarySystemFunction("tableFunc", new TableFunc)
     val sqlQuery =
       """
         |SELECT rowtime, proctime, s
@@ -179,18 +176,18 @@ class RelTimeIndicatorConverterTest extends TableTestBase {
 
     val table = util.tableEnv.sqlQuery(sql)
 
-    val appendSink1 = util.createAppendTableSink(
-      Array("long", "sum"),
-      Array(new BigIntType(), new BigIntType()))
-    util.tableEnv.asInstanceOf[TableEnvironmentInternal].registerTableSinkInternal(
-      "appendSink1", appendSink1)
+    val appendSink1 =
+      util.createAppendTableSink(Array("long", "sum"), Array(new BigIntType(), new BigIntType()))
+    util.tableEnv
+      .asInstanceOf[TableEnvironmentInternal]
+      .registerTableSinkInternal("appendSink1", appendSink1)
     stmtSet.addInsert("appendSink1", table)
 
-    val appendSink2 = util.createAppendTableSink(
-      Array("long", "sum"),
-      Array(new BigIntType(), new BigIntType()))
-    util.tableEnv.asInstanceOf[TableEnvironmentInternal].registerTableSinkInternal(
-      "appendSink2", appendSink2)
+    val appendSink2 =
+      util.createAppendTableSink(Array("long", "sum"), Array(new BigIntType(), new BigIntType()))
+    util.tableEnv
+      .asInstanceOf[TableEnvironmentInternal]
+      .registerTableSinkInternal("appendSink2", appendSink2)
     stmtSet.addInsert("appendSink2", table)
 
     util.verifyExecPlan(stmtSet)
@@ -204,6 +201,14 @@ object RelTimeIndicatorConverterTest {
   class TableFunc extends TableFunction[String] {
     val t = new Timestamp(0L)
 
+    @FunctionHint(
+      input = Array(
+        new DataTypeHint(
+          value = "TIMESTAMP(3)",
+          bridgedTo = classOf[org.apache.flink.table.data.TimestampData]),
+        new DataTypeHint(value = "TIMESTAMP_LTZ(3)", bridgedTo = classOf[java.sql.Timestamp]),
+        new DataTypeHint("STRING")
+      ))
     def eval(time1: TimestampData, time2: Timestamp, string: String): Unit = {
       collect(time1.toString + time2.after(t) + string)
     }

@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.streaming.api.scala
 
 import org.apache.flink.api.common.state.{ListStateDescriptor, ReducingStateDescriptor}
@@ -28,7 +27,7 @@ import org.apache.flink.streaming.api.windowing.time.Time
 import org.apache.flink.streaming.api.windowing.triggers.EventTimeTrigger
 import org.apache.flink.streaming.api.windowing.windows.TimeWindow
 import org.apache.flink.streaming.runtime.operators.windowing.WindowOperator
-import org.apache.flink.test.util.AbstractTestBase
+import org.apache.flink.test.util.AbstractTestBaseJUnit4
 import org.apache.flink.util.Collector
 
 import org.junit.Assert._
@@ -37,15 +36,15 @@ import org.junit.Test
 import java.util.concurrent.TimeUnit
 
 /**
-  * These tests verify that the api calls on [[WindowedStream]] that use the "time" shortcut
-  * instantiate the correct window operator.
-  */
-class TimeWindowTranslationTest extends AbstractTestBase {
+ * These tests verify that the api calls on [[WindowedStream]] that use the "time" shortcut
+ * instantiate the correct window operator.
+ */
+class TimeWindowTranslationTest extends AbstractTestBaseJUnit4 {
 
   /**
-    * Verifies that calls to timeWindow() instantiate a regular
-    * windowOperator instead of an aligned one.
-    */
+   * Verifies that calls to timeWindow() instantiate a regular windowOperator instead of an aligned
+   * one.
+   */
   @Test
   def testAlignedWindowDeprecation(): Unit = {
     val env = StreamExecutionEnvironment.getExecutionEnvironment
@@ -72,10 +71,10 @@ class TimeWindowTranslationTest extends AbstractTestBase {
       .timeWindow(Time.minutes(1))
       .apply(new WindowFunction[(String, Int), (String, Int), Tuple, TimeWindow]() {
         def apply(
-                   key: Tuple,
-                   window: TimeWindow,
-                   values: Iterable[(String, Int)],
-                   out: Collector[(String, Int)]) { }
+            key: Tuple,
+            window: TimeWindow,
+            values: Iterable[(String, Int)],
+            out: Collector[(String, Int)]) {}
       })
 
     val transform2 = window2.javaStream.getTransformation

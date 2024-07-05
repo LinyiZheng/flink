@@ -18,13 +18,17 @@
 
 package org.apache.flink.configuration;
 
+import org.apache.flink.annotation.PublicEvolving;
+
 import static org.apache.flink.configuration.ConfigOptions.key;
 
 /** Configuration parameters for join/sort algorithms. */
+@PublicEvolving
 public class AlgorithmOptions {
 
     public static final ConfigOption<Boolean> HASH_JOIN_BLOOM_FILTERS =
             key("taskmanager.runtime.hashjoin-bloom-filters")
+                    .booleanType()
                     .defaultValue(false)
                     .withDescription(
                             "Flag to activate/deactivate bloom filters in the hybrid hash join implementation."
@@ -34,6 +38,7 @@ public class AlgorithmOptions {
 
     public static final ConfigOption<Integer> SPILLING_MAX_FAN =
             key("taskmanager.runtime.max-fan")
+                    .intType()
                     .defaultValue(128)
                     .withDescription(
                             "The maximal fan-in for external merge joins and fan-out for spilling hash tables. Limits"
@@ -42,12 +47,14 @@ public class AlgorithmOptions {
 
     public static final ConfigOption<Float> SORT_SPILLING_THRESHOLD =
             key("taskmanager.runtime.sort-spilling-threshold")
+                    .floatType()
                     .defaultValue(0.8f)
                     .withDescription(
                             "A sort operation starts spilling when this fraction of its memory budget is full.");
 
     public static final ConfigOption<Boolean> USE_LARGE_RECORDS_HANDLER =
             key("taskmanager.runtime.large-record-handler")
+                    .booleanType()
                     .defaultValue(false)
                     .withDescription(
                             "Whether to use the LargeRecordHandler when spilling. If a record will not fit into the sorting"

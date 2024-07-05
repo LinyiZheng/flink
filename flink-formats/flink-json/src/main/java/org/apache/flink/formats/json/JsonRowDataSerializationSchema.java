@@ -23,6 +23,7 @@ import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.formats.common.TimestampFormat;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.types.logical.RowType;
+import org.apache.flink.util.jackson.JacksonMapperFactory;
 
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.core.JsonGenerator;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
@@ -37,7 +38,7 @@ import java.util.Objects;
  * <p>Serializes the input Flink object into a JSON string and converts it into <code>byte[]</code>.
  *
  * <p>Result <code>byte[]</code> messages can be deserialized using {@link
- * JsonRowDataDeserializationSchema}.
+ * JsonRowDataDeserializationSchema} or {@link JsonParserRowDataDeserializationSchema}.
  */
 @Internal
 public class JsonRowDataSerializationSchema implements SerializationSchema<RowData> {
@@ -50,7 +51,7 @@ public class JsonRowDataSerializationSchema implements SerializationSchema<RowDa
     private final RowDataToJsonConverters.RowDataToJsonConverter runtimeConverter;
 
     /** Object mapper that is used to create output JSON objects. */
-    private final ObjectMapper mapper = new ObjectMapper();
+    private transient ObjectMapper mapper;
 
     /** Reusable object node. */
     private transient ObjectNode node;
@@ -67,28 +68,43 @@ public class JsonRowDataSerializationSchema implements SerializationSchema<RowDa
     /** Flag indicating whether to serialize all decimals as plain numbers. */
     private final boolean encodeDecimalAsPlainNumber;
 
+    /** Flag indicating whether to ignore null fields. */
+    private final boolean ignoreNullFields;
+
     public JsonRowDataSerializationSchema(
             RowType rowType,
             TimestampFormat timestampFormat,
             JsonFormatOptions.MapNullKeyMode mapNullKeyMode,
             String mapNullKeyLiteral,
-            boolean encodeDecimalAsPlainNumber) {
+            boolean encodeDecimalAsPlainNumber,
+            boolean ignoreNullFields) {
         this.rowType = rowType;
         this.timestampFormat = timestampFormat;
         this.mapNullKeyMode = mapNullKeyMode;
         this.mapNullKeyLiteral = mapNullKeyLiteral;
         this.encodeDecimalAsPlainNumber = encodeDecimalAsPlainNumber;
+        this.ignoreNullFields = ignoreNullFields;
         this.runtimeConverter =
-                new RowDataToJsonConverters(timestampFormat, mapNullKeyMode, mapNullKeyLiteral)
+                new RowDataToJsonConverters(
+                                timestampFormat,
+                                mapNullKeyMode,
+                                mapNullKeyLiteral,
+                                ignoreNullFields)
                         .createConverter(rowType);
+    }
 
-        mapper.configure(
-                JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN, encodeDecimalAsPlainNumber);
+    @Override
+    public void open(InitializationContext context) throws Exception {
+        mapper =
+                JacksonMapperFactory.createObjectMapper()
+                        .configure(
+                                JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN,
+                                encodeDecimalAsPlainNumber);
     }
 
     @Override
     public byte[] serialize(RowData row) {
-        if (node == null) {
+        if (node == null || ignoreNullFields) {
             node = mapper.createObjectNode();
         }
 
@@ -113,7 +129,8 @@ public class JsonRowDataSerializationSchema implements SerializationSchema<RowDa
                 && timestampFormat.equals(that.timestampFormat)
                 && mapNullKeyMode.equals(that.mapNullKeyMode)
                 && mapNullKeyLiteral.equals(that.mapNullKeyLiteral)
-                && encodeDecimalAsPlainNumber == that.encodeDecimalAsPlainNumber;
+                && encodeDecimalAsPlainNumber == that.encodeDecimalAsPlainNumber
+                && ignoreNullFields == that.ignoreNullFields;
     }
 
     @Override
@@ -123,6 +140,7 @@ public class JsonRowDataSerializationSchema implements SerializationSchema<RowDa
                 timestampFormat,
                 mapNullKeyMode,
                 mapNullKeyLiteral,
-                encodeDecimalAsPlainNumber);
+                encodeDecimalAsPlainNumber,
+                ignoreNullFields);
     }
 }

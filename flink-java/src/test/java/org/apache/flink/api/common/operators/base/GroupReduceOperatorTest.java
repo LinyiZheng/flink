@@ -20,7 +20,9 @@ package org.apache.flink.api.common.operators.base;
 
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.TaskInfo;
+import org.apache.flink.api.common.TaskInfoImpl;
 import org.apache.flink.api.common.functions.GroupReduceFunction;
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.functions.RichGroupReduceFunction;
 import org.apache.flink.api.common.functions.RuntimeContext;
 import org.apache.flink.api.common.functions.util.RuntimeUDFContext;
@@ -28,12 +30,12 @@ import org.apache.flink.api.common.operators.UnaryOperatorInformation;
 import org.apache.flink.api.common.typeinfo.TypeHint;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.metrics.groups.UnregisteredMetricsGroup;
 import org.apache.flink.util.Collector;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
+import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -43,39 +45,31 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static java.util.Arrays.asList;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 /** Tests for {@link GroupReduceFunction}. */
 @SuppressWarnings({"serial", "unchecked"})
-public class GroupReduceOperatorTest implements java.io.Serializable {
+class GroupReduceOperatorTest implements Serializable {
 
     private static final TypeInformation<Tuple2<String, Integer>> STRING_INT_TUPLE =
             TypeInformation.of(new TypeHint<Tuple2<String, Integer>>() {});
 
     @Test
-    public void testGroupReduceCollection() {
+    void testGroupReduceCollection() {
         try {
             final GroupReduceFunction<Tuple2<String, Integer>, Tuple2<String, Integer>> reducer =
-                    new GroupReduceFunction<Tuple2<String, Integer>, Tuple2<String, Integer>>() {
+                    (values, out) -> {
+                        Iterator<Tuple2<String, Integer>> input = values.iterator();
 
-                        @Override
-                        public void reduce(
-                                Iterable<Tuple2<String, Integer>> values,
-                                Collector<Tuple2<String, Integer>> out)
-                                throws Exception {
-                            Iterator<Tuple2<String, Integer>> input = values.iterator();
-
-                            Tuple2<String, Integer> result = input.next();
-                            int sum = result.f1;
-                            while (input.hasNext()) {
-                                Tuple2<String, Integer> next = input.next();
-                                sum += next.f1;
-                            }
-                            result.f1 = sum;
-                            out.collect(result);
+                        Tuple2<String, Integer> result = input.next();
+                        int sum = result.f1;
+                        while (input.hasNext()) {
+                            Tuple2<String, Integer> next = input.next();
+                            sum += next.f1;
                         }
+                        result.f1 = sum;
+                        out.collect(result);
                     };
 
             GroupReduceOperatorBase<
@@ -112,8 +106,8 @@ public class GroupReduceOperatorTest implements java.io.Serializable {
             Set<Tuple2<String, Integer>> expectedResult =
                     new HashSet<>(asList(new Tuple2<>("foo", 4), new Tuple2<>("bar", 6)));
 
-            assertEquals(expectedResult, resultSetMutableSafe);
-            assertEquals(expectedResult, resultSetRegular);
+            assertThat(resultSetMutableSafe).isEqualTo(expectedResult);
+            assertThat(resultSetRegular).isEqualTo(expectedResult);
         } catch (Exception e) {
             e.printStackTrace();
             fail(e.getMessage());
@@ -121,7 +115,7 @@ public class GroupReduceOperatorTest implements java.io.Serializable {
     }
 
     @Test
-    public void testGroupReduceCollectionWithRuntimeContext() {
+    void testGroupReduceCollectionWithRuntimeContext() {
         try {
             final String taskName = "Test Task";
             final AtomicBoolean opened = new AtomicBoolean();
@@ -150,12 +144,13 @@ public class GroupReduceOperatorTest implements java.io.Serializable {
                                 }
 
                                 @Override
-                                public void open(Configuration parameters) throws Exception {
+                                public void open(OpenContext openContext) throws Exception {
                                     opened.set(true);
                                     RuntimeContext ctx = getRuntimeContext();
-                                    assertEquals(0, ctx.getIndexOfThisSubtask());
-                                    assertEquals(1, ctx.getNumberOfParallelSubtasks());
-                                    assertEquals(taskName, ctx.getTaskName());
+                                    assertThat(ctx.getTaskInfo().getIndexOfThisSubtask()).isZero();
+                                    assertThat(ctx.getTaskInfo().getNumberOfParallelSubtasks())
+                                            .isOne();
+                                    assertThat(ctx.getTaskInfo().getTaskName()).isEqualTo(taskName);
                                 }
 
                                 @Override
@@ -184,7 +179,7 @@ public class GroupReduceOperatorTest implements java.io.Serializable {
                                     new Tuple2<>("bar", 2),
                                     new Tuple2<>("bar", 4)));
 
-            final TaskInfo taskInfo = new TaskInfo(taskName, 1, 0, 1, 0);
+            final TaskInfo taskInfo = new TaskInfoImpl(taskName, 1, 0, 1, 0);
 
             ExecutionConfig executionConfig = new ExecutionConfig();
             executionConfig.disableObjectReuse();
@@ -219,11 +214,11 @@ public class GroupReduceOperatorTest implements java.io.Serializable {
             Set<Tuple2<String, Integer>> expectedResult =
                     new HashSet<>(asList(new Tuple2<>("foo", 4), new Tuple2<>("bar", 6)));
 
-            assertEquals(expectedResult, resultSetMutableSafe);
-            assertEquals(expectedResult, resultSetRegular);
+            assertThat(resultSetMutableSafe).isEqualTo(expectedResult);
+            assertThat(resultSetRegular).isEqualTo(expectedResult);
 
-            assertTrue(opened.get());
-            assertTrue(closed.get());
+            assertThat(opened.get()).isTrue();
+            assertThat(closed.get()).isTrue();
         } catch (Exception e) {
             e.printStackTrace();
             fail(e.getMessage());

@@ -19,6 +19,7 @@
 package org.apache.flink.state.api.input;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.functions.RuntimeContext;
 import org.apache.flink.api.common.io.DefaultInputSplitAssigner;
 import org.apache.flink.api.common.io.RichInputFormat;
@@ -32,19 +33,23 @@ import org.apache.flink.runtime.checkpoint.RoundRobinOperatorStateRepartitioner;
 import org.apache.flink.runtime.checkpoint.StateObjectCollection;
 import org.apache.flink.runtime.checkpoint.metadata.CheckpointMetadata;
 import org.apache.flink.runtime.jobgraph.OperatorInstanceID;
-import org.apache.flink.runtime.state.BackendBuildingException;
-import org.apache.flink.runtime.state.DefaultOperatorStateBackendBuilder;
 import org.apache.flink.runtime.state.OperatorStateBackend;
 import org.apache.flink.runtime.state.OperatorStateHandle;
+import org.apache.flink.runtime.state.StateBackend;
 import org.apache.flink.state.api.input.splits.OperatorStateInputSplit;
-import org.apache.flink.streaming.api.operators.BackendRestorerProcedure;
+import org.apache.flink.streaming.api.operators.StreamOperatorStateContext;
 import org.apache.flink.util.CollectionUtil;
 import org.apache.flink.util.IOUtils;
 import org.apache.flink.util.Preconditions;
+import org.apache.flink.util.SerializedValue;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nullable;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -63,7 +68,13 @@ abstract class OperatorStateInputFormat<OT> extends RichInputFormat<OT, Operator
 
     private static final long serialVersionUID = -2286490341042373742L;
 
+    private static final Logger LOG = LoggerFactory.getLogger(OperatorStateInputFormat.class);
+
     private final OperatorState operatorState;
+
+    private final Configuration configuration;
+
+    @Nullable private final StateBackend backend;
 
     private final boolean isUnionType;
 
@@ -73,11 +84,24 @@ abstract class OperatorStateInputFormat<OT> extends RichInputFormat<OT, Operator
 
     private transient Iterator<OT> elements;
 
-    OperatorStateInputFormat(OperatorState operatorState, boolean isUnionType) {
+    private final SerializedValue<ExecutionConfig> serializedExecutionConfig;
+
+    OperatorStateInputFormat(
+            OperatorState operatorState,
+            Configuration configuration,
+            @Nullable StateBackend backend,
+            boolean isUnionType,
+            ExecutionConfig executionConfig)
+            throws IOException {
         Preconditions.checkNotNull(operatorState, "The operator state cannot be null");
+        Preconditions.checkNotNull(configuration, "Configuration cannot be null");
+        Preconditions.checkNotNull(executionConfig, "ExecutionConfig cannot be null");
 
         this.operatorState = operatorState;
+        this.configuration = configuration;
+        this.backend = backend;
         this.isUnionType = isUnionType;
+        this.serializedExecutionConfig = new SerializedValue<>(executionConfig);
     }
 
     protected abstract Iterable<OT> getElements(OperatorStateBackend restoredBackend)
@@ -117,7 +141,7 @@ abstract class OperatorStateInputFormat<OT> extends RichInputFormat<OT, Operator
         // sub-partitioned for better data distribution across the cluster.
         return CollectionUtil.mapWithIndex(
                         CollectionUtil.partition(
-                                splits[0].getPrioritizedManagedOperatorState().get(0).asList(),
+                                splits[0].getPrioritizedManagedOperatorState().asList(),
                                 minNumSplits),
                         (state, index) ->
                                 new OperatorStateInputSplit(
@@ -147,19 +171,27 @@ abstract class OperatorStateInputFormat<OT> extends RichInputFormat<OT, Operator
     public void open(OperatorStateInputSplit split) throws IOException {
         registry = new CloseableRegistry();
 
-        final BackendRestorerProcedure<OperatorStateBackend, OperatorStateHandle> backendRestorer =
-                new BackendRestorerProcedure<>(
-                        (handles) ->
-                                createOperatorStateBackend(getRuntimeContext(), handles, registry),
-                        registry,
-                        operatorState.getOperatorID().toString());
-
+        RuntimeContext runtimeContext = getRuntimeContext();
+        ExecutionConfig executionConfig;
         try {
-            restoredBackend =
-                    backendRestorer.createAndRestore(split.getPrioritizedManagedOperatorState());
-        } catch (Exception exception) {
-            throw new IOException("Failed to restore state backend", exception);
+            executionConfig =
+                    serializedExecutionConfig.deserializeValue(
+                            runtimeContext.getUserCodeClassLoader());
+        } catch (ClassNotFoundException e) {
+            throw new RuntimeException("Could not deserialize ExecutionConfig.", e);
         }
+        final StreamOperatorStateContext context =
+                new StreamOperatorContextBuilder(
+                                runtimeContext,
+                                configuration,
+                                operatorState,
+                                split,
+                                registry,
+                                backend,
+                                executionConfig)
+                        .build(LOG);
+
+        restoredBackend = context.operatorStateBackend();
 
         try {
             elements = getElements(restoredBackend).iterator();
@@ -187,23 +219,5 @@ abstract class OperatorStateInputFormat<OT> extends RichInputFormat<OT, Operator
     @Override
     public OT nextRecord(OT reuse) {
         return elements.next();
-    }
-
-    private static OperatorStateBackend createOperatorStateBackend(
-            RuntimeContext runtimeContext,
-            Collection<OperatorStateHandle> stateHandles,
-            CloseableRegistry cancelStreamRegistry) {
-
-        try {
-            return new DefaultOperatorStateBackendBuilder(
-                            runtimeContext.getUserCodeClassLoader(),
-                            runtimeContext.getExecutionConfig(),
-                            false,
-                            stateHandles,
-                            cancelStreamRegistry)
-                    .build();
-        } catch (BackendBuildingException e) {
-            throw new RuntimeException(e);
-        }
     }
 }

@@ -39,6 +39,7 @@ public interface CatalogBaseTable {
     @PublicEvolving
     enum TableKind {
         TABLE,
+        MATERIALIZED_TABLE,
         VIEW
     }
 
@@ -50,7 +51,8 @@ public interface CatalogBaseTable {
      *
      * <p>In case of {@link CatalogTable}, these options may determine the kind of connector and its
      * configuration for accessing the data in the external system. See {@link DynamicTableFactory}
-     * for more information.
+     * for more information. If a {@link CatalogTable} should not be serializable, an implementation
+     * can simply throw a runtime exception in this method.
      */
     Map<String, String> getOptions();
 

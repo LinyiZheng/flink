@@ -28,7 +28,7 @@ import org.apache.flink.table.runtime.generated.GeneratedRecordComparator;
 import org.apache.flink.table.runtime.generated.RecordComparator;
 import org.apache.flink.table.runtime.keyselector.RowDataKeySelector;
 import org.apache.flink.table.runtime.operators.sort.IntRecordComparator;
-import org.apache.flink.table.runtime.operators.window.slicing.SlicingWindowOperator;
+import org.apache.flink.table.runtime.operators.window.tvf.common.WindowAggOperator;
 import org.apache.flink.table.runtime.typeutils.PagedTypeSerializer;
 import org.apache.flink.table.runtime.typeutils.RowDataSerializer;
 import org.apache.flink.table.runtime.util.GenericRowRecordSortComparator;
@@ -51,7 +51,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 
 import static org.apache.flink.table.runtime.util.StreamRecordUtils.insertRecord;
 import static org.apache.flink.table.runtime.util.TimeWindowUtil.toUtcTimestampMills;
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for window rank operators created by {@link WindowRankOperatorBuilder}. */
 @RunWith(Parameterized.class)
@@ -133,14 +133,14 @@ public class WindowRankOperatorTest {
     }
 
     private static OneInputStreamOperatorTestHarness<RowData, RowData> createTestHarness(
-            SlicingWindowOperator<RowData, ?> operator) throws Exception {
+            WindowAggOperator<RowData, ?> operator) throws Exception {
         return new KeyedOneInputStreamOperatorTestHarness<>(
                 operator, KEY_SELECTOR, KEY_SELECTOR.getProducedType());
     }
 
     @Test
     public void testTop2Windows() throws Exception {
-        SlicingWindowOperator<RowData, ?> operator =
+        WindowAggOperator<RowData, ?> operator =
                 WindowRankOperatorBuilder.builder()
                         .inputSerializer(INPUT_ROW_SER)
                         .shiftTimeZone(shiftTimeZone)
@@ -239,14 +239,14 @@ public class WindowRankOperatorTest {
         ASSERTER.assertOutputEqualsSorted(
                 "Output was not correct.", expectedOutput, testHarness.getOutput());
 
-        assertEquals(1, operator.getNumLateRecordsDropped().getCount());
+        assertThat(operator.getNumLateRecordsDropped().getCount()).isEqualTo(1);
 
         testHarness.close();
     }
 
     @Test
     public void testTop2WindowsWithOffset() throws Exception {
-        SlicingWindowOperator<RowData, ?> operator =
+        WindowAggOperator<RowData, ?> operator =
                 WindowRankOperatorBuilder.builder()
                         .inputSerializer(INPUT_ROW_SER)
                         .shiftTimeZone(shiftTimeZone)
@@ -335,7 +335,7 @@ public class WindowRankOperatorTest {
 
     @Test
     public void testTop2WindowsWithoutRankNumber() throws Exception {
-        SlicingWindowOperator<RowData, ?> operator =
+        WindowAggOperator<RowData, ?> operator =
                 WindowRankOperatorBuilder.builder()
                         .inputSerializer(INPUT_ROW_SER)
                         .shiftTimeZone(shiftTimeZone)

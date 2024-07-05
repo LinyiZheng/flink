@@ -33,7 +33,16 @@ public class PlaceholderStreamStateHandle implements StreamStateHandle {
 
     private static final long serialVersionUID = 1L;
 
-    public PlaceholderStreamStateHandle() {}
+    private final PhysicalStateHandleID physicalID;
+    private final long stateSize;
+    private final boolean fileMerged;
+
+    public PlaceholderStreamStateHandle(
+            PhysicalStateHandleID physicalID, long stateSize, boolean fileMerged) {
+        this.physicalID = physicalID;
+        this.stateSize = stateSize;
+        this.fileMerged = fileMerged;
+    }
 
     @Override
     public FSDataInputStream openInputStream() {
@@ -48,12 +57,21 @@ public class PlaceholderStreamStateHandle implements StreamStateHandle {
     }
 
     @Override
+    public PhysicalStateHandleID getStreamStateHandleID() {
+        return physicalID;
+    }
+
+    @Override
     public void discardState() throws Exception {
         // nothing to do.
     }
 
     @Override
     public long getStateSize() {
-        return 0L;
+        return stateSize;
+    }
+
+    public boolean isFileMerged() {
+        return fileMerged;
     }
 }

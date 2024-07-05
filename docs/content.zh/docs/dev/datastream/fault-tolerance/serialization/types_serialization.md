@@ -115,6 +115,9 @@ You can also register your own custom serializer if required; see [Serialization
 
 Flink analyzes the structure of POJO types, i.e., it learns about the fields of a POJO. As a result POJO types are easier to use than general types. Moreover, Flink can process POJOs more efficiently than general types.
 
+You can test whether your class adheres to the POJO requirements via `org.apache.flink.types.PojoTestUtils#assertSerializedAsPojo()` from the `flink-test-utils`.
+If you additionally want to ensure that no field of the POJO will be serialized with Kryo, use `assertSerializedAsPojoWithoutKryo()` instead.
+
 The following example shows a simple POJO with two public fields.
 
 {{< tabs "0589f3b3-76d8-4913-9595-276da92cbc77" >}}
@@ -352,12 +355,16 @@ You can still use the same method as in Java as a fallback.
 {{< /tab >}}
 {{< /tabs >}}
 
-To create a `TypeSerializer`, simply call `typeInfo.createSerializer(config)` on the `TypeInformation` object.
+There are two ways to create a TypeSerializer. 
 
+The first is to simply call `typeInfo.createSerializer(config)` on the `TypeInformation` object.
 The `config` parameter is of type `ExecutionConfig` and holds the information about the program's registered
 custom serializers. Where ever possibly, try to pass the programs proper ExecutionConfig. You can usually
-obtain it from `DataStream` via calling `getExecutionConfig()`. Inside functions (like `MapFunction`), you can
-get it by making the function a [Rich Function]() and calling `getRuntimeContext().getExecutionConfig()`.
+obtain it from `DataStream` via calling `getExecutionConfig()`. 
+
+The second is to use getRuntimeContext().createSerializer(typeInfo) within a function. Inside functions 
+(like `MapFunction`), you can get it by making the function a [Rich Function]() and calling 
+`getRuntimeContext().createSerializer(typeInfo)`.
 
 --------
 --------
@@ -499,7 +506,7 @@ env.getConfig().enableForceKryo();
 
 If Kryo is not able to serialize your POJO, you can add a custom serializer to Kryo, using
 ```java
-env.getConfig().addDefaultKryoSerializer(Class<?> type, Class<? extends Serializer<?>> serializerClass)
+env.getConfig().addDefaultKryoSerializer(Class<?> type, Class<? extends Serializer<?>> serializerClass);
 ```
 
 There are different variants of these methods available.

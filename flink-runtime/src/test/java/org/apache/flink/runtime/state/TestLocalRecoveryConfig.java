@@ -23,14 +23,15 @@ import java.io.File;
 /** Helper methods to easily create a {@link LocalRecoveryConfig} for tests. */
 public class TestLocalRecoveryConfig {
 
-    private static final LocalRecoveryDirectoryProvider INSTANCE =
-            new TestDummyLocalDirectoryProvider();
-
     public static LocalRecoveryConfig disabled() {
-        return new LocalRecoveryConfig(false, INSTANCE);
+        return LocalRecoveryConfig.BACKUP_AND_RECOVERY_DISABLED;
     }
 
-    public static class TestDummyLocalDirectoryProvider implements LocalRecoveryDirectoryProvider {
+    public static LocalRecoveryConfig enabledForTest() {
+        return LocalRecoveryConfig.backupAndRecoveryEnabled(new TestDummyLocalDirectoryProvider());
+    }
+
+    public static class TestDummyLocalDirectoryProvider implements LocalSnapshotDirectoryProvider {
 
         private TestDummyLocalDirectoryProvider() {}
 

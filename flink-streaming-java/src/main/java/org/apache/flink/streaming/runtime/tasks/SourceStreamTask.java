@@ -22,6 +22,8 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.runtime.checkpoint.CheckpointMetaData;
 import org.apache.flink.runtime.checkpoint.CheckpointOptions;
 import org.apache.flink.runtime.checkpoint.CheckpointType;
+import org.apache.flink.runtime.checkpoint.SavepointType;
+import org.apache.flink.runtime.checkpoint.SnapshotType;
 import org.apache.flink.runtime.execution.CancelTaskException;
 import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.runtime.io.network.api.StopMode;
@@ -56,7 +58,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * @param <OUT> Type of the output elements of this source.
  * @param <SRC> Type of the source function for the stream source operator
  * @param <OP> Type of the stream source operator
+ * @deprecated This class is based on the {@link
+ *     org.apache.flink.streaming.api.functions.source.SourceFunction} API, which is due to be
+ *     removed. Use the new {@link org.apache.flink.api.connector.source.Source} API instead.
  */
+@Deprecated
 @Internal
 public class SourceStreamTask<
                 OUT, SRC extends SourceFunction<OUT>, OP extends StreamSource<OUT, SRC>>
@@ -162,6 +168,7 @@ public class SourceStreamTask<
                 .gauge(
                         MetricNames.CHECKPOINT_START_DELAY_TIME,
                         this::getAsyncCheckpointStartDelayNanos);
+        recordWriter.setMaxOverdraftBuffersPerGate(0);
     }
 
     @Override
@@ -194,6 +201,7 @@ public class SourceStreamTask<
                             if (sourceThreadThrowable != null) {
                                 mailboxProcessor.reportThrowable(sourceThreadThrowable);
                             } else {
+                                notifyEndOfData();
                                 mailboxProcessor.suspend();
                             }
                         });
@@ -253,17 +261,17 @@ public class SourceStreamTask<
     public CompletableFuture<Boolean> triggerCheckpointAsync(
             CheckpointMetaData checkpointMetaData, CheckpointOptions checkpointOptions) {
         if (!externallyInducedCheckpoints) {
-            if (checkpointOptions.getCheckpointType().isSynchronous()) {
+            if (isSynchronousSavepoint(checkpointOptions.getCheckpointType())) {
                 return triggerStopWithSavepointAsync(checkpointMetaData, checkpointOptions);
             } else {
                 return super.triggerCheckpointAsync(checkpointMetaData, checkpointOptions);
             }
-        } else if (checkpointOptions.getCheckpointType() == CheckpointType.FULL_CHECKPOINT) {
+        } else if (checkpointOptions.getCheckpointType().equals(CheckpointType.FULL_CHECKPOINT)) {
             // see FLINK-25256
             throw new IllegalStateException(
                     "Using externally induced sources, we can not enforce taking a full checkpoint."
                             + "If you are restoring from a snapshot in NO_CLAIM mode, please use"
-                            + " either CLAIM or LEGACY mode.");
+                            + " CLAIM mode.");
         } else {
             // we do not trigger checkpoints here, we simply state whether we can trigger them
             synchronized (lock) {
@@ -272,13 +280,18 @@ public class SourceStreamTask<
         }
     }
 
+    private boolean isSynchronousSavepoint(SnapshotType snapshotType) {
+        return snapshotType.isSavepoint() && ((SavepointType) snapshotType).isSynchronous();
+    }
+
     private CompletableFuture<Boolean> triggerStopWithSavepointAsync(
             CheckpointMetaData checkpointMetaData, CheckpointOptions checkpointOptions) {
         mainMailboxExecutor.execute(
                 () ->
                         stopOperatorForStopWithSavepoint(
                                 checkpointMetaData.getCheckpointId(),
-                                checkpointOptions.getCheckpointType().shouldDrain()),
+                                ((SavepointType) checkpointOptions.getCheckpointType())
+                                        .shouldDrain()),
                 "stop legacy source for stop-with-savepoint --drain");
         return sourceThread
                 .getCompletionFuture()

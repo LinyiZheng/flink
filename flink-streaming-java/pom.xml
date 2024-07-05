@@ -25,14 +25,29 @@ under the License.
 	<parent>
 		<groupId>org.apache.flink</groupId>
 		<artifactId>flink-parent</artifactId>
-		<version>1.15-SNAPSHOT</version>
-		<relativePath>..</relativePath>
+		<version>2.0-SNAPSHOT</version>
 	</parent>
 
 	<artifactId>flink-streaming-java</artifactId>
 	<name>Flink : Streaming Java</name>
 
 	<packaging>jar</packaging>
+
+	<properties>
+		<!--
+		Two properties below should be merged once support for jdk8 and jdk11 is dropped.
+		The reason of extraction into a separate property with profile is that
+		specifying -Djava.security.manager=allow within ${surefire.module.config} leads to
+		hanging of surefire for jdk8 and jdk11
+		-->
+		<surefire.module.config.jdk21></surefire.module.config.jdk21>
+		<surefire.module.config> ${surefire.module.config.jdk21} <!--
+			FromElementsFunctionTest
+			-->--add-opens=java.base/java.lang=ALL-UNNAMED <!--
+			chill ArraysAsListSerializer
+			-->--add-opens=java.base/java.util=ALL-UNNAMED
+		</surefire.module.config>
+	</properties>
 
 	<dependencies>
 
@@ -73,6 +88,12 @@ under the License.
 			<version>3.6.1</version>
 		</dependency>
 
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-connector-datagen</artifactId>
+			<version>${project.version}</version>
+		</dependency>
+
 		<!-- test dependencies -->
 
 		<dependency>
@@ -95,49 +116,17 @@ under the License.
 			<scope>test</scope>
 			<type>test-jar</type>
 		</dependency>
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-migration-test-utils</artifactId>
+			<version>${project.version}</version>
+			<scope>test</scope>
+		</dependency>
 	</dependencies>
 
 	<build>
 		<plugins>
-
-			<!-- activate API compatibility checks -->
-			<plugin>
-				<groupId>com.github.siom79.japicmp</groupId>
-				<artifactId>japicmp-maven-plugin</artifactId>
-				<configuration>
-					<parameter>
-						<excludes combine.children="append">
-							<exclude>org.apache.flink.streaming.api.datastream.DataStream#assignTimestamps(org.apache.flink.streaming.api.functions.TimestampExtractor)</exclude>
-
-							<!-- DataStream#fold was removed in 1.12 -->
-							<exclude>org.apache.flink.streaming.api.datastream.AllWindowedStream#apply(java.lang.Object,org.apache.flink.api.common.functions.FoldFunction,org.apache.flink.streaming.api.functions.windowing.AllWindowFunction)</exclude>
-							<exclude>org.apache.flink.streaming.api.datastream.AllWindowedStream#apply(java.lang.Object,org.apache.flink.api.common.functions.FoldFunction,org.apache.flink.streaming.api.functions.windowing.AllWindowFunction,org.apache.flink.api.common.typeinfo.TypeInformation)</exclude>
-							<exclude>org.apache.flink.streaming.api.datastream.AllWindowedStream#fold(java.lang.Object,org.apache.flink.api.common.functions.FoldFunction)</exclude>
-							<exclude>org.apache.flink.streaming.api.datastream.AllWindowedStream#fold(java.lang.Object,org.apache.flink.api.common.functions.FoldFunction,org.apache.flink.api.common.typeinfo.TypeInformation)</exclude>
-							<exclude>org.apache.flink.streaming.api.datastream.KeyedStream#fold(java.lang.Object,org.apache.flink.api.common.functions.FoldFunction)</exclude>
-							<exclude>org.apache.flink.streaming.api.datastream.WindowedStream#fold(java.lang.Object,org.apache.flink.api.common.functions.FoldFunction,org.apache.flink.api.common.typeinfo.TypeInformation)</exclude>
-							<exclude>org.apache.flink.streaming.api.datastream.WindowedStream#fold(java.lang.Object,org.apache.flink.api.common.functions.FoldFunction)</exclude>
-							<exclude>org.apache.flink.streaming.api.datastream.WindowedStream#apply(java.lang.Object,org.apache.flink.api.common.functions.FoldFunction,org.apache.flink.streaming.api.functions.windowing.WindowFunction)</exclude>
-							<exclude>org.apache.flink.streaming.api.datastream.WindowedStream#apply(java.lang.Object,org.apache.flink.api.common.functions.FoldFunction,org.apache.flink.streaming.api.functions.windowing.WindowFunction,org.apache.flink.api.common.typeinfo.TypeInformation)</exclude>
-
-							<!-- DataStream#split was removed in 1.12 -->
-							<exclude>org.apache.flink.streaming.api.datastream.DataStream#split(org.apache.flink.streaming.api.collector.selector.OutputSelector)</exclude>
-							<exclude>org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator#split(org.apache.flink.streaming.api.collector.selector.OutputSelector)</exclude>
-						</excludes>
-					</parameter>
-				</configuration>
-			</plugin>
-
-			<!-- disable fork reuse for the streaming project, because of
-			incorrect declaration of tests -->
-			<plugin>
-				<groupId>org.apache.maven.plugins</groupId>
-				<artifactId>maven-surefire-plugin</artifactId>
-				<configuration>
-					<reuseForks>false</reuseForks>
-				</configuration>
-			</plugin>
-
 			<plugin>
 				<groupId>org.apache.maven.plugins</groupId>
 				<artifactId>maven-jar-plugin</artifactId>
@@ -152,4 +141,59 @@ under the License.
 		</plugins>
 	</build>
 
+	<profiles>
+		<profile>
+			<id>generate-migration-test-data</id>
+			<build>
+				<plugins>
+					<plugin>
+						<artifactId>maven-antrun-plugin</artifactId>
+						<executions>
+							<execution>
+								<id>generate-migration-test-data</id>
+								<phase>package</phase>
+								<goals>
+									<goal>run</goal>
+								</goals>
+								<configuration>
+									<target>
+										<condition property="optional.classes" value="--classes '${generate.classes}'"
+												   else="">
+											<isset property="generate.classes"/>
+										</condition>
+										<condition property="optional.prefixes"
+												   value="--prefixes '${generate.prefixes}'" else="">
+											<isset property="generate.prefixes"/>
+										</condition>
+										<java classname="org.apache.flink.test.migration.MigrationTestsSnapshotGenerator"
+											  fork="true" failonerror="true" dir="${project.basedir}">
+											<classpath refid="maven.test.classpath"/>
+											<arg value="--dir"/>
+											<arg line="${project.basedir}"/>
+											<arg value="--version"/>
+											<arg value="${generate.version}"/>
+											<arg line="${optional.classes}"/>
+											<arg line="${optional.prefixes}"/>
+										</java>
+									</target>
+								</configuration>
+							</execution>
+						</executions>
+					</plugin>
+				</plugins>
+			</build>
+		</profile>
+		<profile>
+			<id>java21</id>
+			<activation>
+				<jdk>[21,)</jdk>
+			</activation>
+
+			<properties>
+				<surefire.module.config.jdk21> <!--
+				    required by StreamTaskSystemExitTest-->
+					-Djava.security.manager=allow</surefire.module.config.jdk21>
+			</properties>
+		</profile>
+	</profiles>
 </project>

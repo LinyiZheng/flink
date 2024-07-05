@@ -40,8 +40,8 @@ class StreamExecutionEnvironmentCompletenessTests(PythonAPICompletenessTestCase,
         # 'isForceCheckpointing', 'getNumberOfExecutionRetries', 'setNumberOfExecutionRetries'
         # is deprecated, exclude them.
         return {'getLastJobExecutionResult', 'getId', 'getIdString',
-                'registerCachedFile', 'createCollectionsEnvironment', 'createLocalEnvironment',
-                'createRemoteEnvironment', 'addOperator', 'fromElements',
+                'createCollectionsEnvironment', 'createLocalEnvironment',
+                'createRemoteEnvironment', 'addOperator', 'fromElements', 'fromData',
                 'resetContextEnvironment', 'getCachedFiles', 'generateSequence',
                 'getNumberOfExecutionRetries', 'getStreamGraph', 'fromParallelCollection',
                 'readFileStream', 'isForceCheckpointing', 'readFile', 'clean',
@@ -49,7 +49,9 @@ class StreamExecutionEnvironmentCompletenessTests(PythonAPICompletenessTestCase,
                 'socketTextStream', 'initializeContextEnvironment', 'readTextFile',
                 'setNumberOfExecutionRetries', 'executeAsync', 'registerJobListener',
                 'clearJobListeners', 'getJobListeners', 'fromSequence', 'getConfiguration',
-                'generateStreamGraph'}
+                'generateStreamGraph', 'getTransformations', 'areExplicitEnvironmentsAllowed',
+                'registerCollectIterator', 'listCompletedClusterDatasets',
+                'invalidateClusterDataset', 'registerCacheTransformation', 'close'}
 
 
 if __name__ == '__main__':

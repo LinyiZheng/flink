@@ -21,6 +21,7 @@ package org.apache.flink.table.planner.plan.nodes.exec.operator;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.table.api.TableConfig;
 import org.apache.flink.table.api.TableSchema;
+import org.apache.flink.table.api.config.AggregatePhaseStrategy;
 import org.apache.flink.table.api.config.OptimizerConfigOptions;
 import org.apache.flink.table.functions.TemporalTableFunction;
 import org.apache.flink.table.planner.utils.JavaScalaConversionUtil;
@@ -32,8 +33,8 @@ import org.apache.flink.table.sinks.TableSink;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.types.Row;
 
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.TestTemplate;
 
 import java.util.Optional;
 
@@ -41,7 +42,7 @@ import static org.apache.flink.table.api.Expressions.$;
 import static org.apache.flink.table.api.Expressions.call;
 
 /** Tests for verifying name and description of stream sql operator name. */
-public class StreamOperatorNameTest extends OperatorNameTestBase {
+class StreamOperatorNameTest extends OperatorNameTestBase {
 
     private StreamTableTestUtil util;
 
@@ -50,15 +51,15 @@ public class StreamOperatorNameTest extends OperatorNameTestBase {
         return streamTestUtil(TableConfig.getDefault());
     }
 
-    @Before
-    public void setup() {
+    @BeforeEach
+    void setup() {
         super.setup();
         util = (StreamTableTestUtil) super.util;
     }
 
     /** Verify DropUpdateBefore. */
-    @Test
-    public void testDropUpdateBefore() throws Exception {
+    @TestTemplate
+    void testDropUpdateBefore() {
 
         util.getStreamEnv().setParallelism(2);
 
@@ -92,8 +93,8 @@ public class StreamOperatorNameTest extends OperatorNameTestBase {
     }
 
     /** Verify ChangelogNormalize and SinkMaterialize. */
-    @Test
-    public void testChangelogNormalize() throws Exception {
+    @TestTemplate
+    void testChangelogNormalize() throws Exception {
 
         util.getStreamEnv().setParallelism(2);
 
@@ -127,8 +128,8 @@ public class StreamOperatorNameTest extends OperatorNameTestBase {
     }
 
     /** Verify Deduplicate. */
-    @Test
-    public void testDeduplicate() {
+    @TestTemplate
+    void testDeduplicate() {
         createSourceWithTimeAttribute();
         verifyQuery(
                 "SELECT a, b, c FROM "
@@ -142,25 +143,24 @@ public class StreamOperatorNameTest extends OperatorNameTestBase {
      * Verify Expand, MiniBatchAssigner, LocalGroupAggregate, GlobalGroupAggregate,
      * IncrementalAggregate.
      */
-    @Test
-    public void testIncrementalAggregate() {
+    @TestTemplate
+    void testIncrementalAggregate() {
         util.enableMiniBatch();
         tEnv.getConfig()
-                .getConfiguration()
                 .set(OptimizerConfigOptions.TABLE_OPTIMIZER_DISTINCT_AGG_SPLIT_ENABLED, true);
         createTestSource();
         verifyQuery("SELECT a, " + "count(distinct b) as b " + "FROM MyTable GROUP BY a");
     }
 
     /** Verify GroupAggregate. */
-    @Test
-    public void testGroupAggregate() {
+    @TestTemplate
+    void testGroupAggregate() {
         testGroupAggregateInternal();
     }
 
     /** Verify RowConversion, TableGroupAggregate. */
-    @Test
-    public void testTableGroupAggregate() {
+    @TestTemplate
+    void testTableGroupAggregate() {
         final DataStream<Integer> dataStream = util.getStreamEnv().fromElements(1, 2, 3, 4, 5);
         TableTestUtil.createTemporaryView(
                 tEnv,
@@ -179,8 +179,8 @@ public class StreamOperatorNameTest extends OperatorNameTestBase {
     }
 
     /** Verify IntervalJoin. */
-    @Test
-    public void testIntervalJoin() {
+    @TestTemplate
+    void testIntervalJoin() {
         createSourceWithTimeAttribute("A");
         createSourceWithTimeAttribute("B");
         verifyQuery(
@@ -190,8 +190,8 @@ public class StreamOperatorNameTest extends OperatorNameTestBase {
     }
 
     /** Verify IntervalJoin. */
-    @Test
-    public void testIntervalJoinNegativeWindow() {
+    @TestTemplate
+    void testIntervalJoinNegativeWindow() {
         createSourceWithTimeAttribute("A");
         createSourceWithTimeAttribute("B");
         verifyQuery(
@@ -201,13 +201,13 @@ public class StreamOperatorNameTest extends OperatorNameTestBase {
     }
 
     /** Verify Join. */
-    @Test
-    public void testJoin() {
+    @TestTemplate
+    void testJoin() {
         testJoinInternal();
     }
 
-    @Test
-    public void testMatch() {
+    @TestTemplate
+    void testMatch() {
         createSourceWithTimeAttribute();
         String sql =
                 "SELECT T.aid, T.bid, T.cid\n"
@@ -226,8 +226,8 @@ public class StreamOperatorNameTest extends OperatorNameTestBase {
         verifyQuery(sql);
     }
 
-    @Test
-    public void testTemporalJoin() {
+    @TestTemplate
+    void testTemporalJoin() {
         tEnv.executeSql(
                 "CREATE TABLE Orders (\n"
                         + " amount INT,\n"
@@ -249,7 +249,7 @@ public class StreamOperatorNameTest extends OperatorNameTestBase {
                         + " 'connector' = 'values'\n"
                         + ")");
         TemporalTableFunction ratesHistory =
-                tEnv.from("RatesHistory").createTemporalTableFunction("rowtime", "currency");
+                tEnv.from("RatesHistory").createTemporalTableFunction($("rowtime"), $("currency"));
         tEnv.createTemporarySystemFunction("Rates", ratesHistory);
         verifyQuery(
                 "SELECT amount * r.rate "
@@ -258,24 +258,25 @@ public class StreamOperatorNameTest extends OperatorNameTestBase {
                         + "WHERE o.currency = r.currency ");
     }
 
-    @Test
-    public void testTemporalSortOnProcTime() {
+    @TestTemplate
+    void testTemporalSortOnProcTime() {
         createSourceWithTimeAttribute();
         verifyQuery("SELECT a FROM MyTable order by proctime, c");
     }
 
-    @Test
-    public void testTemporalSortOnEventTime() {
+    @TestTemplate
+    void testTemporalSortOnEventTime() {
         createSourceWithTimeAttribute();
         verifyQuery("SELECT a FROM MyTable order by rowtime, c");
     }
 
     /** Verify WindowJoin, WindowRank, WindowAggregate, WindowDeduplicate. */
-    @Test
-    public void testWindowAggregate() {
+    @TestTemplate
+    void testWindowAggregate() {
         tEnv.getConfig()
-                .getConfiguration()
-                .set(OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY, "ONE_PHASE");
+                .set(
+                        OptimizerConfigOptions.TABLE_OPTIMIZER_AGG_PHASE_STRATEGY,
+                        AggregatePhaseStrategy.ONE_PHASE);
         createSourceWithTimeAttribute();
         verifyQuery(
                 "SELECT\n"
@@ -290,8 +291,8 @@ public class StreamOperatorNameTest extends OperatorNameTestBase {
     }
 
     /** Verify LocalWindowAggregate, GlobalWindowAggregate. */
-    @Test
-    public void testLocalGlobalWindowAggregate() {
+    @TestTemplate
+    void testLocalGlobalWindowAggregate() {
         createSourceWithTimeAttribute();
         verifyQuery(
                 "SELECT\n"
@@ -306,8 +307,8 @@ public class StreamOperatorNameTest extends OperatorNameTestBase {
     }
 
     /** Verify WindowJoin. */
-    @Test
-    public void testWindowJoin() {
+    @TestTemplate
+    void testWindowJoin() {
         createSourceWithTimeAttribute("MyTable");
         createSourceWithTimeAttribute("MyTable2");
         verifyQuery(
@@ -344,8 +345,8 @@ public class StreamOperatorNameTest extends OperatorNameTestBase {
     }
 
     /** Verify WindowTableFunction and WindowRank. */
-    @Test
-    public void testWindowRank() {
+    @TestTemplate
+    void testWindowRank() {
         createSourceWithTimeAttribute();
         verifyQuery(
                 "select\n"
@@ -363,8 +364,8 @@ public class StreamOperatorNameTest extends OperatorNameTestBase {
     }
 
     /** Verify WindowDeduplicate. */
-    @Test
-    public void testWindowDeduplicate() {
+    @TestTemplate
+    void testWindowDeduplicate() {
         createSourceWithTimeAttribute();
         verifyQuery(
                 "select\n"
@@ -382,8 +383,8 @@ public class StreamOperatorNameTest extends OperatorNameTestBase {
     }
 
     /** Verify LegacySource and LegacySink. */
-    @Test
-    public void testLegacySourceSink() {
+    @TestTemplate
+    void testLegacySourceSink() {
         TableSchema schema = TestLegacyFilterableTableSource.defaultSchema();
         TestLegacyFilterableTableSource.createTemporaryTable(
                 tEnv,

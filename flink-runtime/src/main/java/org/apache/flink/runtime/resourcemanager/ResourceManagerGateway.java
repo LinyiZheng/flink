@@ -24,6 +24,7 @@ import org.apache.flink.api.common.time.Time;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.runtime.blob.BlobServer;
 import org.apache.flink.runtime.blob.TransientBlobKey;
+import org.apache.flink.runtime.blocklist.BlocklistListener;
 import org.apache.flink.runtime.clusterframework.ApplicationStatus;
 import org.apache.flink.runtime.clusterframework.types.AllocationID;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
@@ -36,6 +37,8 @@ import org.apache.flink.runtime.messages.Acknowledge;
 import org.apache.flink.runtime.metrics.dump.MetricQueryService;
 import org.apache.flink.runtime.registration.RegistrationResponse;
 import org.apache.flink.runtime.rest.messages.LogInfo;
+import org.apache.flink.runtime.rest.messages.ProfilingInfo;
+import org.apache.flink.runtime.rest.messages.ProfilingInfo.ProfilingMode;
 import org.apache.flink.runtime.rest.messages.ThreadDumpInfo;
 import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagerInfo;
 import org.apache.flink.runtime.rpc.FencedRpcGateway;
@@ -50,12 +53,13 @@ import org.apache.flink.runtime.taskexecutor.TaskExecutorThreadInfoGateway;
 
 import javax.annotation.Nullable;
 
+import java.time.Duration;
 import java.util.Collection;
 import java.util.concurrent.CompletableFuture;
 
 /** The {@link ResourceManager}'s RPC gateway interface. */
 public interface ResourceManagerGateway
-        extends FencedRpcGateway<ResourceManagerId>, ClusterPartitionManager {
+        extends FencedRpcGateway<ResourceManagerId>, ClusterPartitionManager, BlocklistListener {
 
     /**
      * Register a {@link JobMaster} at the resource manager.
@@ -99,6 +103,7 @@ public interface ResourceManagerGateway
     /**
      * Sends the given {@link SlotReport} to the ResourceManager.
      *
+     * @param taskManagerResourceId The resource ID of the sending TaskManager
      * @param taskManagerRegistrationId id identifying the sending TaskManager
      * @param slotReport which is sent to the ResourceManager
      * @param timeout for the operation
@@ -228,12 +233,16 @@ public interface ResourceManagerGateway
      *
      * @param taskManagerId identifying the {@link TaskExecutor} to upload the specified file
      * @param fileName name of the file to upload
+     * @param fileType type of the file to upload
      * @param timeout for the asynchronous operation
      * @return Future which is completed with the {@link TransientBlobKey} after uploading the file
      *     to the {@link BlobServer}.
      */
-    CompletableFuture<TransientBlobKey> requestTaskManagerFileUploadByName(
-            ResourceID taskManagerId, String fileName, @RpcTimeout Time timeout);
+    CompletableFuture<TransientBlobKey> requestTaskManagerFileUploadByNameAndType(
+            ResourceID taskManagerId,
+            String fileName,
+            FileType fileType,
+            @RpcTimeout Duration timeout);
 
     /**
      * Request log list from the given {@link TaskExecutor}.
@@ -264,4 +273,30 @@ public interface ResourceManagerGateway
      */
     CompletableFuture<TaskExecutorThreadInfoGateway> requestTaskExecutorThreadInfoGateway(
             ResourceID taskManagerId, @RpcTimeout Time timeout);
+
+    /**
+     * Request profiling list from the given {@link TaskExecutor}.
+     *
+     * @param taskManagerId identifying the {@link TaskExecutor} to get profiling list from
+     * @param timeout for the asynchronous operation
+     * @return Future which is completed with the historical profiling list
+     */
+    CompletableFuture<Collection<ProfilingInfo>> requestTaskManagerProfilingList(
+            ResourceID taskManagerId, @RpcTimeout Duration timeout);
+
+    /**
+     * Requests the profiling instance from the given {@link TaskExecutor}.
+     *
+     * @param taskManagerId taskManagerId identifying the {@link TaskExecutor} to get the profiling
+     *     from
+     * @param duration profiling duration
+     * @param mode profiling mode {@link ProfilingMode}
+     * @param timeout timeout of the asynchronous operation
+     * @return Future containing the created profiling information
+     */
+    CompletableFuture<ProfilingInfo> requestProfiling(
+            ResourceID taskManagerId,
+            int duration,
+            ProfilingInfo.ProfilingMode mode,
+            @RpcTimeout Duration timeout);
 }

@@ -22,6 +22,7 @@ import org.apache.flink.kubernetes.kubeclient.FlinkKubeClient;
 import org.apache.flink.kubernetes.kubeclient.KubernetesConfigMapSharedWatcher;
 import org.apache.flink.kubernetes.kubeclient.KubernetesSharedWatcher.Watch;
 import org.apache.flink.kubernetes.kubeclient.resources.KubernetesConfigMap;
+import org.apache.flink.runtime.leaderelection.LeaderInformation;
 import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalDriver;
 import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalEventHandler;
 import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalException;
@@ -31,10 +32,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.List;
-import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executor;
+import java.util.function.Function;
 
-import static org.apache.flink.kubernetes.utils.KubernetesUtils.checkConfigMaps;
-import static org.apache.flink.kubernetes.utils.KubernetesUtils.getLeaderInformationFromConfigMap;
+import static org.apache.flink.kubernetes.utils.KubernetesUtils.getOnlyConfigMap;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
@@ -48,8 +49,6 @@ public class KubernetesLeaderRetrievalDriver implements LeaderRetrievalDriver {
     private static final Logger LOG =
             LoggerFactory.getLogger(KubernetesLeaderRetrievalDriver.class);
 
-    private final FlinkKubeClient kubeClient;
-
     private final String configMapName;
 
     private final LeaderRetrievalEventHandler leaderRetrievalEventHandler;
@@ -60,25 +59,24 @@ public class KubernetesLeaderRetrievalDriver implements LeaderRetrievalDriver {
 
     private final Watch kubernetesWatch;
 
+    private final Function<KubernetesConfigMap, LeaderInformation> leaderInformationExtractor;
+
     public KubernetesLeaderRetrievalDriver(
-            FlinkKubeClient kubeClient,
             KubernetesConfigMapSharedWatcher configMapSharedWatcher,
-            ExecutorService watchExecutorService,
+            Executor watchExecutor,
             String configMapName,
             LeaderRetrievalEventHandler leaderRetrievalEventHandler,
+            Function<KubernetesConfigMap, LeaderInformation> leaderInformationExtractor,
             FatalErrorHandler fatalErrorHandler) {
-        this.kubeClient = checkNotNull(kubeClient, "Kubernetes client");
         this.configMapName = checkNotNull(configMapName, "ConfigMap name");
         this.leaderRetrievalEventHandler =
                 checkNotNull(leaderRetrievalEventHandler, "LeaderRetrievalEventHandler");
         this.fatalErrorHandler = checkNotNull(fatalErrorHandler);
+        this.leaderInformationExtractor = leaderInformationExtractor;
 
         kubernetesWatch =
                 checkNotNull(configMapSharedWatcher, "ConfigMap Shared Informer")
-                        .watch(
-                                configMapName,
-                                new ConfigMapCallbackHandlerImpl(),
-                                watchExecutorService);
+                        .watch(configMapName, new ConfigMapCallbackHandlerImpl(), watchExecutor);
 
         running = true;
     }
@@ -100,16 +98,21 @@ public class KubernetesLeaderRetrievalDriver implements LeaderRetrievalDriver {
 
         @Override
         public void onAdded(List<KubernetesConfigMap> configMaps) {
-            // The ConfigMap is created by KubernetesLeaderElectionDriver with empty data. We do not
-            // process this
-            // useless event.
+            // The ConfigMap is created by KubernetesLeaderElectionDriver with
+            // empty data. We don't really need to process anything unless the retriever was started
+            // after the leader election has already succeeded.
+            final KubernetesConfigMap configMap = getOnlyConfigMap(configMaps, configMapName);
+            final LeaderInformation leaderInformation = leaderInformationExtractor.apply(configMap);
+            if (!leaderInformation.isEmpty()) {
+                leaderRetrievalEventHandler.notifyLeaderAddress(leaderInformation);
+            }
         }
 
         @Override
         public void onModified(List<KubernetesConfigMap> configMaps) {
-            final KubernetesConfigMap configMap = checkConfigMaps(configMaps, configMapName);
+            final KubernetesConfigMap configMap = getOnlyConfigMap(configMaps, configMapName);
             leaderRetrievalEventHandler.notifyLeaderAddress(
-                    getLeaderInformationFromConfigMap(configMap));
+                    leaderInformationExtractor.apply(configMap));
         }
 
         @Override

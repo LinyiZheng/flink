@@ -22,7 +22,8 @@ import org.apache.flink.api.dag.Transformation;
 import org.apache.flink.streaming.api.transformations.StreamExchangeMode;
 import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.delegation.Planner;
-import org.apache.flink.table.planner.plan.nodes.exec.serde.ExecNodeGraphJsonPlanGenerator.JsonPlanEdge;
+import org.apache.flink.table.planner.codegen.CodeGeneratorContext;
+import org.apache.flink.table.planner.plan.fusion.OpFusionCodegenSpecGenerator;
 import org.apache.flink.table.types.logical.LogicalType;
 
 import java.util.Arrays;
@@ -33,10 +34,10 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 /**
  * The representation of an edge connecting two {@link ExecNode}s.
  *
- * <p>The edge's json serialization/deserialization will be delegated to {@link JsonPlanEdge}, which
+ * <p>The edge's json serialization/deserialization will be delegated to {@code JsonPlanEdge}, which
  * only stores the {@link ExecNode}'s id instead of instance.
  *
- * <p>{@link JsonPlanEdge} should also be updated with this class if the fields are added/removed.
+ * <p>{@code JsonPlanEdge} should also be updated with this class if the fields are added/removed.
  */
 public class ExecEdge {
     /** The source node of this edge. */
@@ -113,6 +114,14 @@ public class ExecEdge {
         private ExecNode<?> target;
         private Shuffle shuffle = FORWARD_SHUFFLE;
         private StreamExchangeMode exchangeMode = StreamExchangeMode.PIPELINED;
+
+        public Builder from(ExecEdge original) {
+            this.source = original.source;
+            this.target = original.target;
+            this.shuffle = original.shuffle;
+            this.exchangeMode = original.exchangeMode;
+            return this;
+        }
 
         public Builder source(ExecNode<?> source) {
             this.source = source;
@@ -248,5 +257,16 @@ public class ExecEdge {
      */
     public Transformation<?> translateToPlan(Planner planner) {
         return source.translateToPlan(planner);
+    }
+
+    /**
+     * Translates this edge into operator fusion codegen spec generator.
+     *
+     * @param planner The {@link Planner} of the translated Table.
+     * @param parentCtx Parent CodeGeneratorContext.
+     */
+    public OpFusionCodegenSpecGenerator translateToFusionCodegenSpec(
+            Planner planner, CodeGeneratorContext parentCtx) {
+        return source.translateToFusionCodegenSpec(planner, parentCtx);
     }
 }

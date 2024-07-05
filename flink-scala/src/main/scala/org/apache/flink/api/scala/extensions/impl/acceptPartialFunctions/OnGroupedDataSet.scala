@@ -26,63 +26,78 @@ import org.apache.flink.util.Collector
 import scala.reflect.ClassTag
 
 /**
-  * Wraps a grouped data set, allowing to use anonymous partial functions to
-  * perform extraction of items in a tuple, case class instance or collection
-  *
-  * @param ds The wrapped grouped data set
-  * @tparam T The type of the grouped data set items
-  */
+ * Wraps a grouped data set, allowing to use anonymous partial functions to perform extraction of
+ * items in a tuple, case class instance or collection
+ *
+ * @param ds
+ *   The wrapped grouped data set
+ * @tparam T
+ *   The type of the grouped data set items
+ * @deprecated
+ *   All Flink Scala APIs are deprecated and will be removed in a future Flink major version. You
+ *   can still build your application in Scala, but you should move to the Java version of either
+ *   the DataStream and/or Table API.
+ * @see
+ *   <a href="https://s.apache.org/flip-265">FLIP-265 Deprecate and remove Scala API support</a>
+ */
+@deprecated(org.apache.flink.api.scala.FLIP_265_WARNING, since = "1.18.0")
 class OnGroupedDataSet[T](ds: GroupedDataSet[T]) {
 
   /**
-    * Sorts a group using a sorting function `fun` and an `Order`
-    *
-    * @param fun The sorting function, defining the sorting key
-    * @param order The ordering strategy (ascending, descending, etc.)
-    * @tparam K The key type
-    * @return A data set sorted group-wise
-    */
+   * Sorts a group using a sorting function `fun` and an `Order`
+   *
+   * @param fun
+   *   The sorting function, defining the sorting key
+   * @param order
+   *   The ordering strategy (ascending, descending, etc.)
+   * @tparam K
+   *   The key type
+   * @return
+   *   A data set sorted group-wise
+   */
   @PublicEvolving
   def sortGroupWith[K: TypeInformation](order: Order)(fun: T => K): GroupedDataSet[T] =
     ds.sortGroup(fun, order)
 
   /**
-    * Reduces the whole data set with a reducer `fun`
-    *
-    * @param fun The reducing function
-    * @return A reduced data set of Ts
-    */
+   * Reduces the whole data set with a reducer `fun`
+   *
+   * @param fun
+   *   The reducing function
+   * @return
+   *   A reduced data set of Ts
+   */
   @PublicEvolving
   def reduceWith(fun: (T, T) => T): DataSet[T] =
     ds.reduce(fun)
 
   /**
-    * Reduces the data set group-wise with a reducer `fun`
-    *
-    * @param fun The reducing function
-    * @tparam R The type of the items in the resulting data set
-    * @return A data set of Rs reduced group-wise
-    */
+   * Reduces the data set group-wise with a reducer `fun`
+   *
+   * @param fun
+   *   The reducing function
+   * @tparam R
+   *   The type of the items in the resulting data set
+   * @return
+   *   A data set of Rs reduced group-wise
+   */
   @PublicEvolving
   def reduceGroupWith[R: TypeInformation: ClassTag](fun: Stream[T] => R): DataSet[R] =
-    ds.reduceGroup {
-      (it: Iterator[T], out: Collector[R]) =>
-        out.collect(fun(it.toStream))
-    }
+    ds.reduceGroup((it: Iterator[T], out: Collector[R]) => out.collect(fun(it.toStream)))
 
   /**
-    * Same as a reducing operation but only acts locally,
-    * ideal to perform pre-aggregation before a reduction.
-    *
-    * @param fun The reducing function
-    * @tparam R The type of the items in the resulting data set
-    * @return A data set of Rs reduced group-wise
-    */
+   * Same as a reducing operation but only acts locally, ideal to perform pre-aggregation before a
+   * reduction.
+   *
+   * @param fun
+   *   The reducing function
+   * @tparam R
+   *   The type of the items in the resulting data set
+   * @return
+   *   A data set of Rs reduced group-wise
+   */
   @PublicEvolving
   def combineGroupWith[R: TypeInformation: ClassTag](fun: Stream[T] => R): DataSet[R] =
-    ds.combineGroup {
-      (it: Iterator[T], out: Collector[R]) =>
-        out.collect(fun(it.toStream))
-    }
+    ds.combineGroup((it: Iterator[T], out: Collector[R]) => out.collect(fun(it.toStream)))
 
 }

@@ -40,7 +40,7 @@ __Note:__ Flink is also available as a [Docker image](https://hub.docker.com/_/f
 {{< /hint >}}
 
 Flink runs on all UNIX-like environments, i.e. Linux, Mac OS X, and Cygwin (for Windows). You need 
-to have __Java 8 or 11__ installed. To check the Java version installed, type in your terminal: 
+to have __Java 11__ installed. To check the Java version installed, type in your terminal: 
 
 ```bash
 $ java -version
@@ -67,7 +67,7 @@ You should see something like:
 
 For now, you may want to note that:
 - __bin/__ directory contains the `flink` binary as well as several bash scripts that manage various jobs and tasks
-- __conf/__ directory contains configuration files, including `flink-conf.yaml`
+- __conf/__ directory contains configuration files, including [Flink configuration file]({{< ref "docs/deployment/config#flink-configuration-file" >}})
 - __examples/__ directory contains sample applications that can be used as is with Flink
 
 
@@ -154,4 +154,4 @@ folder or deploy your own job!
 
 In this guide, you downloaded Flink, explored the project directory, started and stopped a local cluster, and submitted a sample Flink job!
 
-To learn more about Flink fundamentals, check out the [concepts]({{< ref "docs/concepts" >}}) section. If you want to try something more hands-on, try one of the tutorials.
+To learn more about Flink fundamentals, check out the [concepts]({{< ref "docs/concepts/overview" >}}) section. If you want to try something more hands-on, try one of the tutorials.

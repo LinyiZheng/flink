@@ -47,6 +47,7 @@ export interface JobDetail {
   name: string;
   isStoppable: boolean;
   state: string;
+  'job-type': string;
   'start-time': number;
   'end-time': number;
   duration: number;
@@ -95,7 +96,7 @@ export interface VerticesItemRange extends VerticesItem {
   range: number[];
 }
 
-interface TasksStatus {
+export interface TasksStatus {
   FINISHED: number;
   SCHEDULED: number;
   CANCELED: number;
@@ -136,6 +137,7 @@ export interface NodesItemCorrect extends NodesItem {
   lowWatermark?: number;
   backPressuredPercentage?: number;
   busyPercentage?: number;
+  dataSkewPercentage?: number;
 }
 
 export interface NodesItemLink {

@@ -56,7 +56,17 @@ final class TestingDeclarativeSlotPool implements DeclarativeSlotPool {
                     Collection<SlotOffer>>
             offerSlotsFunction;
 
-    private final Supplier<Collection<SlotInfoWithUtilization>> getFreeSlotsInformationSupplier;
+    private final QuadFunction<
+                    Collection<? extends SlotOffer>,
+                    TaskManagerLocation,
+                    TaskManagerGateway,
+                    Long,
+                    Collection<SlotOffer>>
+            registerSlotsFunction;
+
+    private final Supplier<Collection<SlotInfo>> getFreeSlotsInformationSupplier;
+
+    private final Supplier<FreeSlotInfoTracker> getFreeSlotInfoTrackerSupplier;
 
     private final Supplier<Collection<? extends SlotInfo>> getAllSlotsInformationSupplier;
 
@@ -88,7 +98,15 @@ final class TestingDeclarativeSlotPool implements DeclarativeSlotPool {
                             Long,
                             Collection<SlotOffer>>
                     offerSlotsFunction,
-            Supplier<Collection<SlotInfoWithUtilization>> getFreeSlotsInformationSupplier,
+            QuadFunction<
+                            Collection<? extends SlotOffer>,
+                            TaskManagerLocation,
+                            TaskManagerGateway,
+                            Long,
+                            Collection<SlotOffer>>
+                    registerSlotsFunction,
+            Supplier<Collection<SlotInfo>> getFreeSlotsInformationSupplier,
+            Supplier<FreeSlotInfoTracker> getFreeSlotInfoTrackerSupplier,
             Supplier<Collection<? extends SlotInfo>> getAllSlotsInformationSupplier,
             BiFunction<ResourceID, Exception, ResourceCounter> releaseSlotsFunction,
             BiFunction<AllocationID, Exception, ResourceCounter> releaseSlotFunction,
@@ -102,7 +120,9 @@ final class TestingDeclarativeSlotPool implements DeclarativeSlotPool {
         this.decreaseResourceRequirementsByConsumer = decreaseResourceRequirementsByConsumer;
         this.getResourceRequirementsSupplier = getResourceRequirementsSupplier;
         this.offerSlotsFunction = offerSlotsFunction;
+        this.registerSlotsFunction = registerSlotsFunction;
         this.getFreeSlotsInformationSupplier = getFreeSlotsInformationSupplier;
+        this.getFreeSlotInfoTrackerSupplier = getFreeSlotInfoTrackerSupplier;
         this.getAllSlotsInformationSupplier = getAllSlotsInformationSupplier;
         this.releaseSlotsFunction = releaseSlotsFunction;
         this.releaseSlotFunction = releaseSlotFunction;
@@ -145,8 +165,18 @@ final class TestingDeclarativeSlotPool implements DeclarativeSlotPool {
     }
 
     @Override
-    public Collection<SlotInfoWithUtilization> getFreeSlotsInformation() {
-        return getFreeSlotsInformationSupplier.get();
+    public Collection<SlotOffer> registerSlots(
+            Collection<? extends SlotOffer> slots,
+            TaskManagerLocation taskManagerLocation,
+            TaskManagerGateway taskManagerGateway,
+            long currentTime) {
+        return registerSlotsFunction.apply(
+                slots, taskManagerLocation, taskManagerGateway, currentTime);
+    }
+
+    @Override
+    public FreeSlotInfoTracker getFreeSlotInfoTracker() {
+        return getFreeSlotInfoTrackerSupplier.get();
     }
 
     @Override

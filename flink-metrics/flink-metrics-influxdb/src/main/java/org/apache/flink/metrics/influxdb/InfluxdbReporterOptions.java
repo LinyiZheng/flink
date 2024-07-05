@@ -18,7 +18,9 @@
 
 package org.apache.flink.metrics.influxdb;
 
+import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.annotation.docs.Documentation;
+import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.ConfigurationUtils;
@@ -27,12 +29,18 @@ import org.apache.flink.metrics.MetricConfig;
 
 import org.influxdb.InfluxDB;
 
+import java.time.Duration;
+
 /** Config options for {@link InfluxdbReporter}. */
-@Documentation.SuffixOption
+@PublicEvolving
+@Documentation.SuffixOption(ConfigConstants.METRICS_REPORTER_PREFIX + "influxdb")
 public class InfluxdbReporterOptions {
 
     public static final ConfigOption<String> HOST =
-            ConfigOptions.key("host").noDefaultValue().withDescription("the InfluxDB server host");
+            ConfigOptions.key("host")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("the InfluxDB server host");
 
     public static final ConfigOption<Scheme> SCHEME =
             ConfigOptions.key("scheme")
@@ -42,27 +50,32 @@ public class InfluxdbReporterOptions {
 
     public static final ConfigOption<Integer> PORT =
             ConfigOptions.key("port")
+                    .intType()
                     .defaultValue(8086)
                     .withDescription("the InfluxDB server port");
 
     public static final ConfigOption<String> USERNAME =
             ConfigOptions.key("username")
+                    .stringType()
                     .noDefaultValue()
                     .withDescription("(optional) InfluxDB username used for authentication");
 
     public static final ConfigOption<String> PASSWORD =
             ConfigOptions.key("password")
+                    .stringType()
                     .noDefaultValue()
                     .withDescription(
                             "(optional) InfluxDB username's password used for authentication");
 
     public static final ConfigOption<String> DB =
             ConfigOptions.key("db")
+                    .stringType()
                     .noDefaultValue()
                     .withDescription("the InfluxDB database to store metrics");
 
     public static final ConfigOption<String> RETENTION_POLICY =
             ConfigOptions.key("retentionPolicy")
+                    .stringType()
                     .defaultValue("")
                     .withDescription("(optional) the InfluxDB retention policy for metrics");
 
@@ -72,14 +85,16 @@ public class InfluxdbReporterOptions {
                     .defaultValue(InfluxDB.ConsistencyLevel.ONE)
                     .withDescription("(optional) the InfluxDB consistency level for metrics");
 
-    public static final ConfigOption<Integer> CONNECT_TIMEOUT =
+    public static final ConfigOption<Duration> CONNECT_TIMEOUT =
             ConfigOptions.key("connectTimeout")
-                    .defaultValue(10000)
+                    .durationType()
+                    .defaultValue(Duration.ofMillis(10000))
                     .withDescription("(optional) the InfluxDB connect timeout for metrics");
 
-    public static final ConfigOption<Integer> WRITE_TIMEOUT =
+    public static final ConfigOption<Duration> WRITE_TIMEOUT =
             ConfigOptions.key("writeTimeout")
-                    .defaultValue(10000)
+                    .durationType()
+                    .defaultValue(Duration.ofMillis(10000))
                     .withDescription("(optional) the InfluxDB write timeout for metrics");
 
     static String getString(MetricConfig config, ConfigOption<String> key) {
@@ -88,6 +103,10 @@ public class InfluxdbReporterOptions {
 
     static int getInteger(MetricConfig config, ConfigOption<Integer> key) {
         return config.getInteger(key.key(), key.defaultValue());
+    }
+
+    static Duration getDuration(MetricConfig config, ConfigOption<Duration> key) {
+        return (Duration) config.getOrDefault(key.key(), key.defaultValue());
     }
 
     static InfluxDB.ConsistencyLevel getConsistencyLevel(
@@ -115,7 +134,7 @@ public class InfluxdbReporterOptions {
     }
 
     /** Supported URL schemes for the {@link InfluxdbReporter}. */
-    enum Scheme {
+    public enum Scheme {
         HTTP("http"),
         HTTPS("https");
 

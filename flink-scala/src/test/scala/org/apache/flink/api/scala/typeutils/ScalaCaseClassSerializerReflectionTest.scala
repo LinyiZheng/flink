@@ -15,20 +15,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.api.scala.typeutils
 
 import org.apache.flink.api.scala.typeutils.ScalaCaseClassSerializerReflectionTest._
-import org.apache.flink.util.TestLogger
-import org.junit.Assert.assertEquals
-import org.junit.Test
 
+import org.assertj.core.api.Assertions.{assertThat, assertThatThrownBy}
+import org.junit.jupiter.api.Test
 
-/**
-  * Test obtaining the primary constructor of a case class
-  * via reflection.
-  */
-class ScalaCaseClassSerializerReflectionTest extends TestLogger {
+/** Test obtaining the primary constructor of a case class via reflection. */
+class ScalaCaseClassSerializerReflectionTest {
 
   @Test
   def usageExample(): Unit = {
@@ -37,7 +32,7 @@ class ScalaCaseClassSerializerReflectionTest extends TestLogger {
 
     val actual = constructor(Array("hi", 1.asInstanceOf[AnyRef]))
 
-    assertEquals(SimpleCaseClass("hi", 1), actual)
+    assertThat(actual).isEqualTo(SimpleCaseClass("hi", 1))
   }
 
   @Test
@@ -47,7 +42,7 @@ class ScalaCaseClassSerializerReflectionTest extends TestLogger {
 
     val actual = constructor(Array(1.asInstanceOf[AnyRef]))
 
-    assertEquals(Generic[Int](1), actual)
+    assertThat(actual).isEqualTo(Generic[Int](1))
   }
 
   @Test
@@ -57,7 +52,7 @@ class ScalaCaseClassSerializerReflectionTest extends TestLogger {
 
     val actual = constructor(Array(List(1, 2, 3), "hey"))
 
-    assertEquals(HigherKind(List(1, 2, 3), "hey"), actual)
+    assertThat(actual).isEqualTo(HigherKind(List(1, 2, 3), "hey"))
   }
 
   @Test
@@ -67,16 +62,19 @@ class ScalaCaseClassSerializerReflectionTest extends TestLogger {
 
     val actual = constructor(Array("a", "b", 7.asInstanceOf[AnyRef]))
 
-    assertEquals(("a", "b", 7), actual)
+    assertThat(actual).isEqualTo(("a", "b", 7))
   }
 
-  @Test(expected = classOf[IllegalArgumentException])
+  @Test
   def unsupportedInstanceClass(): Unit = {
 
     val outerInstance = new OuterClass
 
-    ScalaCaseClassSerializer
-      .lookupConstructor(classOf[outerInstance.InnerCaseClass])
+    assertThatThrownBy(
+      () =>
+        ScalaCaseClassSerializer
+          .lookupConstructor(classOf[outerInstance.InnerCaseClass]))
+      .isInstanceOf(classOf[IllegalArgumentException])
   }
 
   @Test
@@ -88,10 +86,10 @@ class ScalaCaseClassSerializerReflectionTest extends TestLogger {
       1.asInstanceOf[AnyRef],
       new DegreeCelsius(0.5f).asInstanceOf[AnyRef]
     )
-    
+
     val actual = constructor(arguments)
 
-    assertEquals(Measurement(1, new DegreeCelsius(0.5f)), actual)
+    assertThat(actual).isEqualTo(Measurement(1, new DegreeCelsius(0.5f)))
   }
 }
 

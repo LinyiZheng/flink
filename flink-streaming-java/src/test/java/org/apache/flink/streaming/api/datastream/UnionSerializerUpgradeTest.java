@@ -20,7 +20,7 @@ package org.apache.flink.streaming.api.datastream;
 
 import org.apache.flink.FlinkVersion;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
-import org.apache.flink.api.common.typeutils.TypeSerializerMatchers;
+import org.apache.flink.api.common.typeutils.TypeSerializerConditions;
 import org.apache.flink.api.common.typeutils.TypeSerializerSchemaCompatibility;
 import org.apache.flink.api.common.typeutils.TypeSerializerUpgradeTestBase;
 import org.apache.flink.api.common.typeutils.base.LongSerializer;
@@ -28,44 +28,31 @@ import org.apache.flink.api.common.typeutils.base.StringSerializer;
 import org.apache.flink.streaming.api.datastream.CoGroupedStreams.TaggedUnion;
 import org.apache.flink.streaming.api.datastream.CoGroupedStreams.UnionSerializer;
 
-import org.hamcrest.Matcher;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
+import org.assertj.core.api.Condition;
 
 import java.util.ArrayList;
 import java.util.Collection;
 
-import static org.hamcrest.Matchers.is;
-
 /** A {@link TypeSerializerUpgradeTestBase} for {@link UnionSerializer}. */
-@RunWith(Parameterized.class)
-public class UnionSerializerUpgradeTest
+class UnionSerializerUpgradeTest
         extends TypeSerializerUpgradeTestBase<
                 TaggedUnion<String, Long>, TaggedUnion<String, Long>> {
 
-    public UnionSerializerUpgradeTest(
-            TestSpecification<TaggedUnion<String, Long>, TaggedUnion<String, Long>>
-                    testSpecification) {
-        super(testSpecification);
-    }
-
-    @Parameterized.Parameters(name = "Test Specification = {0}")
-    public static Collection<TestSpecification<?, ?>> testSpecifications() throws Exception {
+    public Collection<TestSpecification<?, ?>> createTestSpecifications(FlinkVersion flinkVersion)
+            throws Exception {
         ArrayList<TestSpecification<?, ?>> testSpecifications = new ArrayList<>();
-        for (FlinkVersion flinkVersion : MIGRATION_VERSIONS) {
-            testSpecifications.add(
-                    new TestSpecification<>(
-                            "union-serializer-one",
-                            flinkVersion,
-                            UnionSerializerOneSetup.class,
-                            UnionSerializerOneVerifier.class));
-            testSpecifications.add(
-                    new TestSpecification<>(
-                            "union-serializer-two",
-                            flinkVersion,
-                            UnionSerializerTwoSetup.class,
-                            UnionSerializerTwoVerifier.class));
-        }
+        testSpecifications.add(
+                new TestSpecification<>(
+                        "union-serializer-one",
+                        flinkVersion,
+                        UnionSerializerOneSetup.class,
+                        UnionSerializerOneVerifier.class));
+        testSpecifications.add(
+                new TestSpecification<>(
+                        "union-serializer-two",
+                        flinkVersion,
+                        UnionSerializerTwoSetup.class,
+                        UnionSerializerTwoVerifier.class));
         return testSpecifications;
     }
 
@@ -106,14 +93,14 @@ public class UnionSerializerUpgradeTest
         }
 
         @Override
-        public Matcher<TaggedUnion<String, Long>> testDataMatcher() {
-            return is(TaggedUnion.one("flink"));
+        public Condition<TaggedUnion<String, Long>> testDataCondition() {
+            return new Condition<>(value -> TaggedUnion.one("flink").equals(value), "");
         }
 
         @Override
-        public Matcher<TypeSerializerSchemaCompatibility<TaggedUnion<String, Long>>>
-                schemaCompatibilityMatcher(FlinkVersion version) {
-            return TypeSerializerMatchers.isCompatibleAsIs();
+        public Condition<TypeSerializerSchemaCompatibility<TaggedUnion<String, Long>>>
+                schemaCompatibilityCondition(FlinkVersion version) {
+            return TypeSerializerConditions.isCompatibleAsIs();
         }
     }
 
@@ -150,14 +137,14 @@ public class UnionSerializerUpgradeTest
         }
 
         @Override
-        public Matcher<TaggedUnion<String, Long>> testDataMatcher() {
-            return is(TaggedUnion.two(23456L));
+        public Condition<TaggedUnion<String, Long>> testDataCondition() {
+            return new Condition<>(value -> TaggedUnion.two(23456L).equals(value), "");
         }
 
         @Override
-        public Matcher<TypeSerializerSchemaCompatibility<TaggedUnion<String, Long>>>
-                schemaCompatibilityMatcher(FlinkVersion version) {
-            return TypeSerializerMatchers.isCompatibleAsIs();
+        public Condition<TypeSerializerSchemaCompatibility<TaggedUnion<String, Long>>>
+                schemaCompatibilityCondition(FlinkVersion version) {
+            return TypeSerializerConditions.isCompatibleAsIs();
         }
     }
 }

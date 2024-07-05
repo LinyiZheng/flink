@@ -34,7 +34,6 @@ __all__ = [
     'JsonQueryOnEmptyOrError'
 ]
 
-
 _aggregation_doc = """
 {op_desc}
 
@@ -161,7 +160,7 @@ def _make_aggregation_doc():
         Expression.sum: "Returns the sum of the numeric field across all input values. "
                         "If all values are null, null is returned.",
         Expression.sum0: "Returns the sum of the numeric field across all input values. "
-                        "If all values are null, 0 is returned.",
+                         "If all values are null, 0 is returned.",
         Expression.min: "Returns the minimum value of field across all input values.",
         Expression.max: "Returns the maximum value of field across all input values.",
         Expression.count: "Returns the number of input rows for which the field is not null.",
@@ -262,17 +261,6 @@ def _get_java_expression(expr, to_expr: bool = False):
         return gateway.jvm.Expressions.lit(expr)
     else:
         return expr
-
-
-def _get_or_create_java_expression(expr: Union["Expression", str]):
-    if isinstance(expr, Expression):
-        return expr._j_expr
-    elif isinstance(expr, str):
-        from pyflink.table.expressions import col
-        return col(expr)._j_expr
-    else:
-        raise TypeError(
-            "Invalid argument: expected Expression or string, got {0}.".format(type(expr)))
 
 
 def _unary_op(op_name: str):
@@ -801,6 +789,30 @@ class Expression(Generic[T]):
         return _unary_op("avg")(self)
 
     @property
+    def first_value(self) -> 'Expression':
+        """
+        Returns the first value of field across all input values.
+        """
+        return _unary_op("firstValue")(self)
+
+    @property
+    def last_value(self) -> 'Expression':
+        """
+        Returns the last value of field across all input values.
+        """
+        return _unary_op("lastValue")(self)
+
+    def list_agg(self, separator: Union[str, 'Expression[str]'] = None) -> 'Expression[str]':
+        """
+        Concatenates the values of string expressions and places separator values between them.
+        The separator is not added at the end of string. The default value of separator is ‘,’.
+        """
+        if separator is None:
+            return _unary_op("listAgg")(self)
+        else:
+            return _binary_op("listAgg")(self, separator)
+
+    @property
     def stddev_pop(self) -> 'Expression':
         return _unary_op("stddevPop")(self)
 
@@ -820,6 +832,10 @@ class Expression(Generic[T]):
     def collect(self) -> 'Expression':
         return _unary_op("collect")(self)
 
+    @property
+    def array_agg(self) -> 'Expression':
+        return _unary_op("arrayAgg")(self)
+
     def alias(self, name: str, *extra_names: str) -> 'Expression[T]':
         """
         Specifies a name for an expression i.e. a field.
@@ -837,11 +853,28 @@ class Expression(Generic[T]):
 
     def cast(self, data_type: DataType) -> 'Expression':
         """
-        Converts a value to a given data type.
+        Returns a new value being cast to type type.
+        A cast error throws an exception and fails the job.
+        When performing a cast operation that may fail, like STRING to INT,
+        one should rather use try_cast, in order to handle errors.
+        If "table.exec.legacy-cast-behaviour" is enabled, cast behaves like try_cast.
 
-        e.g. lit("42").cast(DataTypes.INT()) leads to 42.
+        E.g. lit("4").cast(DataTypes.INT()) returns 42;
+        lit(null).cast(DataTypes.STRING()) returns NULL of type STRING;
+        lit("non-number").cast(DataTypes.INT()) throws an exception and fails the job.
         """
         return _binary_op("cast")(self, _to_java_data_type(data_type))
+
+    def try_cast(self, data_type: DataType) -> 'Expression':
+        """
+        Like cast, but in case of error, returns NULL rather than failing the job.
+
+        E.g. lit("42").try_cast(DataTypes.INT()) returns 42;
+        lit(null).try_cast(DataTypes.STRING()) returns NULL of type STRING;
+        lit("non-number").cast(DataTypes.INT()) returns NULL of type INT.
+        coalesce(lit("non-number").cast(DataTypes.INT()), lit(0)) returns 0 of type INT.
+        """
+        return _binary_op("tryCast")(self, _to_java_data_type(data_type))
 
     @property
     def asc(self) -> 'Expression':
@@ -894,7 +927,7 @@ class Expression(Generic[T]):
         ::
 
             >>> tab.where(col("a").in_(1, 2, 3))
-            >>> table_a.where(col("x").in_(table_b.select("y")))
+            >>> table_a.where(col("x").in_(table_b.select(col("y"))))
         """
         from pyflink.table import Table
         if isinstance(first_element_or_table, Table):
@@ -995,6 +1028,20 @@ class Expression(Generic[T]):
             return _binary_op("substring")(self, begin_index)
         else:
             return _ternary_op("substring")(self, begin_index, length)
+
+    def substr(self,
+               begin_index: Union[int, 'Expression[int]'],
+               length: Union[int, 'Expression[int]'] = None) -> 'Expression[str]':
+        """
+        Creates a substring of the given string at given index for a given length.
+
+        :param begin_index: first character of the substring (starting at 1, inclusive)
+        :param length: number of characters of the substring
+        """
+        if length is None:
+            return _binary_op("substr")(self, begin_index)
+        else:
+            return _ternary_op("substr")(self, begin_index, length)
 
     def trim_leading(self, character: Union[str, 'Expression[str]'] = None) -> 'Expression[str]':
         """
@@ -1130,6 +1177,13 @@ class Expression(Generic[T]):
             return Expression(getattr(self._j_expr, "overlay")(
                 j_expr_new_string, j_expr_starting, j_expr_length))
 
+    def regexp(self, regex: Union[str, 'Expression[str]']) -> 'Expression[str]':
+        """
+        Returns True if any (possibly empty) substring matches the regular expression,
+        otherwise False. Returns None if any of arguments is None.
+        """
+        return _binary_op("regexp")(self, regex)
+
     def regexp_replace(self,
                        regex: Union[str, 'Expression[str]'],
                        replacement: Union[str, 'Expression[str]']) -> 'Expression[str]':
@@ -1139,10 +1193,9 @@ class Expression(Generic[T]):
         """
         return _ternary_op("regexpReplace")(self, regex, replacement)
 
-    def regexp_extract(
-            self,
-            regex: Union[str, 'Expression[str]'],
-            extract_index: Union[int, 'Expression[int]'] = None) -> 'Expression[str]':
+    def regexp_extract(self,
+                       regex: Union[str, 'Expression[str]'],
+                       extract_index: Union[int, 'Expression[int]'] = None) -> 'Expression[str]':
         """
         Returns a string extracted with a specified regular expression and a regex match
         group index.
@@ -1165,6 +1218,71 @@ class Expression(Generic[T]):
         Returns the base64-encoded result of the input string.
         """
         return _unary_op("toBase64")(self)
+
+    @property
+    def ascii(self) -> 'Expression[int]':
+        """
+        Returns the numeric value of the first character of the input string.
+        """
+        return _unary_op("ascii")(self)
+
+    @property
+    def chr(self) -> 'Expression[str]':
+        """
+        Returns the ASCII character result of the input integer.
+        """
+        return _unary_op("chr")(self)
+
+    def decode(self, charset: Union[str, 'Expression[str]']) -> 'Expression[str]':
+        """
+        Decodes the first argument into a String using the provided character set.
+        """
+        return _binary_op("decode")(self, charset)
+
+    def encode(self, charset: Union[str, 'Expression[str]']) -> 'Expression[bytes]':
+        """
+        Encodes the string into a BINARY using the provided character set.
+        """
+        return _binary_op("encode")(self, charset)
+
+    def left(self, length: Union[int, 'Expression[int]']) -> 'Expression[str]':
+        """
+        Returns the leftmost integer characters from the input string.
+        """
+        return _binary_op("left")(self, length)
+
+    def right(self, length: Union[int, 'Expression[int]']) -> 'Expression[str]':
+        """
+        Returns the rightmost integer characters from the input string.
+        """
+        return _binary_op("right")(self, length)
+
+    def instr(self, s: Union[str, 'Expression[str]']) -> 'Expression[int]':
+        """
+        Returns the position of the first occurrence in the input string.
+        """
+        return _binary_op("instr")(self, s)
+
+    def locate(self, s: Union[str, 'Expression[str]'],
+               pos: Union[int, 'Expression[int]'] = None) -> 'Expression[int]':
+        """
+        Returns the position of the first occurrence in the input string after position integer.
+        """
+        if pos is None:
+            return _binary_op("locate")(self, s)
+        else:
+            return _ternary_op("locate")(self, s, pos)
+
+    def parse_url(self, part_to_extract: Union[str, 'Expression[str]'],
+                  key: Union[str, 'Expression[str]'] = None) -> 'Expression[str]':
+        """
+        Parse url and return various parameter of the URL.
+        If accept any null arguments, return null.
+        """
+        if key is None:
+            return _binary_op("parseUrl")(self, part_to_extract)
+        else:
+            return _ternary_op("parseUrl")(self, part_to_extract, key)
 
     @property
     def ltrim(self) -> 'Expression[str]':
@@ -1202,6 +1320,33 @@ class Expression(Generic[T]):
             >>>     .select(col('c'), col('a'), col('a').count.over(col('w')))
         """
         return _binary_op("over")(self, alias)
+
+    @property
+    def reverse(self) -> 'Expression[str]':
+        """
+        Reverse each character in current string.
+        """
+        return _unary_op("reverse")(self)
+
+    def split_index(self, separator: Union[str, 'Expression[str]'],
+                    index: Union[int, 'Expression[int]']) -> 'Expression[str]':
+        """
+        Split target string with custom separator and pick the index-th(start with 0) result.
+        """
+        return _ternary_op("splitIndex")(self, separator, index)
+
+    def str_to_map(self, list_delimiter: Union[str, 'Expression[str]'] = None,
+                   key_value_delimiter: Union[str, 'Expression[str]'] = None) -> 'Expression[dict]':
+        """
+        Creates a map by parsing text. Split text into key-value pairs using two delimiters. The
+        first delimiter separates pairs, and the second delimiter separates key and value. Both
+        list_delimiter and key_value_delimiter are treated as regular expressions.
+        Default delimiters are used: ',' as list_delimiter and '=' as key_value_delimiter.
+        """
+        if list_delimiter is None or key_value_delimiter is None:
+            return _unary_op("strToMap")(self)
+        else:
+            return _ternary_op("strToMap")(self, list_delimiter, key_value_delimiter)
 
     # ---------------------------- temporal functions ----------------------------------
 
@@ -1328,6 +1473,209 @@ class Expression(Generic[T]):
         .. seealso:: :func:`~Expression.at`, :py:attr:`~Expression.cardinality`
         """
         return _unary_op("element")(self)
+
+    def array_append(self, addition) -> 'Expression':
+        """
+        Appends an element to the end of the array and returns the result.
+
+        If the array itself is null, the function will return null. If an element to add is null,
+        the null element will be added to the end of the array.
+        """
+        return _binary_op("arrayAppend")(self, addition)
+
+    def array_contains(self, needle) -> 'Expression':
+        """
+        Returns whether the given element exists in an array.
+
+        Checking for null elements in the array is supported. If the array itself is null, the
+        function will return null. The given element is cast implicitly to the array's element type
+        if necessary.
+        """
+        return _binary_op("arrayContains")(self, needle)
+
+    def array_distinct(self) -> 'Expression':
+        """
+        Returns an array with unique elements.
+        If the array itself is null, the function will return null. Keeps ordering of elements.
+        """
+        return _binary_op("arrayDistinct")(self)
+
+    def array_position(self, needle) -> 'Expression':
+        """
+        Returns the position of the first occurrence of element in the given array as int.
+
+        Returns 0 if the given value could not be found in the array. Returns null if either of the
+        arguments are null.
+        NOTE: that this is not zero based, but 1-based index. The first element in the array
+        has index 1.
+        """
+        return _binary_op("arrayPosition")(self, needle)
+
+    def array_prepend(self, addition) -> 'Expression':
+        """
+        Appends an element to the beginning of the array and returns the result.
+
+        If the array itself is null, the function will return null. If an element to add is null,
+        the null element will be added to the beginning of the array.
+        """
+        return _binary_op("arrayPrepend")(self, addition)
+
+    def array_remove(self, needle) -> 'Expression':
+        """
+        Removes all elements that equal to element from array.
+        If the array itself is null, the function will return null. Keeps ordering of elements.
+        """
+        return _binary_op("arrayRemove")(self, needle)
+
+    def array_reverse(self) -> 'Expression':
+        """
+        Returns an array in reverse order.
+        If the array itself is null, the function will return null.
+        """
+        return _binary_op("arrayReverse")(self)
+
+    def array_slice(self, start_offset, end_offset=None) -> 'Expression':
+        """
+        Returns a subarray of the input array between 'start_offset' and 'end_offset' inclusive.
+        The offsets are 1-based however 0 is also treated as the beginning of the array.
+        Positive values are counted from the beginning of the array while negative from the end.
+        If 'end_offset' is omitted then this offset is treated as the length of the array.
+        If 'start_offset' is after 'end_offset' or both are out of array bounds an empty array will
+        be returned.
+        Returns null if any input is null.
+        """
+        if end_offset is None:
+            return _binary_op("array_slice")(self, start_offset)
+        else:
+            return _ternary_op("array_slice")(self, start_offset, end_offset)
+
+    def array_sort(self, ascending_order=None, null_first=None) -> 'Expression':
+        """
+        Returns the array in sorted order.
+        The function sorts an array, defaulting to ascending order with NULLs at the start when
+        only the array is input. Specifying ascending_order as true orders the array in ascending
+        with NULLs first, and setting it to false orders it in descending with NULLs last.
+        Independently, null_first as true moves NULLs to the beginning, and as false to the end,
+        irrespective of the sorting order. The function returns null if any input is null.
+        """
+        if ascending_order and null_first is None:
+            return _unary_op("array_sort")(self)
+        elif null_first is None:
+            return _binary_op("array_sort")(self, ascending_order)
+        else:
+            return _ternary_op("array_sort")(self, ascending_order, null_first)
+
+    def array_union(self, array) -> 'Expression':
+        """
+        Returns an array of the elements in the union of array1 and array2, without duplicates.
+        If any of the array is null, the function will return null.
+        """
+        return _binary_op("arrayUnion")(self, array)
+
+    def array_concat(self, *arrays) -> 'Expression':
+        """
+        Returns an array that is the result of concatenating at least one array.
+        This array contains all the elements in the first array, followed by all
+        the elements in the second array, and so forth, up to the Nth array.
+        If any input array is NULL, the function returns NULL.
+        """
+        return _binary_op("arrayConcat")(self, *arrays)
+
+    def array_max(self) -> 'Expression':
+        """
+        Returns the maximum value from the array.
+        if array itself is null, the function returns null.
+        """
+        return _unary_op("arrayMax")(self)
+
+    def array_join(self, delimiter, null_replacement=None) -> 'Expression':
+        """
+        Returns a string that represents the concatenation of the elements in the given array and
+        the elements' data type in the given array is string. The `delimiter` is a string that
+        separates each pair of consecutive elements of the array. The optional `null_replacement`
+        is a string that replaces null elements in the array. If `null_replacement` is not
+        specified, null elements in the array will be omitted from the resulting string.
+        Returns null if input array or delimiter or nullReplacement are null.
+        """
+        if null_replacement is None:
+            return _binary_op("array_join")(self, delimiter)
+        else:
+            return _ternary_op("array_join")(self, delimiter, null_replacement)
+
+    def array_min(self) -> 'Expression':
+        """
+        Returns the minimum value from the array.
+        if array itself is null, the function returns null.
+        """
+        return _unary_op("arrayMin")(self)
+
+    def array_except(self, array) -> 'Expression':
+        """
+        Returns an ARRAY that contains the elements from array1 that are not in array2.
+        If no elements remain after excluding the elements in array2 from array1,
+        the function returns an empty ARRAY. If one or both arguments are NULL,
+        the function returns NULL. The order of the elements from array1 is kept
+        however the duplicates are removed.
+        """
+        return _binary_op("arrayExcept")(self, array)
+
+    def array_intersect(self, array) -> 'Expression':
+        """
+        Returns an ARRAY that contains the elements from array1 that are also in array2,
+        without duplicates. If no elements are both in array1 and array2, the function
+        returns an empty ARRAY. If one or both arguments are NULL, the function returns NULL.
+        The order of the elements from array1 is kept.
+        """
+        return _binary_op("arrayIntersect")(self, array)
+
+    def split(self, delimiter) -> 'Expression':
+        """
+        Returns an array of substrings by splitting the input string based on the given delimiter.
+        If the delimiter is not found in the string, the original string is returned as the only
+        element in the array. If the delimiter is empty, every character in the string is split.
+        If the string or delimiter is null, a null value is returned. If the delimiter is found a
+        t the beginning or end of the string, or there are contiguous delimiters, then an empty
+        string is added to the array.
+        """
+        return _binary_op("split")(self, delimiter)
+
+    @property
+    def map_keys(self) -> 'Expression':
+        """
+        Returns the keys of the map as an array. No order guaranteed.
+
+        .. seealso:: :py:attr:`~Expression.map_keys`
+        """
+        return _unary_op("mapKeys")(self)
+
+    def map_union(self, *maps) -> 'Expression':
+        """
+        Returns a map created by merging at least one map. These maps should have a common map type.
+        If there are overlapping keys, the value from 'map2' will overwrite the value from 'map1',
+        the value from 'map3' will overwrite the value from 'map2',  the value from 'mapn' will
+        overwrite the value from 'map(n-1)'. If any of maps is null, return null.
+
+        .. seealso:: :py:attr:`~Expression.map_union`
+        """
+        return _binary_op("mapUnion")(self, *maps)
+
+    @property
+    def map_values(self) -> 'Expression':
+        """
+        Returns the values of the map as an array. No order guaranteed.
+
+        .. seealso:: :py:attr:`~Expression.map_values`
+        """
+        return _unary_op("mapValues")(self)
+
+    @property
+    def map_entries(self) -> 'Expression':
+        """
+        Returns an array of all entries in the given map. No order guaranteed.
+
+        .. seealso:: :py:attr:`~Expression.map_entries`
+        """
+        return _unary_op("mapEntries")(self)
 
     # ---------------------------- time definition functions -----------------------------
 

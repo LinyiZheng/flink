@@ -72,6 +72,11 @@ public class RetrievableStreamStateHandle<T extends Serializable>
     }
 
     @Override
+    public PhysicalStateHandleID getStreamStateHandleID() {
+        return wrappedStreamStateHandle.getStreamStateHandleID();
+    }
+
+    @Override
     public void discardState() throws Exception {
         wrappedStreamStateHandle.discardState();
     }
@@ -79,6 +84,11 @@ public class RetrievableStreamStateHandle<T extends Serializable>
     @Override
     public long getStateSize() {
         return wrappedStreamStateHandle.getStateSize();
+    }
+
+    @Override
+    public void collectSizeStats(StateObjectSizeStatsCollector collector) {
+        wrappedStreamStateHandle.collectSizeStats(collector);
     }
 
     @Override

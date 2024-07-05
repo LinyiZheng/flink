@@ -25,7 +25,7 @@ import org.apache.flink.api.java.ExecutionEnvironment;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.test.operators.util.CollectionDataSets;
-import org.apache.flink.test.util.MultipleProgramsTestBase;
+import org.apache.flink.test.util.MultipleProgramsTestBaseJUnit4;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -39,12 +39,14 @@ import java.io.File;
 import java.util.Random;
 import java.util.UUID;
 
+import static org.apache.flink.test.util.TestBaseUtils.compareResultsByLinesInMemoryWithStrictOrder;
+import static org.apache.flink.test.util.TestBaseUtils.getResultReader;
 import static org.junit.Assert.assertTrue;
 
 /** Tests for data sinks. */
 @SuppressWarnings("serial")
 @RunWith(Parameterized.class)
-public class DataSinkITCase extends MultipleProgramsTestBase {
+public class DataSinkITCase extends MultipleProgramsTestBaseJUnit4 {
 
     public DataSinkITCase(TestExecutionMode mode) {
         super(mode);

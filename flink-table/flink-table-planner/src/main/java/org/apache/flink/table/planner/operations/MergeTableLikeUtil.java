@@ -28,16 +28,18 @@ import org.apache.flink.sql.parser.ddl.SqlTableLike.FeatureOption;
 import org.apache.flink.sql.parser.ddl.SqlTableLike.MergingStrategy;
 import org.apache.flink.sql.parser.ddl.SqlWatermark;
 import org.apache.flink.sql.parser.ddl.constraint.SqlTableConstraint;
-import org.apache.flink.table.api.TableColumn;
-import org.apache.flink.table.api.TableColumn.ComputedColumn;
-import org.apache.flink.table.api.TableColumn.MetadataColumn;
-import org.apache.flink.table.api.TableColumn.PhysicalColumn;
-import org.apache.flink.table.api.TableSchema;
+import org.apache.flink.table.api.Schema;
+import org.apache.flink.table.api.Schema.UnresolvedColumn;
+import org.apache.flink.table.api.Schema.UnresolvedComputedColumn;
+import org.apache.flink.table.api.Schema.UnresolvedMetadataColumn;
+import org.apache.flink.table.api.Schema.UnresolvedPhysicalColumn;
+import org.apache.flink.table.api.Schema.UnresolvedPrimaryKey;
+import org.apache.flink.table.api.Schema.UnresolvedWatermarkSpec;
 import org.apache.flink.table.api.ValidationException;
-import org.apache.flink.table.api.WatermarkSpec;
-import org.apache.flink.table.api.constraints.UniqueConstraint;
+import org.apache.flink.table.catalog.DataTypeFactory;
+import org.apache.flink.table.catalog.TableDistribution;
+import org.apache.flink.table.expressions.SqlCallExpression;
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory;
-import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.utils.TypeConversions;
 
@@ -45,6 +47,7 @@ import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeField;
 import org.apache.calcite.sql.SqlDataTypeSpec;
 import org.apache.calcite.sql.SqlIdentifier;
+import org.apache.calcite.sql.SqlLiteral;
 import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.validate.SqlValidator;
 
@@ -74,15 +77,21 @@ class MergeTableLikeUtil {
         defaultMergingStrategies.put(FeatureOption.GENERATED, MergingStrategy.INCLUDING);
         defaultMergingStrategies.put(FeatureOption.METADATA, MergingStrategy.INCLUDING);
         defaultMergingStrategies.put(FeatureOption.CONSTRAINTS, MergingStrategy.INCLUDING);
+        defaultMergingStrategies.put(FeatureOption.DISTRIBUTION, MergingStrategy.INCLUDING);
         defaultMergingStrategies.put(FeatureOption.PARTITIONS, MergingStrategy.INCLUDING);
     }
 
     private final SqlValidator validator;
     private final Function<SqlNode, String> escapeExpression;
+    private final DataTypeFactory dataTypeFactory;
 
-    MergeTableLikeUtil(SqlValidator validator, Function<SqlNode, String> escapeExpression) {
+    MergeTableLikeUtil(
+            SqlValidator validator,
+            Function<SqlNode, String> escapeExpression,
+            DataTypeFactory dataTypeFactory) {
         this.validator = validator;
         this.escapeExpression = escapeExpression;
+        this.dataTypeFactory = dataTypeFactory;
     }
 
     /**
@@ -133,9 +142,9 @@ class MergeTableLikeUtil {
      * of the merged properties. E.g. Some of the columns used in computed columns of the derived
      * table can be defined in the source table.
      */
-    public TableSchema mergeTables(
+    public Schema mergeTables(
             Map<FeatureOption, MergingStrategy> mergingStrategies,
-            TableSchema sourceSchema,
+            Schema sourceSchema,
             List<SqlNode> derivedColumns,
             List<SqlWatermark> derivedWatermarkSpecs,
             SqlTableConstraint derivedPrimaryKey) {
@@ -145,6 +154,7 @@ class MergeTableLikeUtil {
                         mergingStrategies,
                         sourceSchema,
                         (FlinkTypeFactory) validator.getTypeFactory(),
+                        dataTypeFactory,
                         validator,
                         escapeExpression);
         schemaBuilder.appendDerivedColumns(mergingStrategies, derivedColumns);
@@ -152,6 +162,32 @@ class MergeTableLikeUtil {
         schemaBuilder.appendDerivedPrimaryKey(derivedPrimaryKey);
 
         return schemaBuilder.build();
+    }
+
+    /**
+     * Merges the distribution part of {@code CREATE TABLE} statement.
+     *
+     * <p>Distribution is a single property of a Table, thus there can be at most a single instance
+     * of it. Therefore, it is not possible to use {@link MergingStrategy#INCLUDING} with a
+     * distribution defined in both source and derived table.
+     */
+    public Optional<TableDistribution> mergeDistribution(
+            MergingStrategy mergingStrategy,
+            Optional<TableDistribution> sourceTableDistribution,
+            Optional<TableDistribution> derivedTabledDistribution) {
+
+        if (derivedTabledDistribution.isPresent()
+                && sourceTableDistribution.isPresent()
+                && mergingStrategy != MergingStrategy.EXCLUDING) {
+            throw new ValidationException(
+                    "The base table already has a distribution defined. You might want to specify "
+                            + "EXCLUDING DISTRIBUTION.");
+        }
+
+        if (derivedTabledDistribution.isPresent()) {
+            return derivedTabledDistribution;
+        }
+        return sourceTableDistribution;
     }
 
     /**
@@ -208,9 +244,9 @@ class MergeTableLikeUtil {
 
     private static class SchemaBuilder {
 
-        Map<String, TableColumn> columns = new LinkedHashMap<>();
-        Map<String, WatermarkSpec> watermarkSpecs = new HashMap<>();
-        UniqueConstraint primaryKey = null;
+        Map<String, UnresolvedColumn> columns = new LinkedHashMap<>();
+        Map<String, UnresolvedWatermarkSpec> watermarkSpecs = new HashMap<>();
+        UnresolvedPrimaryKey primaryKey = null;
 
         // Intermediate state
         Map<String, RelDataType> physicalFieldNamesToTypes = new LinkedHashMap<>();
@@ -220,14 +256,17 @@ class MergeTableLikeUtil {
         Function<SqlNode, String> escapeExpressions;
         FlinkTypeFactory typeFactory;
         SqlValidator sqlValidator;
+        DataTypeFactory dataTypeFactory;
 
         SchemaBuilder(
                 Map<FeatureOption, MergingStrategy> mergingStrategies,
-                TableSchema sourceSchema,
+                Schema sourceSchema,
                 FlinkTypeFactory typeFactory,
+                DataTypeFactory dataTypeFactory,
                 SqlValidator sqlValidator,
                 Function<SqlNode, String> escapeExpressions) {
             this.typeFactory = typeFactory;
+            this.dataTypeFactory = dataTypeFactory;
             this.sqlValidator = sqlValidator;
             this.escapeExpressions = escapeExpressions;
             populateColumnsFromSourceTable(mergingStrategies, sourceSchema);
@@ -236,20 +275,24 @@ class MergeTableLikeUtil {
         }
 
         private void populateColumnsFromSourceTable(
-                Map<FeatureOption, MergingStrategy> mergingStrategies, TableSchema sourceSchema) {
-            for (TableColumn sourceColumn : sourceSchema.getTableColumns()) {
-                if (sourceColumn instanceof PhysicalColumn) {
+                Map<FeatureOption, MergingStrategy> mergingStrategies, Schema sourceSchema) {
+            for (UnresolvedColumn sourceColumn : sourceSchema.getColumns()) {
+                if (sourceColumn instanceof UnresolvedPhysicalColumn) {
+                    LogicalType columnType =
+                            dataTypeFactory
+                                    .createDataType(
+                                            ((UnresolvedPhysicalColumn) sourceColumn).getDataType())
+                                    .getLogicalType();
                     physicalFieldNamesToTypes.put(
                             sourceColumn.getName(),
-                            typeFactory.createFieldTypeFromLogicalType(
-                                    sourceColumn.getType().getLogicalType()));
+                            typeFactory.createFieldTypeFromLogicalType(columnType));
                     columns.put(sourceColumn.getName(), sourceColumn);
-                } else if (sourceColumn instanceof ComputedColumn) {
+                } else if (sourceColumn instanceof UnresolvedComputedColumn) {
                     if (mergingStrategies.get(FeatureOption.GENERATED)
                             != MergingStrategy.EXCLUDING) {
                         columns.put(sourceColumn.getName(), sourceColumn);
                     }
-                } else if (sourceColumn instanceof MetadataColumn) {
+                } else if (sourceColumn instanceof UnresolvedMetadataColumn) {
                     if (mergingStrategies.get(FeatureOption.METADATA)
                             != MergingStrategy.EXCLUDING) {
                         columns.put(sourceColumn.getName(), sourceColumn);
@@ -259,17 +302,16 @@ class MergeTableLikeUtil {
         }
 
         private void populateWatermarksFromSourceTable(
-                Map<FeatureOption, MergingStrategy> mergingStrategies, TableSchema sourceSchema) {
-            for (WatermarkSpec sourceWatermarkSpec : sourceSchema.getWatermarkSpecs()) {
+                Map<FeatureOption, MergingStrategy> mergingStrategies, Schema sourceSchema) {
+            for (UnresolvedWatermarkSpec sourceWatermarkSpec : sourceSchema.getWatermarkSpecs()) {
                 if (mergingStrategies.get(FeatureOption.WATERMARKS) != MergingStrategy.EXCLUDING) {
-                    watermarkSpecs.put(
-                            sourceWatermarkSpec.getRowtimeAttribute(), sourceWatermarkSpec);
+                    watermarkSpecs.put(sourceWatermarkSpec.getColumnName(), sourceWatermarkSpec);
                 }
             }
         }
 
         private void populatePrimaryKeyFromSourceTable(
-                Map<FeatureOption, MergingStrategy> mergingStrategies, TableSchema sourceSchema) {
+                Map<FeatureOption, MergingStrategy> mergingStrategies, Schema sourceSchema) {
             if (sourceSchema.getPrimaryKey().isPresent()
                     && mergingStrategies.get(FeatureOption.CONSTRAINTS)
                             == MergingStrategy.INCLUDING) {
@@ -292,7 +334,7 @@ class MergeTableLikeUtil {
                                         "Primary key column '%s' is not defined in the schema at %s",
                                         primaryKey, primaryKeyNode.getParserPosition()));
                     }
-                    if (!columns.get(primaryKey).isPhysical()) {
+                    if (!(columns.get(primaryKey) instanceof UnresolvedPhysicalColumn)) {
                         throw new ValidationException(
                                 String.format(
                                         "Could not create a PRIMARY KEY with column '%s' at %s.\n"
@@ -302,10 +344,15 @@ class MergeTableLikeUtil {
                     primaryKeyColumns.add(primaryKey);
                 }
                 primaryKey =
-                        UniqueConstraint.primaryKey(
+                        new UnresolvedPrimaryKey(
                                 derivedPrimaryKey
                                         .getConstraintName()
-                                        .orElseGet(() -> "PK_" + primaryKeyColumns.hashCode()),
+                                        .orElseGet(
+                                                () ->
+                                                        primaryKeyColumns.stream()
+                                                                .collect(
+                                                                        Collectors.joining(
+                                                                                "_", "PK_", ""))),
                                 primaryKeyColumns);
             }
         }
@@ -329,15 +376,12 @@ class MergeTableLikeUtil {
                 // this will validate and expand function identifiers.
                 SqlNode validated =
                         sqlValidator.validateParameterizedExpression(expression, nameToTypeMap);
-                RelDataType validatedType = sqlValidator.getValidatedNodeType(validated);
-                DataType exprDataType = fromLogicalToDataType(toLogicalType(validatedType));
 
                 watermarkSpecs.put(
                         rowtimeAttribute,
-                        new WatermarkSpec(
+                        new UnresolvedWatermarkSpec(
                                 rowtimeAttribute,
-                                escapeExpressions.apply(validated),
-                                exprDataType));
+                                new SqlCallExpression(escapeExpressions.apply(validated))));
             }
         }
 
@@ -398,17 +442,31 @@ class MergeTableLikeUtil {
 
             for (SqlNode derivedColumn : derivedColumns) {
                 final String name = ((SqlTableColumn) derivedColumn).getName().getSimple();
-                final TableColumn column;
+                final String comment =
+                        ((SqlTableColumn) derivedColumn)
+                                .getComment()
+                                .map(c -> ((SqlLiteral) c).getValueAs(String.class))
+                                .orElse(null);
+                final UnresolvedColumn column;
                 if (derivedColumn instanceof SqlRegularColumn) {
                     final LogicalType logicalType =
                             FlinkTypeFactory.toLogicalType(physicalFieldNamesToTypes.get(name));
                     column =
-                            TableColumn.physical(
-                                    name, TypeConversions.fromLogicalToDataType(logicalType));
+                            new UnresolvedPhysicalColumn(
+                                    name,
+                                    TypeConversions.fromLogicalToDataType(logicalType),
+                                    comment);
                 } else if (derivedColumn instanceof SqlComputedColumn) {
                     final SqlComputedColumn computedColumn = (SqlComputedColumn) derivedColumn;
+                    if (physicalFieldNamesToTypes.containsKey(name)) {
+                        throw new ValidationException(
+                                String.format(
+                                        "A column named '%s' already exists in the table. "
+                                                + "Duplicate columns exist in the compute column and regular column. ",
+                                        name));
+                    }
                     if (columns.containsKey(name)) {
-                        if (!(columns.get(name) instanceof ComputedColumn)) {
+                        if (!(columns.get(name) instanceof UnresolvedComputedColumn)) {
                             throw new ValidationException(
                                     String.format(
                                             "A column named '%s' already exists in the base table. "
@@ -436,15 +494,22 @@ class MergeTableLikeUtil {
                     final RelDataType validatedType =
                             sqlValidator.getValidatedNodeType(validatedExpr);
                     column =
-                            TableColumn.computed(
+                            new UnresolvedComputedColumn(
                                     name,
-                                    fromLogicalToDataType(toLogicalType(validatedType)),
-                                    escapeExpressions.apply(validatedExpr));
+                                    new SqlCallExpression(escapeExpressions.apply(validatedExpr)),
+                                    comment);
                     computedFieldNamesToTypes.put(name, validatedType);
                 } else if (derivedColumn instanceof SqlMetadataColumn) {
                     final SqlMetadataColumn metadataColumn = (SqlMetadataColumn) derivedColumn;
+                    if (physicalFieldNamesToTypes.containsKey(name)) {
+                        throw new ValidationException(
+                                String.format(
+                                        "A column named '%s' already exists in the table. "
+                                                + "Duplicate columns exist in the metadata column and regular column. ",
+                                        name));
+                    }
                     if (columns.containsKey(name)) {
-                        if (!(columns.get(name) instanceof MetadataColumn)) {
+                        if (!(columns.get(name) instanceof UnresolvedMetadataColumn)) {
                             throw new ValidationException(
                                     String.format(
                                             "A column named '%s' already exists in the base table. "
@@ -463,14 +528,15 @@ class MergeTableLikeUtil {
                     }
 
                     SqlDataTypeSpec type = metadataColumn.getType();
-                    boolean nullable = type.getNullable() == null ? true : type.getNullable();
+                    boolean nullable = type.getNullable() == null || type.getNullable();
                     RelDataType relType = type.deriveType(sqlValidator, nullable);
                     column =
-                            TableColumn.metadata(
+                            new UnresolvedMetadataColumn(
                                     name,
                                     fromLogicalToDataType(toLogicalType(relType)),
                                     metadataColumn.getMetadataAlias().orElse(null),
-                                    metadataColumn.isVirtual());
+                                    metadataColumn.isVirtual(),
+                                    comment);
                     metadataFieldNamesToTypes.put(name, relType);
                 } else {
                     throw new ValidationException("Unsupported column type: " + derivedColumn);
@@ -491,25 +557,32 @@ class MergeTableLikeUtil {
                                         name));
                     }
                     SqlDataTypeSpec type = regularColumn.getType();
-                    boolean nullable = type.getNullable() == null ? true : type.getNullable();
+                    boolean nullable = type.getNullable() == null || type.getNullable();
                     RelDataType relType = type.deriveType(sqlValidator, nullable);
                     // add field name and field type to physical field list
-                    physicalFieldNamesToTypes.put(name, relType);
+                    RelDataType oldType = physicalFieldNamesToTypes.put(name, relType);
+                    if (oldType != null) {
+                        throw new ValidationException(
+                                String.format(
+                                        "A regular Column named '%s' already exists in the table.",
+                                        name));
+                    }
                 }
             }
         }
 
-        public TableSchema build() {
-            TableSchema.Builder resultBuilder = TableSchema.builder();
-            for (TableColumn column : columns.values()) {
-                resultBuilder.add(column);
-            }
-            for (WatermarkSpec watermarkSpec : watermarkSpecs.values()) {
-                resultBuilder.watermark(watermarkSpec);
+        public Schema build() {
+            Schema.Builder resultBuilder = Schema.newBuilder();
+            resultBuilder.fromColumns(new ArrayList<>(columns.values()));
+
+            for (UnresolvedWatermarkSpec watermarkSpec : watermarkSpecs.values()) {
+                resultBuilder.watermark(
+                        watermarkSpec.getColumnName(), watermarkSpec.getWatermarkExpression());
             }
             if (primaryKey != null) {
-                resultBuilder.primaryKey(
-                        primaryKey.getName(), primaryKey.getColumns().toArray(new String[0]));
+                resultBuilder.primaryKeyNamed(
+                        primaryKey.getConstraintName(),
+                        primaryKey.getColumnNames().toArray(new String[0]));
             }
             return resultBuilder.build();
         }

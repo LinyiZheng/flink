@@ -23,10 +23,10 @@ import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.InvalidProgramException;
 import org.apache.flink.util.InstantiationUtil;
 
-import org.apache.flink.shaded.asm7.org.objectweb.asm.ClassReader;
-import org.apache.flink.shaded.asm7.org.objectweb.asm.ClassVisitor;
-import org.apache.flink.shaded.asm7.org.objectweb.asm.MethodVisitor;
-import org.apache.flink.shaded.asm7.org.objectweb.asm.Opcodes;
+import org.apache.flink.shaded.asm9.org.objectweb.asm.ClassReader;
+import org.apache.flink.shaded.asm9.org.objectweb.asm.ClassVisitor;
+import org.apache.flink.shaded.asm9.org.objectweb.asm.MethodVisitor;
+import org.apache.flink.shaded.asm9.org.objectweb.asm.Opcodes;
 
 import org.apache.commons.lang3.ClassUtils;
 import org.slf4j.Logger;
@@ -91,6 +91,12 @@ public class ClosureCleaner {
         if (usesCustomSerialization(cls)) {
             return;
         }
+
+        if (canBeSerialized(func)) {
+            return;
+        }
+
+        // serialization failed; try cleaning closure as a fallback
 
         // First find the field name of the "this$0" field, this can
         // be "this$x" depending on the nesting
@@ -169,7 +175,17 @@ public class ClosureCleaner {
     private static boolean needsRecursion(Field f, Object fo) {
         return (fo != null
                 && !Modifier.isStatic(f.getModifiers())
-                && !Modifier.isTransient(f.getModifiers()));
+                && !Modifier.isTransient(f.getModifiers())
+                && !canBeSerialized(fo));
+    }
+
+    private static boolean canBeSerialized(Object o) {
+        try {
+            InstantiationUtil.serializeObject(o);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private static boolean usesCustomSerialization(Class<?> cls) {
@@ -266,7 +282,7 @@ class This0AccessFinder extends ClassVisitor {
     private boolean isThis0Accessed;
 
     public This0AccessFinder(String this0Name) {
-        super(Opcodes.ASM7);
+        super(Opcodes.ASM9);
         this.this0Name = this0Name;
     }
 
@@ -277,7 +293,7 @@ class This0AccessFinder extends ClassVisitor {
     @Override
     public MethodVisitor visitMethod(
             int access, String name, String desc, String sig, String[] exceptions) {
-        return new MethodVisitor(Opcodes.ASM7) {
+        return new MethodVisitor(Opcodes.ASM9) {
 
             @Override
             public void visitFieldInsn(int op, String owner, String name, String desc) {

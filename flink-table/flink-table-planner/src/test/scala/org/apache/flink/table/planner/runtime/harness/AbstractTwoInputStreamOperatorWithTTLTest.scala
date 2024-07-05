@@ -15,7 +15,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.runtime.harness
 
 import org.apache.flink.api.common.time.Time
@@ -29,21 +28,21 @@ import org.apache.flink.table.planner.runtime.harness.HarnessTestBase.TestingRow
 import org.apache.flink.table.planner.runtime.utils.StreamingWithStateTestBase.HEAP_BACKEND
 import org.apache.flink.table.runtime.operators.join.temporal.BaseTwoInputStreamOperatorWithStateRetention
 import org.apache.flink.table.runtime.util.StreamRecordUtils.insertRecord
+import org.apache.flink.testutils.junit.extensions.parameterized.ParameterizedTestExtension
 
-import org.hamcrest.MatcherAssert.assertThat
 import org.hamcrest.{Description, TypeSafeMatcher}
-import org.junit.{After, Before, Test}
+import org.hamcrest.MatcherAssert.assertThat
+import org.junit.jupiter.api.{AfterEach, BeforeEach, TestTemplate}
+import org.junit.jupiter.api.extension.ExtendWith
 
 import java.lang.{Long => JLong}
 
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 
-/**
-  * Tests for the [[BaseTwoInputStreamOperatorWithStateRetention]].
-  */
-class AbstractTwoInputStreamOperatorWithTTLTest
-  extends HarnessTestBase(HEAP_BACKEND) {
+/** Tests for the [[BaseTwoInputStreamOperatorWithStateRetention]]. */
+@ExtendWith(Array(classOf[ParameterizedTestExtension]))
+class AbstractTwoInputStreamOperatorWithTTLTest extends HarnessTestBase(HEAP_BACKEND) {
 
   @transient
   private var recordAForFirstKey: StreamRecord[RowData] = _
@@ -56,9 +55,9 @@ class AbstractTwoInputStreamOperatorWithTTLTest
   private var operatorUnderTest: StubOperatorWithStateTTL = _
 
   private var testHarness
-  : KeyedTwoInputStreamOperatorTestHarness[JLong, RowData, RowData, RowData] = _
+      : KeyedTwoInputStreamOperatorTestHarness[JLong, RowData, RowData, RowData] = _
 
-  @Before
+  @BeforeEach
   def createTestHarness(): Unit = {
     operatorUnderTest = new StubOperatorWithStateTTL(minRetentionTime, maxRetentionTime)
     testHarness = createTestHarness(operatorUnderTest)
@@ -67,12 +66,12 @@ class AbstractTwoInputStreamOperatorWithTTLTest
     recordBForFirstKey = insertRecord(1L: JLong, "world")
   }
 
-  @After
+  @AfterEach
   def closeTestHarness(): Unit = {
     testHarness.close()
   }
 
-  @Test
+  @TestTemplate
   def normalScenarioWorks(): Unit = {
     testHarness.setProcessingTime(1L)
     testHarness.processElement1(recordAForFirstKey)
@@ -82,7 +81,7 @@ class AbstractTwoInputStreamOperatorWithTTLTest
     assertThat(operatorUnderTest, hasFiredCleanUpTimersForTimestamps(5L))
   }
 
-  @Test
+  @TestTemplate
   def whenCurrentTimePlusMinRetentionSmallerThanCurrentCleanupTimeNoNewTimerRegistered(): Unit = {
     testHarness.setProcessingTime(1L)
     testHarness.processElement1(recordAForFirstKey)
@@ -95,7 +94,7 @@ class AbstractTwoInputStreamOperatorWithTTLTest
     assertThat(operatorUnderTest, hasFiredCleanUpTimersForTimestamps(5L))
   }
 
-  @Test
+  @TestTemplate
   def whenCurrentTimePlusMinRetentionLargerThanCurrentCleanupTimeTimerIsUpdated(): Unit = {
     testHarness.setProcessingTime(1L)
     testHarness.processElement1(recordAForFirstKey)
@@ -108,7 +107,7 @@ class AbstractTwoInputStreamOperatorWithTTLTest
     assertThat(operatorUnderTest, hasFiredCleanUpTimersForTimestamps(8L))
   }
 
-  @Test
+  @TestTemplate
   def otherSideToSameKeyStateAlsoUpdatesCleanupTimer(): Unit = {
     testHarness.setProcessingTime(1L)
     testHarness.processElement1(recordAForFirstKey)
@@ -153,15 +152,13 @@ class AbstractTwoInputStreamOperatorWithTTLTest
   // -------------------------------- Test Classes --------------------------------
 
   /**
-    * A mock [[BaseTwoInputStreamOperatorWithStateRetention]] which registers
-    * the timestamps of the clean-up timers that fired (not the registered
-    * ones, which can be deleted without firing).
-    */
-  class StubOperatorWithStateTTL(
-      minRetentionTime: Time,
-      maxRetentionTime: Time)
+   * A mock [[BaseTwoInputStreamOperatorWithStateRetention]] which registers the timestamps of the
+   * clean-up timers that fired (not the registered ones, which can be deleted without firing).
+   */
+  class StubOperatorWithStateTTL(minRetentionTime: Time, maxRetentionTime: Time)
     extends BaseTwoInputStreamOperatorWithStateRetention(
-      minRetentionTime.toMilliseconds, maxRetentionTime.toMilliseconds) {
+      minRetentionTime.toMilliseconds,
+      maxRetentionTime.toMilliseconds) {
 
     val firedCleanUpTimers: mutable.Buffer[JLong] = ArrayBuffer.empty
 

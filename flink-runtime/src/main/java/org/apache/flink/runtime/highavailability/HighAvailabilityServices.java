@@ -21,12 +21,17 @@ package org.apache.flink.runtime.highavailability;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.runtime.blob.BlobStore;
 import org.apache.flink.runtime.checkpoint.CheckpointRecoveryFactory;
+import org.apache.flink.runtime.dispatcher.cleanup.GloballyCleanableResource;
 import org.apache.flink.runtime.jobmanager.JobGraphStore;
-import org.apache.flink.runtime.leaderelection.LeaderElectionService;
+import org.apache.flink.runtime.leaderelection.LeaderElection;
 import org.apache.flink.runtime.leaderretrieval.LeaderRetrievalService;
+import org.apache.flink.util.ExceptionUtils;
+import org.apache.flink.util.concurrent.FutureUtils;
 
 import java.io.IOException;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 
 /**
  * The HighAvailabilityServices give access to all services needed for a highly-available setup. In
@@ -43,7 +48,8 @@ import java.util.UUID;
  *   <li>Naming of RPC endpoints
  * </ul>
  */
-public interface HighAvailabilityServices extends ClientHighAvailabilityServices {
+public interface HighAvailabilityServices
+        extends ClientHighAvailabilityServices, GloballyCleanableResource {
 
     // ------------------------------------------------------------------------
     //  Constants
@@ -115,36 +121,22 @@ public interface HighAvailabilityServices extends ClientHighAvailabilityServices
                         + "implemented by your HighAvailabilityServices implementation.");
     }
 
-    /**
-     * Gets the leader election service for the cluster's resource manager.
-     *
-     * @return Leader election service for the resource manager leader election
-     */
-    LeaderElectionService getResourceManagerLeaderElectionService();
+    /** Gets the {@link LeaderElection} for the cluster's resource manager. */
+    LeaderElection getResourceManagerLeaderElection();
+
+    /** Gets the {@link LeaderElection} for the cluster's dispatcher. */
+    LeaderElection getDispatcherLeaderElection();
+
+    /** Gets the {@link LeaderElection} for the job with the given {@link JobID}. */
+    LeaderElection getJobManagerLeaderElection(JobID jobID);
 
     /**
-     * Gets the leader election service for the cluster's dispatcher.
+     * Gets the {@link LeaderElection} for the cluster's rest endpoint.
      *
-     * @return Leader election service for the dispatcher leader election
-     */
-    LeaderElectionService getDispatcherLeaderElectionService();
-
-    /**
-     * Gets the leader election service for the given job.
-     *
-     * @param jobID The identifier of the job running the election.
-     * @return Leader election service for the job manager leader election
-     */
-    LeaderElectionService getJobManagerLeaderElectionService(JobID jobID);
-
-    /**
-     * Gets the leader election service for the cluster's rest endpoint.
-     *
-     * @return the leader election service used by the cluster's rest endpoint
-     * @deprecated Use {@link #getClusterRestEndpointLeaderElectionService()} instead.
+     * @deprecated Use {@link #getClusterRestEndpointLeaderElection()} instead.
      */
     @Deprecated
-    default LeaderElectionService getWebMonitorLeaderElectionService() {
+    default LeaderElection getWebMonitorLeaderElection() {
         throw new UnsupportedOperationException(
                 "getWebMonitorLeaderElectionService should no longer be used. Instead use "
                         + "#getClusterRestEndpointLeaderElectionService to instantiate the cluster "
@@ -169,11 +161,12 @@ public interface HighAvailabilityServices extends ClientHighAvailabilityServices
     JobGraphStore getJobGraphStore() throws Exception;
 
     /**
-     * Gets the registry that holds information about whether jobs are currently running.
+     * Gets the store that holds information about the state of finished jobs.
      *
-     * @return Running job registry to retrieve running jobs
+     * @return Store of finished job results
+     * @throws Exception if job result store could not be created
      */
-    RunningJobsRegistry getRunningJobsRegistry() throws Exception;
+    JobResultStore getJobResultStore() throws Exception;
 
     /**
      * Creates the BLOB store in which BLOBs are stored in a highly-available fashion.
@@ -183,16 +176,12 @@ public interface HighAvailabilityServices extends ClientHighAvailabilityServices
      */
     BlobStore createBlobStore() throws IOException;
 
-    /**
-     * Gets the leader election service for the cluster's rest endpoint.
-     *
-     * @return the leader election service used by the cluster's rest endpoint
-     */
-    default LeaderElectionService getClusterRestEndpointLeaderElectionService() {
+    /** Gets the {@link LeaderElection} for the cluster's rest endpoint. */
+    default LeaderElection getClusterRestEndpointLeaderElection() {
         // for backwards compatibility we delegate to getWebMonitorLeaderElectionService
         // all implementations of this interface should override
         // getClusterRestEndpointLeaderElectionService, though
-        return getWebMonitorLeaderElectionService();
+        return getWebMonitorLeaderElection();
     }
 
     @Override
@@ -224,25 +213,45 @@ public interface HighAvailabilityServices extends ClientHighAvailabilityServices
     void close() throws Exception;
 
     /**
-     * Closes the high availability services (releasing all resources) and deletes all data stored
-     * by these services in external stores.
+     * Deletes all data stored by high availability services in external stores.
      *
-     * <p>After this method was called, the any job or session that was managed by these high
+     * <p>After this method was called, any job or session that was managed by these high
      * availability services will be unrecoverable.
      *
      * <p>If an exception occurs during cleanup, this method will attempt to continue the cleanup
      * and report exceptions only after all cleanup steps have been attempted.
      *
-     * @throws Exception Thrown, if an exception occurred while closing these services or cleaning
-     *     up data stored by them.
+     * @throws Exception if an error occurred while cleaning up data stored by them.
      */
-    void closeAndCleanupAllData() throws Exception;
+    void cleanupAllData() throws Exception;
 
     /**
-     * Deletes all data for specified job stored by these services in external stores.
-     *
-     * @param jobID The identifier of the job to cleanup.
-     * @throws Exception Thrown, if an exception occurred while cleaning data stored by them.
+     * Calls {@link #cleanupAllData()} (if {@code true} is passed as a parameter) before calling
+     * {@link #close()} on this instance. Any error that appeared during the cleanup will be
+     * propagated after calling {@code close()}.
      */
-    default void cleanupJobData(JobID jobID) throws Exception {}
+    default void closeWithOptionalClean(boolean cleanupData) throws Exception {
+        Throwable exception = null;
+        if (cleanupData) {
+            try {
+                cleanupAllData();
+            } catch (Throwable t) {
+                exception = ExceptionUtils.firstOrSuppressed(t, exception);
+            }
+        }
+        try {
+            close();
+        } catch (Throwable t) {
+            exception = ExceptionUtils.firstOrSuppressed(t, exception);
+        }
+
+        if (exception != null) {
+            ExceptionUtils.rethrowException(exception);
+        }
+    }
+
+    @Override
+    default CompletableFuture<Void> globalCleanupAsync(JobID jobId, Executor executor) {
+        return FutureUtils.completedVoidFuture();
+    }
 }

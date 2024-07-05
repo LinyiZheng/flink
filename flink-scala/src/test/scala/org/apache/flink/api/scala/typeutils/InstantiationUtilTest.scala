@@ -15,20 +15,20 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.api.scala.typeutils
+
+import org.apache.flink.util.InstantiationUtil
+
+import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.Test
 
 import java.io.ByteArrayOutputStream
 
-import org.apache.flink.util.{InstantiationUtil, TestLogger}
-import org.hamcrest.Matchers
-import org.junit.{Assert, Test}
-
 /**
-  * Serialization/Deserialization tests of Scala types using the
-  * [[org.apache.flink.util.InstantiationUtil]].
-  */
-class InstantiationUtilTest extends TestLogger {
+ * Serialization/Deserialization tests of Scala types using the
+ * [[org.apache.flink.util.InstantiationUtil]].
+ */
+class InstantiationUtilTest {
 
   @Test
   def testNestedScalaTypeSerDe(): Unit = {
@@ -36,7 +36,7 @@ class InstantiationUtilTest extends TestLogger {
 
     val copy = serializeDeserializeInstance(instance)
 
-    Assert.assertThat(copy, Matchers.equalTo(instance))
+    assertThat(copy).isEqualTo(instance)
   }
 
   @Test
@@ -56,7 +56,7 @@ class InstantiationUtilTest extends TestLogger {
 
     val copy = serializeDeserializeInstance(instance)
 
-    Assert.assertThat(copy, Matchers.equalTo(instance))
+    assertThat(copy).isEqualTo(instance)
   }
 
   private def serializeDeserializeInstance[T](instance: T): T = {
@@ -64,10 +64,7 @@ class InstantiationUtilTest extends TestLogger {
 
     InstantiationUtil.serializeObject(baos, instance)
 
-    InstantiationUtil.deserializeObject(
-      baos.toByteArray,
-      getClass.getClassLoader,
-      true)
+    InstantiationUtil.deserializeObject(baos.toByteArray, getClass.getClassLoader)
   }
 }
 

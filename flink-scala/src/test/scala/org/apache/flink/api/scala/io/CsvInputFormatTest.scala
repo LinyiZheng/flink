@@ -17,8 +17,6 @@
  */
 package org.apache.flink.api.scala.io
 
-import java.io.{File, FileOutputStream, FileWriter, OutputStreamWriter}
-
 import org.apache.flink.api.java.io.PojoCsvInputFormat
 import org.apache.flink.api.java.io.TupleCsvInputFormat
 import org.apache.flink.api.java.typeutils.PojoTypeInfo
@@ -27,25 +25,28 @@ import org.apache.flink.api.scala.io.CsvInputFormatTest.CaseClassItem
 import org.apache.flink.api.scala.typeutils.CaseClassTypeInfo
 import org.apache.flink.configuration.Configuration
 import org.apache.flink.core.fs.{FileInputSplit, Path}
-import org.junit.Assert.{assertEquals, assertNotNull, assertNull, assertTrue, fail}
-import org.junit.Test
+
+import org.assertj.core.api.Assertions.{assertThat, fail, offset}
+import org.junit.jupiter.api.Test
+
+import java.io.{File, FileOutputStream, FileWriter, OutputStreamWriter}
 
 import scala.collection.mutable.ArrayBuffer
 
 class CsvInputFormatTest {
 
-  private final val PATH: Path = new Path("an/ignored/file/")
-  private final val FIRST_PART: String = "That is the first part"
-  private final val SECOND_PART: String = "That is the second part"
+  final private val PATH: Path = new Path("an/ignored/file/")
+  final private val FIRST_PART: String = "That is the first part"
+  final private val SECOND_PART: String = "That is the second part"
 
   @Test
-  def ignoreSingleCharPrefixComments():Unit = {
+  def ignoreSingleCharPrefixComments(): Unit = {
     try {
       val fileContent = "#description of the data\n" +
-                        "#successive commented line\n" +
-                        "this is|1|2.0|\n" +
-                        "a test|3|4.0|\n" +
-                        "#next|5|6.0|\n"
+        "#successive commented line\n" +
+        "this is|1|2.0|\n" +
+        "a test|3|4.0|\n" +
+        "#next|5|6.0|\n"
       val split = createTempFile(fileContent)
       val format = new TupleCsvInputFormat[(String, Integer, Double)](
         PATH,
@@ -59,35 +60,33 @@ class CsvInputFormatTest {
       format.open(split)
       var result: (String, Integer, Double) = null
       result = format.nextRecord(result)
-      assertNotNull(result)
-      assertEquals("this is", result._1)
-      assertEquals(new Integer(1), result._2)
-      assertEquals(2.0, result._3, 0.0001)
+      assertThat(result).isNotNull
+      assertThat(result._1).isEqualTo("this is")
+      assertThat(result._2).isEqualTo(new Integer(1))
+      assertThat(result._3).isEqualTo(2.0, offset(0.0001))
       result = format.nextRecord(result)
-      assertNotNull(result)
-      assertEquals("a test", result._1)
-      assertEquals(new Integer(3), result._2)
-      assertEquals(4.0, result._3, 0.0001)
+      assertThat(result).isNotNull
+      assertThat(result._1).isEqualTo("a test")
+      assertThat(result._2).isEqualTo(new Integer(3))
+      assertThat(result._3).isEqualTo(4.0, offset(0.0001))
       result = format.nextRecord(result)
-      assertNull(result)
-      assertTrue(format.reachedEnd)
-    }
-    catch {
-      case ex: Exception => {
-        ex.printStackTrace
+      assertThat(result).isNull()
+      assertThat(format.reachedEnd).isTrue
+    } catch {
+      case ex: Exception =>
+        ex.printStackTrace()
         fail("Test failed due to a " + ex.getClass.getName + ": " + ex.getMessage)
-      }
     }
   }
 
   @Test
-  def ignoreMultiCharPrefixComments():Unit = {
+  def ignoreMultiCharPrefixComments(): Unit = {
     try {
       val fileContent = "//description of the data\n" +
-                        "//successive commented line\n" +
-                        "this is|1|2.0|\n" +
-                        "a test|3|4.0|\n" +
-                        "//next|5|6.0|\n"
+        "//successive commented line\n" +
+        "this is|1|2.0|\n" +
+        "a test|3|4.0|\n" +
+        "//next|5|6.0|\n"
       val split = createTempFile(fileContent)
       val format = new TupleCsvInputFormat[(String, Integer, Double)](
         PATH,
@@ -101,29 +100,27 @@ class CsvInputFormatTest {
       format.open(split)
       var result: (String, Integer, Double) = null
       result = format.nextRecord(result)
-      assertNotNull(result)
-      assertEquals("this is", result._1)
-      assertEquals(new Integer(1), result._2)
-      assertEquals(2.0, result._3, 0.0001)
+      assertThat(result).isNotNull
+      assertThat(result._1).isEqualTo("this is")
+      assertThat(result._2).isEqualTo(new Integer(1))
+      assertThat(result._3).isEqualTo(2.0, offset(0.0001))
       result = format.nextRecord(result)
-      assertNotNull(result)
-      assertEquals("a test", result._1)
-      assertEquals(new Integer(3), result._2)
-      assertEquals(4.0, result._3, 0.0001)
+      assertThat(result).isNotNull
+      assertThat(result._1).isEqualTo("a test")
+      assertThat(result._2).isEqualTo(new Integer(3))
+      assertThat(result._3).isEqualTo(4.0, offset(0.0001))
       result = format.nextRecord(result)
-      assertNull(result)
-      assertTrue(format.reachedEnd)
-    }
-    catch {
-      case ex: Exception => {
-        ex.printStackTrace
+      assertThat(result).isNull()
+      assertThat(format.reachedEnd).isTrue
+    } catch {
+      case ex: Exception =>
+        ex.printStackTrace()
         fail("Test failed due to a " + ex.getClass.getName + ": " + ex.getMessage)
-      }
     }
   }
 
   @Test
-  def readStringFields():Unit = {
+  def readStringFields(): Unit = {
     try {
       val fileContent = "abc|def|ghijk\nabc||hhg\n|||"
       val split = createTempFile(fileContent)
@@ -138,34 +135,32 @@ class CsvInputFormatTest {
       format.open(split)
       var result: (String, String, String) = null
       result = format.nextRecord(result)
-      assertNotNull(result)
-      assertEquals("abc", result._1)
-      assertEquals("def", result._2)
-      assertEquals("ghijk", result._3)
+      assertThat(result).isNotNull
+      assertThat(result._1).isEqualTo("abc")
+      assertThat(result._2).isEqualTo("def")
+      assertThat(result._3).isEqualTo("ghijk")
       result = format.nextRecord(result)
-      assertNotNull(result)
-      assertEquals("abc", result._1)
-      assertEquals("", result._2)
-      assertEquals("hhg", result._3)
+      assertThat(result).isNotNull
+      assertThat(result._1).isEqualTo("abc")
+      assertThat(result._2).isEmpty()
+      assertThat(result._3).isEqualTo("hhg")
       result = format.nextRecord(result)
-      assertNotNull(result)
-      assertEquals("", result._1)
-      assertEquals("", result._2)
-      assertEquals("", result._3)
+      assertThat(result).isNotNull
+      assertThat(result._1).isEmpty()
+      assertThat(result._2).isEmpty()
+      assertThat(result._3).isEmpty()
       result = format.nextRecord(result)
-      assertNull(result)
-      assertTrue(format.reachedEnd)
-    }
-    catch {
-      case ex: Exception => {
+      assertThat(result).isNull()
+      assertThat(format.reachedEnd).isTrue
+    } catch {
+      case ex: Exception =>
         ex.printStackTrace()
         fail("Test failed due to a " + ex.getClass.getName + ": " + ex.getMessage)
-      }
     }
   }
 
   @Test
-  def readMixedQuotedStringFields():Unit = {
+  def readMixedQuotedStringFields(): Unit = {
     try {
       val fileContent = "abc|\"de|f\"|ghijk\n\"a|bc\"||hhg\n|||"
       val split = createTempFile(fileContent)
@@ -181,29 +176,27 @@ class CsvInputFormatTest {
       format.open(split)
       var result: (String, String, String) = null
       result = format.nextRecord(result)
-      assertNotNull(result)
-      assertEquals("abc", result._1)
-      assertEquals("de|f", result._2)
-      assertEquals("ghijk", result._3)
+      assertThat(result).isNotNull
+      assertThat(result._1).isEqualTo("abc")
+      assertThat(result._2).isEqualTo("de|f")
+      assertThat(result._3).isEqualTo("ghijk")
       result = format.nextRecord(result)
-      assertNotNull(result)
-      assertEquals("a|bc", result._1)
-      assertEquals("", result._2)
-      assertEquals("hhg", result._3)
+      assertThat(result).isNotNull
+      assertThat(result._1).isEqualTo("a|bc")
+      assertThat(result._2).isEmpty()
+      assertThat(result._3).isEqualTo("hhg")
       result = format.nextRecord(result)
-      assertNotNull(result)
-      assertEquals("", result._1)
-      assertEquals("", result._2)
-      assertEquals("", result._3)
+      assertThat(result).isNotNull
+      assertThat(result._1).isEmpty()
+      assertThat(result._2).isEmpty()
+      assertThat(result._3).isEmpty()
       result = format.nextRecord(result)
-      assertNull(result)
-      assertTrue(format.reachedEnd)
-    }
-    catch {
-      case ex: Exception => {
+      assertThat(result).isNull()
+      assertThat(format.reachedEnd).isTrue
+    } catch {
+      case ex: Exception =>
         ex.printStackTrace()
         fail("Test failed due to a " + ex.getClass.getName + ": " + ex.getMessage)
-      }
     }
   }
 
@@ -223,25 +216,24 @@ class CsvInputFormatTest {
       format.open(split)
       var result: (String, String, String) = null
       result = format.nextRecord(result)
-      assertNotNull(result)
-      assertEquals("abc", result._1)
-      assertEquals("def", result._2)
-      assertEquals("ghijk", result._3)
+      assertThat(result).isNotNull
+      assertThat(result._1).isEqualTo("abc")
+      assertThat(result._2).isEqualTo("def")
+      assertThat(result._3).isEqualTo("ghijk")
       result = format.nextRecord(result)
-      assertNotNull(result)
-      assertEquals("abc", result._1)
-      assertEquals("", result._2)
-      assertEquals("hhg", result._3)
+      assertThat(result).isNotNull
+      assertThat(result._1).isEqualTo("abc")
+      assertThat(result._2).isEmpty()
+      assertThat(result._3).isEqualTo("hhg")
       result = format.nextRecord(result)
-      assertNotNull(result)
-      assertEquals("", result._1)
-      assertEquals("", result._2)
-      assertEquals("", result._3)
+      assertThat(result).isNotNull
+      assertThat(result._1).isEmpty()
+      assertThat(result._2).isEmpty()
+      assertThat(result._3).isEmpty()
       result = format.nextRecord(result)
-      assertNull(result)
-      assertTrue(format.reachedEnd)
-    }
-    catch {
+      assertThat(result).isNull()
+      assertThat(format.reachedEnd).isTrue
+    } catch {
       case ex: Exception =>
         ex.printStackTrace()
         fail("Test failed due to a " + ex.getClass.getName + ": " + ex.getMessage)
@@ -254,31 +246,31 @@ class CsvInputFormatTest {
       val fileContent = "111|222|333|444|555\n666|777|888|999|000|\n"
       val split = createTempFile(fileContent)
       val format = new TupleCsvInputFormat[(Int, Int, Int, Int, Int)](
-        PATH, createTypeInformation[(Int, Int, Int, Int, Int)].
-          asInstanceOf[CaseClassTypeInfo[(Int, Int, Int, Int, Int)]])
+        PATH,
+        createTypeInformation[(Int, Int, Int, Int, Int)]
+          .asInstanceOf[CaseClassTypeInfo[(Int, Int, Int, Int, Int)]])
       format.setFieldDelimiter("|")
       format.configure(new Configuration)
       format.open(split)
       var result: (Int, Int, Int, Int, Int) = null
       result = format.nextRecord(result)
-      assertNotNull(result)
-      assertEquals(Integer.valueOf(111), result._1)
-      assertEquals(Integer.valueOf(222), result._2)
-      assertEquals(Integer.valueOf(333), result._3)
-      assertEquals(Integer.valueOf(444), result._4)
-      assertEquals(Integer.valueOf(555), result._5)
+      assertThat(result).isNotNull
+      assertThat(result._1).isEqualTo(Integer.valueOf(111))
+      assertThat(result._2).isEqualTo(Integer.valueOf(222))
+      assertThat(result._3).isEqualTo(Integer.valueOf(333))
+      assertThat(result._4).isEqualTo(Integer.valueOf(444))
+      assertThat(result._5).isEqualTo(Integer.valueOf(555))
       result = format.nextRecord(result)
-      assertNotNull(result)
-      assertEquals(Integer.valueOf(666), result._1)
-      assertEquals(Integer.valueOf(777), result._2)
-      assertEquals(Integer.valueOf(888), result._3)
-      assertEquals(Integer.valueOf(999), result._4)
-      assertEquals(Integer.valueOf(0), result._5)
+      assertThat(result).isNotNull
+      assertThat(result._1).isEqualTo(Integer.valueOf(666))
+      assertThat(result._2).isEqualTo(Integer.valueOf(777))
+      assertThat(result._3).isEqualTo(Integer.valueOf(888))
+      assertThat(result._4).isEqualTo(Integer.valueOf(999))
+      assertThat(result._5).isEqualTo(Integer.valueOf(0))
       result = format.nextRecord(result)
-      assertNull(result)
-      assertTrue(format.reachedEnd)
-    }
-    catch {
+      assertThat(result).isNull()
+      assertThat(format.reachedEnd).isTrue
+    } catch {
       case ex: Exception =>
         fail("Test failed due to a " + ex.getClass.getName + ": " + ex.getMessage)
     }
@@ -298,18 +290,17 @@ class CsvInputFormatTest {
       format.open(split)
       var result: (Int, Int) = null
       result = format.nextRecord(result)
-      assertNotNull(result)
-      assertEquals(Integer.valueOf(111), result._1)
-      assertEquals(Integer.valueOf(222), result._2)
+      assertThat(result).isNotNull
+      assertThat(result._1).isEqualTo(Integer.valueOf(111))
+      assertThat(result._2).isEqualTo(Integer.valueOf(222))
       result = format.nextRecord(result)
-      assertNotNull(result)
-      assertEquals(Integer.valueOf(666), result._1)
-      assertEquals(Integer.valueOf(777), result._2)
+      assertThat(result).isNotNull
+      assertThat(result._1).isEqualTo(Integer.valueOf(666))
+      assertThat(result._2).isEqualTo(Integer.valueOf(777))
       result = format.nextRecord(result)
-      assertNull(result)
-      assertTrue(format.reachedEnd)
-    }
-    catch {
+      assertThat(result).isNull()
+      assertThat(format.reachedEnd).isTrue
+    } catch {
       case ex: Exception =>
         fail("Test failed due to a " + ex.getClass.getName + ": " + ex.getMessage)
     }
@@ -329,20 +320,19 @@ class CsvInputFormatTest {
       format.open(split)
       var result: (Int, Int, Int) = null
       result = format.nextRecord(result)
-      assertNotNull(result)
-      assertEquals(Integer.valueOf(111), result._1)
-      assertEquals(Integer.valueOf(444), result._2)
-      assertEquals(Integer.valueOf(888), result._3)
+      assertThat(result).isNotNull
+      assertThat(result._1).isEqualTo(Integer.valueOf(111))
+      assertThat(result._2).isEqualTo(Integer.valueOf(444))
+      assertThat(result._3).isEqualTo(Integer.valueOf(888))
       result = format.nextRecord(result)
-      assertNotNull(result)
-      assertEquals(Integer.valueOf(0), result._1)
-      assertEquals(Integer.valueOf(777), result._2)
-      assertEquals(Integer.valueOf(333), result._3)
+      assertThat(result).isNotNull
+      assertThat(result._1).isEqualTo(Integer.valueOf(0))
+      assertThat(result._2).isEqualTo(Integer.valueOf(777))
+      assertThat(result._3).isEqualTo(Integer.valueOf(333))
       result = format.nextRecord(result)
-      assertNull(result)
-      assertTrue(format.reachedEnd)
-    }
-    catch {
+      assertThat(result).isNull()
+      assertThat(format.reachedEnd).isTrue
+    } catch {
       case ex: Exception =>
         fail("Test failed due to a " + ex.getClass.getName + ": " + ex.getMessage)
     }
@@ -354,8 +344,12 @@ class CsvInputFormatTest {
     val wrt = new FileWriter(tempFile)
     wrt.write(content)
     wrt.close()
-    new FileInputSplit(0, new Path(tempFile.toURI.toString), 0,
-      tempFile.length,Array[String]("localhost"))
+    new FileInputSplit(
+      0,
+      new Path(tempFile.toURI.toString),
+      0,
+      tempFile.length,
+      Array[String]("localhost"))
   }
 
   @Test
@@ -365,7 +359,7 @@ class CsvInputFormatTest {
     this.testRemovingTrailingCR("\r\n", "\n")
   }
 
-  private def testRemovingTrailingCR(lineBreakerInFile: String, lineBreakerSetup: String) {
+  private def testRemovingTrailingCR(lineBreakerInFile: String, lineBreakerSetup: String): Unit = {
     var tempFile: File = null
     val fileContent = FIRST_PART + lineBreakerInFile + SECOND_PART + lineBreakerInFile
     try {
@@ -375,7 +369,8 @@ class CsvInputFormatTest {
       val wrt = new OutputStreamWriter(new FileOutputStream(tempFile))
       wrt.write(fileContent)
       wrt.close()
-      val inputFormat = new TupleCsvInputFormat[Tuple1[String]](new Path(tempFile.toURI.toString),
+      val inputFormat = new TupleCsvInputFormat[Tuple1[String]](
+        new Path(tempFile.toURI.toString),
         createTypeInformation[Tuple1[String]].asInstanceOf[CaseClassTypeInfo[Tuple1[String]]])
       val parameters = new Configuration
       inputFormat.configure(parameters)
@@ -383,13 +378,12 @@ class CsvInputFormatTest {
       val splits = inputFormat.createInputSplits(1)
       inputFormat.open(splits(0))
       var result = inputFormat.nextRecord(null)
-      assertNotNull("Expecting to not return null", result)
-      assertEquals(FIRST_PART, result._1)
+      assertThat(result).as("Expecting to not return null").isNotNull
+      assertThat(result._1).isEqualTo(FIRST_PART)
       result = inputFormat.nextRecord(result)
-      assertNotNull("Expecting to not return null", result)
-      assertEquals(SECOND_PART, result._1)
-    }
-    catch {
+      assertThat(result).as("Expecting to not return null").isNotNull
+      assertThat(result._1).isEqualTo(SECOND_PART)
+    } catch {
       case t: Throwable =>
         System.err.println("test failed with exception: " + t.getMessage)
         t.printStackTrace(System.err)
@@ -406,26 +400,26 @@ class CsvInputFormatTest {
   private def validatePOJOItem(format: PojoCsvInputFormat[POJOItem]): Unit = {
     var result = new POJOItem()
     result = format.nextRecord(result)
-    assertEquals(123, result.field1)
-    assertEquals("HELLO", result.field2)
-    assertEquals(3.123, result.field3, 0.001)
+    assertThat(result.field1).isEqualTo(123)
+    assertThat(result.field2).isEqualTo("HELLO")
+    assertThat(result.field3).isEqualTo(3.123, offset(0.001))
 
     result = format.nextRecord(result)
-    assertEquals(456, result.field1)
-    assertEquals("ABC", result.field2)
-    assertEquals(1.234, result.field3, 0.001)
+    assertThat(result.field1).isEqualTo(456)
+    assertThat(result.field2).isEqualTo("ABC")
+    assertThat(result.field3).isEqualTo(1.234, offset(0.001))
   }
 
   private def validateCaseClassItem(format: TupleCsvInputFormat[CaseClassItem]): Unit = {
     var result = format.nextRecord(null)
-    assertEquals(123, result.field1)
-    assertEquals("HELLO", result.field2)
-    assertEquals(3.123, result.field3, 0.001)
+    assertThat(result.field1).isEqualTo(123)
+    assertThat(result.field2).isEqualTo("HELLO")
+    assertThat(result.field3).isEqualTo(3.123, offset(0.001))
 
     result = format.nextRecord(null)
-    assertEquals(456, result.field1)
-    assertEquals("ABC", result.field2)
-    assertEquals(1.234, result.field3, 0.001)
+    assertThat(result.field1).isEqualTo(456)
+    assertThat(result.field2).isEqualTo("ABC")
+    assertThat(result.field3).isEqualTo(1.234, offset(0.001))
   }
 
   @Test
@@ -450,7 +444,7 @@ class CsvInputFormatTest {
     val tempFile = createTempFile(fileContent)
     val typeInfo: CaseClassTypeInfo[CaseClassItem] =
       createTypeInformation[CaseClassItem]
-      .asInstanceOf[CaseClassTypeInfo[CaseClassItem]]
+        .asInstanceOf[CaseClassTypeInfo[CaseClassItem]]
     val format = new TupleCsvInputFormat[CaseClassItem](PATH, typeInfo)
 
     format.setDelimiter('\n')
@@ -467,8 +461,8 @@ class CsvInputFormatTest {
     val tempFile = createTempFile(fileContent)
     val typeInfo: PojoTypeInfo[POJOItem] = createTypeInformation[POJOItem]
       .asInstanceOf[PojoTypeInfo[POJOItem]]
-    val format = new PojoCsvInputFormat[POJOItem](
-      PATH, typeInfo, Array("field2", "field1", "field3"))
+    val format =
+      new PojoCsvInputFormat[POJOItem](PATH, typeInfo, Array("field2", "field1", "field3"))
 
     format.setDelimiter('\n')
     format.setFieldDelimiter(",")
@@ -477,7 +471,7 @@ class CsvInputFormatTest {
 
     validatePOJOItem(format)
   }
-  
+
   @Test
   def testPOJOTypeWithFieldSubsetAndDataSubset(): Unit = {
     val fileContent = "HELLO,123,NODATA,3.123,NODATA\n" + "ABC,456,NODATA,1.234,NODATA"
@@ -485,7 +479,9 @@ class CsvInputFormatTest {
     val typeInfo: PojoTypeInfo[POJOItem] = createTypeInformation[POJOItem]
       .asInstanceOf[PojoTypeInfo[POJOItem]]
     val format = new PojoCsvInputFormat[POJOItem](
-      PATH, typeInfo, Array("field2", "field1", "field3"),
+      PATH,
+      typeInfo,
+      Array("field2", "field1", "field3"),
       Array(true, true, false, true, false))
 
     format.setDelimiter('\n')
@@ -532,7 +528,7 @@ class CsvInputFormatTest {
 
 }
 
-class POJO (var table: String, var time: String) {
+class POJO(var table: String, var time: String) {
 
   def this() {
     this("", "")

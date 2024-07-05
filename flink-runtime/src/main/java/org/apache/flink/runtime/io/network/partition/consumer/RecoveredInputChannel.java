@@ -30,6 +30,7 @@ import org.apache.flink.runtime.io.network.buffer.Buffer;
 import org.apache.flink.runtime.io.network.logger.NetworkActionsLogger;
 import org.apache.flink.runtime.io.network.partition.ChannelStateHolder;
 import org.apache.flink.runtime.io.network.partition.ResultPartitionID;
+import org.apache.flink.runtime.io.network.partition.ResultSubpartitionIndexSet;
 import org.apache.flink.util.Preconditions;
 
 import org.slf4j.Logger;
@@ -76,6 +77,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
             SingleInputGate inputGate,
             int channelIndex,
             ResultPartitionID partitionId,
+            ResultSubpartitionIndexSet consumedSubpartitionIndexSet,
             int initialBackoff,
             int maxBackoff,
             Counter numBytesIn,
@@ -85,6 +87,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
                 inputGate,
                 channelIndex,
                 partitionId,
+                consumedSubpartitionIndexSet,
                 initialBackoff,
                 maxBackoff,
                 numBytesIn,
@@ -188,7 +191,12 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     }
 
     @Override
-    Optional<BufferAndAvailability> getNextBuffer() throws IOException {
+    protected int peekNextBufferSubpartitionIdInternal() throws IOException {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public Optional<BufferAndAvailability> getNextBuffer() throws IOException {
         checkError();
         return Optional.ofNullable(getNextRecoveredStateBuffer());
     }
@@ -223,7 +231,7 @@ public abstract class RecoveredInputChannel extends InputChannel implements Chan
     }
 
     @Override
-    final void requestSubpartition(int subpartitionIndex) {
+    final void requestSubpartitions() {
         throw new UnsupportedOperationException(
                 "RecoveredInputChannel should never request partition.");
     }

@@ -46,9 +46,15 @@
         </tr>
         <tr>
             <td><h5>web.refresh-interval</h5></td>
-            <td style="word-wrap: break-word;">3000</td>
-            <td>Long</td>
-            <td>Refresh interval for the web-frontend in milliseconds.</td>
+            <td style="word-wrap: break-word;">3 s</td>
+            <td>Duration</td>
+            <td>Refresh interval for the web-frontend.</td>
+        </tr>
+        <tr>
+            <td><h5>web.rescale.enable</h5></td>
+            <td style="word-wrap: break-word;">true</td>
+            <td>Boolean</td>
+            <td>Flag indicating whether jobs can be rescaled from the web-frontend.</td>
         </tr>
         <tr>
             <td><h5>web.submit.enable</h5></td>
@@ -58,21 +64,21 @@
         </tr>
         <tr>
             <td><h5>web.timeout</h5></td>
-            <td style="word-wrap: break-word;">600000</td>
-            <td>Long</td>
-            <td>Timeout for asynchronous operations by the web monitor in milliseconds.</td>
+            <td style="word-wrap: break-word;">10 min</td>
+            <td>Duration</td>
+            <td>Timeout for asynchronous operations by the web monitor.</td>
         </tr>
         <tr>
             <td><h5>web.tmpdir</h5></td>
             <td style="word-wrap: break-word;">System.getProperty("java.io.tmpdir")</td>
             <td>String</td>
-            <td>Flink web directory which is used by the webmonitor.</td>
+            <td>Local directory that is used by the REST API for temporary files.</td>
         </tr>
         <tr>
             <td><h5>web.upload.dir</h5></td>
             <td style="word-wrap: break-word;">(none)</td>
             <td>String</td>
-            <td>Directory for uploading the job jars. If not specified a dynamic directory will be used under the directory specified by JOB_MANAGER_WEB_TMPDIR_KEY.</td>
+            <td>Local directory that is used by the REST API for storing uploaded jars. If not specified a dynamic directory will be created under <code class="highlighter-rouge">web.tmpdir</code>.</td>
         </tr>
     </tbody>
 </table>

@@ -28,6 +28,7 @@ import org.apache.flink.streaming.api.operators.ChainingStrategy;
 import org.apache.flink.streaming.api.operators.InputSelectable;
 import org.apache.flink.streaming.api.operators.StreamOperator;
 import org.apache.flink.streaming.api.operators.StreamOperatorFactory;
+import org.apache.flink.util.Preconditions;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,10 +40,10 @@ import java.util.Map;
 import static org.apache.flink.util.Preconditions.checkState;
 
 /** A utility class for applying sorting inputs. */
-class BatchExecutionUtils {
+public class BatchExecutionUtils {
     private static final Logger LOG = LoggerFactory.getLogger(BatchExecutionUtils.class);
 
-    static void applyBatchExecutionSettings(
+    public static void applyBatchExecutionSettings(
             int transformationId,
             TransformationTranslator.Context context,
             StreamConfig.InputRequirement... inputRequirements) {
@@ -78,12 +79,14 @@ class BatchExecutionUtils {
     private static boolean isInputSelectable(StreamNode node) {
         ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
         Class<? extends StreamOperator> operatorClass =
-                node.getOperatorFactory().getStreamOperatorClass(classLoader);
+                Preconditions.checkNotNull(node.getOperatorFactory())
+                        .getStreamOperatorClass(classLoader);
         return InputSelectable.class.isAssignableFrom(operatorClass);
     }
 
     private static void adjustChainingStrategy(StreamNode node) {
-        StreamOperatorFactory<?> operatorFactory = node.getOperatorFactory();
+        StreamOperatorFactory<?> operatorFactory =
+                Preconditions.checkNotNull(node.getOperatorFactory());
         ChainingStrategy currentChainingStrategy = operatorFactory.getChainingStrategy();
         switch (currentChainingStrategy) {
             case ALWAYS:

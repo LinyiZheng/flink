@@ -21,6 +21,7 @@ package org.apache.flink.runtime.jobmaster.factories;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.runtime.executiongraph.ArchivedExecutionGraph;
+import org.apache.flink.runtime.jobgraph.JobType;
 import org.apache.flink.runtime.jobmanager.OnCompletionActions;
 import org.apache.flink.runtime.jobmaster.DefaultJobMasterServiceProcess;
 import org.apache.flink.runtime.jobmaster.JobMaster;
@@ -72,8 +73,14 @@ public class TestingJobMasterServiceProcessFactoryOld implements JobMasterServic
     @Override
     public ArchivedExecutionGraph createArchivedExecutionGraph(
             JobStatus jobStatus, @Nullable Throwable cause) {
-        return ArchivedExecutionGraph.createFromInitializingJob(
-                jobId, "test-job", jobStatus, cause, null, System.currentTimeMillis());
+        return ArchivedExecutionGraph.createSparseArchivedExecutionGraph(
+                jobId,
+                "test-job",
+                jobStatus,
+                JobType.STREAMING,
+                cause,
+                null,
+                System.currentTimeMillis());
     }
 
     public static class TestingFutureJobMasterServiceFactory implements JobMasterServiceFactory {

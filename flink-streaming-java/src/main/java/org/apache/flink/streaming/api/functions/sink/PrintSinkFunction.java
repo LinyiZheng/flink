@@ -18,6 +18,7 @@
 package org.apache.flink.streaming.api.functions.sink;
 
 import org.apache.flink.annotation.PublicEvolving;
+import org.apache.flink.api.common.SupportsConcurrentExecutionAttempts;
 import org.apache.flink.api.common.functions.util.PrintSinkOutputWriter;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.streaming.api.operators.StreamingRuntimeContext;
@@ -32,9 +33,13 @@ import org.apache.flink.streaming.api.operators.StreamingRuntimeContext;
  * no {@code sinkIdentifier} provided, parallelism == 1
  *
  * @param <IN> Input record type
+ * @deprecated This interface will be removed in future versions. Use the new {@link PrintSink}
+ *     interface instead.
  */
+@Deprecated
 @PublicEvolving
-public class PrintSinkFunction<IN> extends RichSinkFunction<IN> {
+public class PrintSinkFunction<IN> extends RichSinkFunction<IN>
+        implements SupportsConcurrentExecutionAttempts {
 
     private static final long serialVersionUID = 1L;
 
@@ -64,11 +69,29 @@ public class PrintSinkFunction<IN> extends RichSinkFunction<IN> {
         writer = new PrintSinkOutputWriter<>(sinkIdentifier, stdErr);
     }
 
+    /**
+     * Initialization method for the {@link PrintSinkFunction}.
+     *
+     * @param parameters The configuration containing the parameters attached to the contract.
+     * @throws Exception if an error happens.
+     * @deprecated This method is deprecated since Flink 1.19. The users are recommended to
+     *     implement {@code open(OpenContext openContext)} and override {@code open(Configuration
+     *     parameters)} with an empty body instead. 1. If you implement {@code open(OpenContext
+     *     openContext)}, the {@code open(OpenContext openContext)} will be invoked and the {@code
+     *     open(Configuration parameters)} won't be invoked. 2. If you don't implement {@code
+     *     open(OpenContext openContext)}, the {@code open(Configuration parameters)} will be
+     *     invoked in the default implementation of the {@code open(OpenContext openContext)}.
+     * @see <a href="https://cwiki.apache.org/confluence/pages/viewpage.action?pageId=263425231">
+     *     FLIP-344: Remove parameter in RichFunction#open </a>
+     */
+    @Deprecated
     @Override
     public void open(Configuration parameters) throws Exception {
         super.open(parameters);
         StreamingRuntimeContext context = (StreamingRuntimeContext) getRuntimeContext();
-        writer.open(context.getIndexOfThisSubtask(), context.getNumberOfParallelSubtasks());
+        writer.open(
+                context.getTaskInfo().getIndexOfThisSubtask(),
+                context.getTaskInfo().getNumberOfParallelSubtasks());
     }
 
     @Override

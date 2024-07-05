@@ -75,7 +75,7 @@ public final class ConfigConstants {
      */
     @Deprecated @PublicEvolving
     public static final ConfigOption<String> RESTART_STRATEGY_FIXED_DELAY_DELAY =
-            key("restart-strategy.fixed-delay.delay").defaultValue("0 s");
+            key("restart-strategy.fixed-delay.delay").stringType().defaultValue("0 s");
 
     /**
      * Maximum number of restarts in given time interval {@link
@@ -215,8 +215,12 @@ public final class ConfigConstants {
      */
     @Deprecated public static final String TASK_MANAGER_TMP_DIR_KEY = "taskmanager.tmp.dirs";
 
-    /** The config parameter defining the taskmanager log file location. */
-    public static final String TASK_MANAGER_LOG_PATH_KEY = "taskmanager.log.path";
+    /**
+     * The config parameter defining the taskmanager log file location.
+     *
+     * @deprecated Use {@link TaskManagerOptions#TASK_MANAGER_LOG_PATH} instead.
+     */
+    @Deprecated public static final String TASK_MANAGER_LOG_PATH_KEY = "taskmanager.log.path";
 
     /** @deprecated Use {@link TaskManagerOptions#MANAGED_MEMORY_SIZE} instead */
     @Deprecated public static final String TASK_MANAGER_MEMORY_SIZE_KEY = "taskmanager.memory.size";
@@ -350,7 +354,10 @@ public final class ConfigConstants {
     /**
      * The config parameter defining the timeout for filesystem stream opening. A value of 0
      * indicates infinite waiting.
+     *
+     * @deprecated use {@link TaskManagerOptions#FS_STREAM_OPENING_TIME_OUT} instead.
      */
+    @Deprecated
     public static final String FS_STREAM_OPENING_TIMEOUT_KEY = "taskmanager.runtime.fs_timeout";
 
     /**
@@ -384,7 +391,7 @@ public final class ConfigConstants {
     /**
      * Prefix for passing custom environment variables to Flink's master process. For example for
      * passing LD_LIBRARY_PATH as an env variable to the AppMaster, set:
-     * containerized.master.env.LD_LIBRARY_PATH: "/usr/lib/native" in the flink-conf.yaml.
+     * containerized.master.env.LD_LIBRARY_PATH: "/usr/lib/native" in the config.yaml.
      *
      * @deprecated Use {@link ResourceManagerOptions#CONTAINERIZED_MASTER_ENV_PREFIX} instead.
      */
@@ -475,7 +482,7 @@ public final class ConfigConstants {
     /**
      * Prefix for passing custom environment variables to Flink's ApplicationMaster (JobManager).
      * For example for passing LD_LIBRARY_PATH as an env variable to the AppMaster, set:
-     * yarn.application-master.env.LD_LIBRARY_PATH: "/usr/lib/native" in the flink-conf.yaml.
+     * yarn.application-master.env.LD_LIBRARY_PATH: "/usr/lib/native" in the config.yaml.
      *
      * @deprecated Please use {@code CONTAINERIZED_MASTER_ENV_PREFIX}.
      */
@@ -496,7 +503,12 @@ public final class ConfigConstants {
      */
     @Deprecated public static final String YARN_TASK_MANAGER_ENV_PREFIX = "yarn.taskmanager.env.";
 
-    /** Template for the YARN container start invocation. */
+    /**
+     * Template for the YARN container start invocation.
+     *
+     * @deprecated in favor of {@code YarnConfigOptions#YARN_CONTAINER_START_COMMAND_TEMPLATE}.
+     */
+    @Deprecated
     public static final String YARN_CONTAINER_START_COMMAND_TEMPLATE =
             "yarn.container-start-command-template";
 
@@ -752,14 +764,14 @@ public final class ConfigConstants {
     /**
      * Timeout for the startup of the actor system.
      *
-     * @deprecated Use {@link AkkaOptions#STARTUP_TIMEOUT} instead.
+     * @deprecated Use {@link RpcOptions#STARTUP_TIMEOUT} instead.
      */
     @Deprecated public static final String AKKA_STARTUP_TIMEOUT = "akka.startup-timeout";
 
     /**
      * Heartbeat interval of the transport failure detector.
      *
-     * @deprecated Use {@link AkkaOptions#TRANSPORT_HEARTBEAT_INTERVAL} instead.
+     * @deprecated Use {@link RpcOptions#TRANSPORT_HEARTBEAT_INTERVAL} instead.
      */
     @Deprecated
     public static final String AKKA_TRANSPORT_HEARTBEAT_INTERVAL =
@@ -768,7 +780,7 @@ public final class ConfigConstants {
     /**
      * Allowed heartbeat pause for the transport failure detector.
      *
-     * @deprecated Use {@link AkkaOptions#TRANSPORT_HEARTBEAT_PAUSE} instead.
+     * @deprecated Use {@link RpcOptions#TRANSPORT_HEARTBEAT_PAUSE} instead.
      */
     @Deprecated
     public static final String AKKA_TRANSPORT_HEARTBEAT_PAUSE = "akka.transport.heartbeat.pause";
@@ -776,7 +788,7 @@ public final class ConfigConstants {
     /**
      * Detection threshold of transport failure detector.
      *
-     * @deprecated Use {@link AkkaOptions#TRANSPORT_THRESHOLD} instead.
+     * @deprecated Use {@link RpcOptions#TRANSPORT_THRESHOLD} instead.
      */
     @Deprecated public static final String AKKA_TRANSPORT_THRESHOLD = "akka.transport.threshold";
 
@@ -806,49 +818,49 @@ public final class ConfigConstants {
     /**
      * Akka TCP timeout.
      *
-     * @deprecated Use {@link AkkaOptions#TCP_TIMEOUT} instead.
+     * @deprecated Use {@link RpcOptions#TCP_TIMEOUT} instead.
      */
     @Deprecated public static final String AKKA_TCP_TIMEOUT = "akka.tcp.timeout";
 
     /**
      * Override SSL support for the Akka transport.
      *
-     * @deprecated Use {@link AkkaOptions#SSL_ENABLED} instead.
+     * @deprecated Use {@link RpcOptions#SSL_ENABLED} instead.
      */
     @Deprecated public static final String AKKA_SSL_ENABLED = "akka.ssl.enabled";
 
     /**
      * Maximum framesize of akka messages.
      *
-     * @deprecated Use {@link AkkaOptions#FRAMESIZE} instead.
+     * @deprecated Use {@link RpcOptions#FRAMESIZE} instead.
      */
     @Deprecated public static final String AKKA_FRAMESIZE = "akka.framesize";
 
     /**
      * Maximum number of messages until another actor is executed by the same thread.
      *
-     * @deprecated Use {@link AkkaOptions#DISPATCHER_THROUGHPUT} instead.
+     * @deprecated Use {@link RpcOptions#DISPATCHER_THROUGHPUT} instead.
      */
     @Deprecated public static final String AKKA_DISPATCHER_THROUGHPUT = "akka.throughput";
 
     /**
      * Log lifecycle events.
      *
-     * @deprecated Use {@link AkkaOptions#LOG_LIFECYCLE_EVENTS} instead.
+     * @deprecated Use {@link RpcOptions#LOG_LIFECYCLE_EVENTS} instead.
      */
     @Deprecated public static final String AKKA_LOG_LIFECYCLE_EVENTS = "akka.log.lifecycle.events";
 
     /**
      * Timeout for all blocking calls on the cluster side.
      *
-     * @deprecated Use {@link AkkaOptions#ASK_TIMEOUT} instead.
+     * @deprecated Use {@link RpcOptions#ASK_TIMEOUT_DURATION} instead.
      */
     @Deprecated public static final String AKKA_ASK_TIMEOUT = "akka.ask.timeout";
 
     /**
      * Timeout for all blocking calls that look up remote actors.
      *
-     * @deprecated Use {@link AkkaOptions#LOOKUP_TIMEOUT} instead.
+     * @deprecated Use {@link RpcOptions#LOOKUP_TIMEOUT_DURATION} instead.
      */
     @Deprecated public static final String AKKA_LOOKUP_TIMEOUT = "akka.lookup.timeout";
 
@@ -862,7 +874,7 @@ public final class ConfigConstants {
     /**
      * Exit JVM on fatal Akka errors.
      *
-     * @deprecated Use {@link AkkaOptions#JVM_EXIT_ON_FATAL_ERROR} instead.
+     * @deprecated Use {@link RpcOptions#JVM_EXIT_ON_FATAL_ERROR} instead.
      */
     @Deprecated
     public static final String AKKA_JVM_EXIT_ON_FATAL_ERROR = "akka.jvm-exit-on-fatal-error";
@@ -929,7 +941,7 @@ public final class ConfigConstants {
     @PublicEvolving @Deprecated public static final String HA_MODE = "high-availability";
 
     /** Ports used by the job manager if not in 'none' recovery mode. */
-    @PublicEvolving
+    @Deprecated
     public static final String HA_JOB_MANAGER_PORT = "high-availability.jobmanager.port";
 
     /** @deprecated Deprecated in favour of {@link #HA_MODE}. */
@@ -1108,33 +1120,34 @@ public final class ConfigConstants {
     @Deprecated public static final String METRICS_REPORTERS_LIST = "metrics.reporters";
 
     /**
-     * The prefix for per-reporter configs. Has to be combined with a reporter name and the configs
-     * mentioned below.
+     * The prefix for per-metric reporter configs. Has to be combined with a reporter name and the
+     * configs mentioned below.
      */
     public static final String METRICS_REPORTER_PREFIX = "metrics.reporter.";
-
-    /** The class of the reporter to use. This is used as a suffix in an actual reporter config */
-    public static final String METRICS_REPORTER_CLASS_SUFFIX = "class";
-
     /**
-     * The class of the reporter factory to use. This is used as a suffix in an actual reporter
-     * config
+     * The prefix for per-trace reporter configs. Has to be combined with a reporter name and the
+     * configs mentioned below.
      */
-    public static final String METRICS_REPORTER_FACTORY_CLASS_SUFFIX = "factory.class";
+    public static final String TRACES_REPORTER_PREFIX = "traces.reporter.";
 
-    /** The interval between reports. This is used as a suffix in an actual reporter config */
-    public static final String METRICS_REPORTER_INTERVAL_SUFFIX = "interval";
+    /** @deprecated use {@link MetricOptions#REPORTER_CLASS} */
+    @Deprecated public static final String METRICS_REPORTER_CLASS_SUFFIX = "class";
 
-    /**
-     * The delimiter used to assemble the metric identifier. This is used as a suffix in an actual
-     * reporter config.
-     */
-    public static final String METRICS_REPORTER_SCOPE_DELIMITER = "scope.delimiter";
+    /** @deprecated use {@link MetricOptions#REPORTER_FACTORY_CLASS} */
+    @Deprecated public static final String METRICS_REPORTER_FACTORY_CLASS_SUFFIX = "factory.class";
 
-    /** The set of variables that should be excluded. */
+    /** @deprecated use {@link MetricOptions#REPORTER_INTERVAL} */
+    @Deprecated public static final String METRICS_REPORTER_INTERVAL_SUFFIX = "interval";
+
+    /** @deprecated use {@link MetricOptions#REPORTER_SCOPE_DELIMITER} */
+    @Deprecated public static final String METRICS_REPORTER_SCOPE_DELIMITER = "scope.delimiter";
+
+    /** @deprecated use {@link MetricOptions#REPORTER_EXCLUDED_VARIABLES} */
+    @Deprecated
     public static final String METRICS_REPORTER_EXCLUDED_VARIABLES = "scope.variables.excludes";
 
-    /** The map of additional variables that should be included. */
+    /** @deprecated use {@link MetricOptions#REPORTER_ADDITIONAL_VARIABLES} */
+    @Deprecated
     public static final String METRICS_REPORTER_ADDITIONAL_VARIABLES = "scope.variables.additional";
 
     /** @deprecated Use {@link MetricOptions#SCOPE_DELIMITER} instead. */
@@ -1202,7 +1215,7 @@ public final class ConfigConstants {
     @Deprecated public static final int DEFAULT_PARALLELISM = 1;
 
     /** The default number of execution retries. */
-    public static final int DEFAULT_EXECUTION_RETRIES = 0;
+    @Deprecated public static final int DEFAULT_EXECUTION_RETRIES = 0;
 
     // ------------------------------ Runtime ---------------------------------
 
@@ -1349,7 +1362,7 @@ public final class ConfigConstants {
     /**
      * The default timeout for filesystem stream opening: infinite (means max long milliseconds).
      */
-    public static final int DEFAULT_FS_STREAM_OPENING_TIMEOUT = 0;
+    @Deprecated public static final int DEFAULT_FS_STREAM_OPENING_TIMEOUT = 0;
 
     /**
      * Whether to use the LargeRecordHandler when spilling.
@@ -1415,10 +1428,10 @@ public final class ConfigConstants {
      * The default filesystem to be used, if no other scheme is specified in the user-provided URI
      * (= local filesystem).
      */
-    public static final String DEFAULT_FILESYSTEM_SCHEME = "file:///";
+    @Deprecated public static final String DEFAULT_FILESYSTEM_SCHEME = "file:///";
 
     /** The default behavior with respect to overwriting existing files (= not overwrite). */
-    public static final boolean DEFAULT_FILESYSTEM_OVERWRITE = false;
+    @Deprecated public static final boolean DEFAULT_FILESYSTEM_OVERWRITE = false;
 
     /**
      * The default behavior for output directory creating (create only directory when parallelism
@@ -1460,7 +1473,7 @@ public final class ConfigConstants {
      */
     @Deprecated
     public static final ConfigOption<String> DEFAULT_JOB_MANAGER_WEB_FRONTEND_ADDRESS =
-            key("jobmanager.web.address").noDefaultValue();
+            key("jobmanager.web.address").stringType().noDefaultValue();
 
     /**
      * The config key for the port of the JobManager web frontend. Setting this value to {@code -1}
@@ -1534,37 +1547,37 @@ public final class ConfigConstants {
 
     // ------------------------------ Akka Values ------------------------------
 
-    /** @deprecated Use {@link AkkaOptions#TRANSPORT_HEARTBEAT_INTERVAL} instead. */
+    /** @deprecated Use {@link RpcOptions#TRANSPORT_HEARTBEAT_INTERVAL} instead. */
     @Deprecated public static final String DEFAULT_AKKA_TRANSPORT_HEARTBEAT_INTERVAL = "1000 s";
 
-    /** @deprecated Use {@link AkkaOptions#TRANSPORT_HEARTBEAT_PAUSE} instead. */
+    /** @deprecated Use {@link RpcOptions#TRANSPORT_HEARTBEAT_PAUSE} instead. */
     @Deprecated public static final String DEFAULT_AKKA_TRANSPORT_HEARTBEAT_PAUSE = "6000 s";
 
-    /** @deprecated Use {@link AkkaOptions#TRANSPORT_THRESHOLD} instead. */
+    /** @deprecated Use {@link RpcOptions#TRANSPORT_THRESHOLD} instead. */
     @Deprecated public static final double DEFAULT_AKKA_TRANSPORT_THRESHOLD = 300.0;
 
     /** @deprecated This default value is no longer used and has no effect on Flink. */
     @Deprecated public static final double DEFAULT_AKKA_WATCH_THRESHOLD = 12;
 
-    /** @deprecated Use {@link AkkaOptions#DISPATCHER_THROUGHPUT} instead. */
+    /** @deprecated Use {@link RpcOptions#DISPATCHER_THROUGHPUT} instead. */
     @Deprecated public static final int DEFAULT_AKKA_DISPATCHER_THROUGHPUT = 15;
 
-    /** @deprecated Use {@link AkkaOptions#LOG_LIFECYCLE_EVENTS} instead. */
+    /** @deprecated Use {@link RpcOptions#LOG_LIFECYCLE_EVENTS} instead. */
     @Deprecated public static final boolean DEFAULT_AKKA_LOG_LIFECYCLE_EVENTS = false;
 
-    /** @deprecated Use {@link AkkaOptions#FRAMESIZE} instead. */
+    /** @deprecated Use {@link RpcOptions#FRAMESIZE} instead. */
     @Deprecated public static final String DEFAULT_AKKA_FRAMESIZE = "10485760b";
 
-    /** @deprecated Use {@link AkkaOptions#ASK_TIMEOUT} instead. */
+    /** @deprecated Use {@link RpcOptions#ASK_TIMEOUT_DURATION} instead. */
     @Deprecated public static final String DEFAULT_AKKA_ASK_TIMEOUT = "10 s";
 
-    /** @deprecated Use {@link AkkaOptions#LOOKUP_TIMEOUT} instead. */
+    /** @deprecated Use {@link RpcOptions#LOOKUP_TIMEOUT_DURATION} instead. */
     @Deprecated public static final String DEFAULT_AKKA_LOOKUP_TIMEOUT = "10 s";
 
     /** @deprecated Use {@code ClientOptions#CLIENT_TIMEOUT} instead. */
     @Deprecated public static final String DEFAULT_AKKA_CLIENT_TIMEOUT = "60 s";
 
-    /** @deprecated Use {@link AkkaOptions#SSL_ENABLED} instead. */
+    /** @deprecated Use {@link RpcOptions#SSL_ENABLED} instead. */
     @Deprecated public static final boolean DEFAULT_AKKA_SSL_ENABLED = true;
 
     // ----------------------------- SSL Values --------------------------------
@@ -1584,18 +1597,22 @@ public final class ConfigConstants {
 
     // ----------------------------- Streaming Values --------------------------
 
-    public static final String DEFAULT_STATE_BACKEND = "jobmanager";
+    @Deprecated public static final String DEFAULT_STATE_BACKEND = "jobmanager";
 
     // ----------------------------- LocalExecution ----------------------------
 
-    /** Sets the number of local task managers. */
-    public static final String LOCAL_NUMBER_TASK_MANAGER = "local.number-taskmanager";
+    /**
+     * Sets the number of local task managers.
+     *
+     * @deprecated use {@link TaskManagerOptions#MINI_CLUSTER_NUM_TASK_MANAGERS} instead
+     */
+    @Deprecated public static final String LOCAL_NUMBER_TASK_MANAGER = "local.number-taskmanager";
 
     public static final int DEFAULT_LOCAL_NUMBER_TASK_MANAGER = 1;
 
-    public static final String LOCAL_NUMBER_JOB_MANAGER = "local.number-jobmanager";
+    @Deprecated public static final String LOCAL_NUMBER_JOB_MANAGER = "local.number-jobmanager";
 
-    public static final int DEFAULT_LOCAL_NUMBER_JOB_MANAGER = 1;
+    @Deprecated public static final int DEFAULT_LOCAL_NUMBER_JOB_MANAGER = 1;
 
     /** @deprecated Use {@link ResourceManagerOptions#LOCAL_NUMBER_RESOURCE_MANAGER} instead. */
     @Deprecated
@@ -1729,8 +1746,18 @@ public final class ConfigConstants {
     /** The environment variable name which contains the location of the lib folder. */
     public static final String ENV_FLINK_LIB_DIR = "FLINK_LIB_DIR";
 
+    /**
+     * The default Flink lib directory if none has been specified via {@link #ENV_FLINK_LIB_DIR}.
+     */
+    public static final String DEFAULT_FLINK_LIB_DIR = "lib";
+
     /** The environment variable name which contains the location of the opt directory. */
     public static final String ENV_FLINK_OPT_DIR = "FLINK_OPT_DIR";
+
+    /**
+     * The default Flink opt directory if none has been specified via {@link #ENV_FLINK_OPT_DIR}.
+     */
+    public static final String DEFAULT_FLINK_OPT_DIR = "opt";
 
     /** The environment variable name which contains the location of the plugins folder. */
     public static final String ENV_FLINK_PLUGINS_DIR = "FLINK_PLUGINS_DIR";
@@ -1742,13 +1769,19 @@ public final class ConfigConstants {
     public static final String DEFAULT_FLINK_PLUGINS_DIRS = "plugins";
 
     /** The environment variable name which contains the location of the bin directory. */
-    public static final String ENV_FLINK_BIN_DIR = "FLINK_BIN_DIR";
+    @Deprecated public static final String ENV_FLINK_BIN_DIR = "FLINK_BIN_DIR";
 
     /** The environment variable name which contains the Flink installation root directory. */
     public static final String ENV_FLINK_HOME_DIR = "FLINK_HOME";
 
     /** The user lib directory name. */
     public static final String DEFAULT_FLINK_USR_LIB_DIR = "usrlib";
+
+    /**
+     * The environment variable name which contains a list of newline-separated HTTP headers for
+     * Flink's REST client.
+     */
+    public static final String FLINK_REST_CLIENT_HEADERS = "FLINK_REST_CLIENT_HEADERS";
 
     // ---------------------------- Encoding ------------------------------
 

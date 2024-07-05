@@ -17,14 +17,13 @@
  */
 package org.apache.flink.streaming.api.scala
 
-import org.apache.flink.streaming.api.functions.sink.DiscardingSink
+import org.apache.flink.streaming.api.functions.sink.v2.DiscardingSink
 import org.apache.flink.streaming.api.windowing.assigners.TumblingProcessingTimeWindows
 import org.apache.flink.streaming.api.windowing.time.Time
+
 import org.junit.Test
 
-/**
-  * Integration test for [[DataStreamUtils.reinterpretAsKeyedStream()]].
-  */
+/** Integration test for [[DataStreamUtils.reinterpretAsKeyedStream()]]. */
 class ReinterpretDataStreamAsKeyedStreamITCase {
 
   @Test
@@ -32,10 +31,11 @@ class ReinterpretDataStreamAsKeyedStreamITCase {
     val env = StreamExecutionEnvironment.getExecutionEnvironment
     env.setParallelism(1)
     val source = env.fromElements("eins", "zwei", "drei")
-    new DataStreamUtils(source).reinterpretAsKeyedStream((in) => in)
+    new DataStreamUtils(source)
+      .reinterpretAsKeyedStream((in) => in)
       .window(TumblingProcessingTimeWindows.of(Time.seconds(1)))
       .reduce((a, b) => a + b)
-      .addSink(new DiscardingSink[String])
+      .sinkTo(new DiscardingSink[String])
     env.execute()
   }
 }

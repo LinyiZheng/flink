@@ -50,6 +50,16 @@ public abstract class AbstractMultipleInputTransformation<OUT> extends PhysicalT
         this.operatorFactory = operatorFactory;
     }
 
+    public AbstractMultipleInputTransformation(
+            String name,
+            StreamOperatorFactory<OUT> operatorFactory,
+            TypeInformation<OUT> outputType,
+            int parallelism,
+            boolean parallelismConfigured) {
+        super(name, outputType, parallelism, parallelismConfigured);
+        this.operatorFactory = operatorFactory;
+    }
+
     @Override
     public List<Transformation<?>> getInputs() {
         return inputs;
@@ -66,14 +76,26 @@ public abstract class AbstractMultipleInputTransformation<OUT> extends PhysicalT
     }
 
     @Override
-    public List<Transformation<?>> getTransitivePredecessors() {
-        return inputs.stream()
-                .flatMap(input -> input.getTransitivePredecessors().stream())
-                .collect(Collectors.toList());
+    protected List<Transformation<?>> getTransitivePredecessorsInternal() {
+        List<Transformation<?>> predecessors =
+                getInputs().stream()
+                        .flatMap(input -> input.getTransitivePredecessors().stream())
+                        .distinct()
+                        .collect(Collectors.toList());
+        predecessors.add(this);
+        return predecessors;
     }
 
     @Override
     public final void setChainingStrategy(ChainingStrategy strategy) {
         operatorFactory.setChainingStrategy(strategy);
+    }
+
+    public boolean isOutputOnlyAfterEndOfStream() {
+        return operatorFactory.getOperatorAttributes().isOutputOnlyAfterEndOfStream();
+    }
+
+    public boolean isInternalSorterSupported() {
+        return operatorFactory.getOperatorAttributes().isInternalSorterSupported();
     }
 }

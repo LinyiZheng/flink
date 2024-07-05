@@ -30,20 +30,20 @@ import org.apache.flink.table.sinks.TableSink;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.types.Row;
 
-import org.junit.Test;
+import org.junit.jupiter.api.TestTemplate;
 
 import java.util.Optional;
 
 /** Tests for verifying name and description of batch sql operator. */
-public class BatchOperatorNameTest extends OperatorNameTestBase {
+class BatchOperatorNameTest extends OperatorNameTestBase {
 
     @Override
     protected TableTestUtil getTableTestUtil() {
         return batchTestUtil(TableConfig.getDefault());
     }
 
-    @Test
-    public void testBoundedStreamScan() {
+    @TestTemplate
+    void testBoundedStreamScan() {
         final DataStream<Integer> dataStream = util.getStreamEnv().fromElements(1, 2, 3, 4, 5);
         TableTestUtil.createTemporaryView(
                 tEnv,
@@ -56,25 +56,23 @@ public class BatchOperatorNameTest extends OperatorNameTestBase {
     }
 
     /** Verify Expand, HashAggregate. */
-    @Test
-    public void testHashAggregate() {
+    @TestTemplate
+    void testHashAggregate() {
         createTestSource();
         verifyQuery("SELECT a, " + "count(distinct b) as b " + "FROM MyTable GROUP BY a");
     }
 
     /** Verify Sort, SortAggregate. */
-    @Test
-    public void testSortAggregate() {
-        tEnv.getConfig()
-                .getConfiguration()
-                .setString(ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "HashAgg");
+    @TestTemplate
+    void testSortAggregate() {
+        tEnv.getConfig().set(ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS, "HashAgg");
         createTestSource();
         verifyQuery("SELECT a, " + "count(distinct b) as b " + "FROM MyTable GROUP BY a");
     }
 
     /** Verify SortWindowAggregate. */
-    @Test
-    public void testSortWindowAggregate() {
+    @TestTemplate
+    void testSortWindowAggregate() {
         createSourceWithTimeAttribute();
         verifyQuery(
                 "SELECT\n"
@@ -86,36 +84,34 @@ public class BatchOperatorNameTest extends OperatorNameTestBase {
     }
 
     /** Verify HashJoin. */
-    @Test
-    public void testHashJoin() {
+    @TestTemplate
+    void testHashJoin() {
         testJoinInternal();
     }
 
     /** Verify NestedLoopJoin. */
-    @Test
-    public void testNestedLoopJoin() {
+    @TestTemplate
+    void testNestedLoopJoin() {
         tEnv.getConfig()
-                .getConfiguration()
-                .setString(
+                .set(
                         ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS,
                         "HashJoin, SortMergeJoin");
         testJoinInternal();
     }
 
     /** Verify SortMergeJoin. */
-    @Test
-    public void testSortMergeJoin() {
+    @TestTemplate
+    void testSortMergeJoin() {
         tEnv.getConfig()
-                .getConfiguration()
-                .setString(
+                .set(
                         ExecutionConfigOptions.TABLE_EXEC_DISABLED_OPERATORS,
                         "HashJoin, NestedLoopJoin");
         testJoinInternal();
     }
 
     /** Verify MultiInput. */
-    @Test
-    public void testMultiInput() {
+    @TestTemplate
+    void testMultiInput() {
         createTestSource("A");
         createTestSource("B");
         createTestSource("C");
@@ -123,21 +119,21 @@ public class BatchOperatorNameTest extends OperatorNameTestBase {
     }
 
     /** Verify Limit. */
-    @Test
-    public void testLimit() {
+    @TestTemplate
+    void testLimit() {
         createTestSource();
         verifyQuery("select * from MyTable limit 10");
     }
 
     /** Verify SortLimit. */
-    @Test
-    public void testSortLimit() {
+    @TestTemplate
+    void testSortLimit() {
         createTestSource();
         verifyQuery("select * from MyTable order by a limit 10");
     }
 
-    @Test
-    public void testLegacySourceSink() {
+    @TestTemplate
+    void testLegacySourceSink() {
         TableSchema schema = TestLegacyFilterableTableSource.defaultSchema();
         TestLegacyFilterableTableSource.createTemporaryTable(
                 tEnv,
@@ -155,5 +151,25 @@ public class BatchOperatorNameTest extends OperatorNameTestBase {
                                         .toArray(LogicalType[]::new));
         util.testingTableEnv().registerTableSinkInternal("MySink", sink);
         verifyInsert("insert into MySink select * from MySource");
+    }
+
+    @TestTemplate
+    void testMatch() {
+        createSourceWithTimeAttribute();
+        String sql =
+                "SELECT T.aid, T.bid, T.cid\n"
+                        + "     FROM MyTable MATCH_RECOGNIZE (\n"
+                        + "             ORDER BY proctime\n"
+                        + "             MEASURES\n"
+                        + "             `A\"`.a AS aid,\n"
+                        + "             \u006C.a AS bid,\n"
+                        + "             C.a AS cid\n"
+                        + "             PATTERN (`A\"` \u006C C)\n"
+                        + "             DEFINE\n"
+                        + "                 `A\"` AS a = 1,\n"
+                        + "                 \u006C AS b = 2,\n"
+                        + "                 C AS c = 'c'\n"
+                        + "     ) AS T";
+        verifyQuery(sql);
     }
 }

@@ -18,113 +18,51 @@
 
 package org.apache.flink.table.runtime.operators.aggregate.window;
 
-import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.runtime.checkpoint.OperatorSubtaskState;
 import org.apache.flink.streaming.api.watermark.Watermark;
-import org.apache.flink.streaming.util.KeyedOneInputStreamOperatorTestHarness;
 import org.apache.flink.streaming.util.OneInputStreamOperatorTestHarness;
-import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
-import org.apache.flink.table.data.utils.JoinedRowData;
-import org.apache.flink.table.runtime.dataview.StateDataViewStore;
-import org.apache.flink.table.runtime.generated.GeneratedNamespaceAggsHandleFunction;
-import org.apache.flink.table.runtime.generated.NamespaceAggsHandleFunction;
-import org.apache.flink.table.runtime.keyselector.RowDataKeySelector;
-import org.apache.flink.table.runtime.operators.window.slicing.SliceAssigner;
-import org.apache.flink.table.runtime.operators.window.slicing.SliceAssigners;
-import org.apache.flink.table.runtime.operators.window.slicing.SlicingWindowOperator;
-import org.apache.flink.table.runtime.typeutils.PagedTypeSerializer;
-import org.apache.flink.table.runtime.typeutils.RowDataSerializer;
-import org.apache.flink.table.runtime.util.GenericRowRecordSortComparator;
-import org.apache.flink.table.runtime.util.RowDataHarnessAssertor;
-import org.apache.flink.table.types.logical.BigIntType;
-import org.apache.flink.table.types.logical.IntType;
-import org.apache.flink.table.types.logical.LogicalType;
-import org.apache.flink.table.types.logical.RowType;
-import org.apache.flink.table.types.logical.VarCharType;
-import org.apache.flink.table.utils.HandwrittenSelectorUtil;
+import org.apache.flink.table.runtime.operators.window.tvf.common.WindowAggOperator;
+import org.apache.flink.table.runtime.operators.window.tvf.slicing.SliceAssigner;
+import org.apache.flink.table.runtime.operators.window.tvf.slicing.SliceAssigners;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 
 import java.time.Duration;
-import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.apache.flink.core.testutils.FlinkMatchers.containsMessage;
+import static org.apache.flink.table.data.TimestampData.fromEpochMillis;
 import static org.apache.flink.table.runtime.util.StreamRecordUtils.insertRecord;
-import static org.apache.flink.table.runtime.util.TimeWindowUtil.toUtcTimestampMills;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** Tests for window aggregate operators created by {@link SlicingWindowAggOperatorBuilder}. */
+/** Tests for slicing window aggregate operators created by {@link WindowAggOperatorBuilder}. */
 @RunWith(Parameterized.class)
-public class SlicingWindowAggOperatorTest {
-
-    private static final ZoneId UTC_ZONE_ID = ZoneId.of("UTC");
-    private static final ZoneId SHANGHAI_ZONE_ID = ZoneId.of("Asia/Shanghai");
-    private final ZoneId shiftTimeZone;
+public class SlicingWindowAggOperatorTest extends WindowAggOperatorTestBase {
 
     public SlicingWindowAggOperatorTest(ZoneId shiftTimeZone) {
-        this.shiftTimeZone = shiftTimeZone;
+        super(shiftTimeZone);
     }
-
-    private static final RowType INPUT_ROW_TYPE =
-            new RowType(
-                    Arrays.asList(
-                            new RowType.RowField("f0", new VarCharType(Integer.MAX_VALUE)),
-                            new RowType.RowField("f1", new IntType()),
-                            new RowType.RowField("f2", new BigIntType())));
-
-    private static final RowDataSerializer INPUT_ROW_SER = new RowDataSerializer(INPUT_ROW_TYPE);
-
-    private static final RowDataSerializer ACC_SER =
-            new RowDataSerializer(new BigIntType(), new BigIntType());
-
-    private static final LogicalType[] OUTPUT_TYPES =
-            new LogicalType[] {
-                new VarCharType(Integer.MAX_VALUE),
-                new BigIntType(),
-                new BigIntType(),
-                new BigIntType(),
-                new BigIntType()
-            };
-
-    private static final RowDataKeySelector KEY_SELECTOR =
-            HandwrittenSelectorUtil.getRowDataSelector(
-                    new int[] {0}, INPUT_ROW_TYPE.getChildren().toArray(new LogicalType[0]));
-
-    private static final PagedTypeSerializer<RowData> KEY_SER =
-            (PagedTypeSerializer<RowData>) KEY_SELECTOR.getProducedType().toSerializer();
-
-    private static final TypeSerializer<RowData> OUT_SERIALIZER =
-            new RowDataSerializer(OUTPUT_TYPES);
-
-    private static final RowDataHarnessAssertor ASSERTER =
-            new RowDataHarnessAssertor(
-                    OUTPUT_TYPES, new GenericRowRecordSortComparator(0, VarCharType.STRING_TYPE));
 
     @Test
     public void testEventTimeHoppingWindows() throws Exception {
         final SliceAssigner assigner =
                 SliceAssigners.hopping(
                         2, shiftTimeZone, Duration.ofSeconds(3), Duration.ofSeconds(1));
-        final SumAndCountAggsFunction aggsFunction = new SumAndCountAggsFunction(assigner);
-        SlicingWindowOperator<RowData, ?> operator =
-                SlicingWindowAggOperatorBuilder.builder()
+        final SlicingSumAndCountAggsFunction aggsFunction =
+                new SlicingSumAndCountAggsFunction(assigner);
+        WindowAggOperator<RowData, ?> operator =
+                WindowAggOperatorBuilder.builder()
                         .inputSerializer(INPUT_ROW_SER)
                         .shiftTimeZone(shiftTimeZone)
                         .keySerializer(KEY_SER)
                         .assigner(assigner)
-                        .aggregate(wrapGenerated(aggsFunction), ACC_SER)
+                        .aggregate(createGeneratedAggsHandle(aggsFunction), ACC_SER)
                         .countStarIndex(1)
                         .build();
 
@@ -138,16 +76,16 @@ public class SlicingWindowAggOperatorTest {
         ConcurrentLinkedQueue<Object> expectedOutput = new ConcurrentLinkedQueue<>();
 
         // add elements out-of-order
-        testHarness.processElement(insertRecord("key2", 1, 3999L));
-        testHarness.processElement(insertRecord("key2", 1, 3000L));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(3999L)));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(3000L)));
 
-        testHarness.processElement(insertRecord("key1", 1, 20L));
-        testHarness.processElement(insertRecord("key1", 1, 0L));
-        testHarness.processElement(insertRecord("key1", 1, 999L));
+        testHarness.processElement(insertRecord("key1", 1, fromEpochMillis(20L)));
+        testHarness.processElement(insertRecord("key1", 1, fromEpochMillis(0L)));
+        testHarness.processElement(insertRecord("key1", 1, fromEpochMillis(999L)));
 
-        testHarness.processElement(insertRecord("key2", 1, 1998L));
-        testHarness.processElement(insertRecord("key2", 1, 1999L));
-        testHarness.processElement(insertRecord("key2", 1, 1000L));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(1998L)));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(1999L)));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(1000L)));
 
         testHarness.processWatermark(new Watermark(999));
         expectedOutput.add(insertRecord("key1", 3L, 3L, localMills(-2000L), localMills(1000L)));
@@ -174,7 +112,7 @@ public class SlicingWindowAggOperatorTest {
         OperatorSubtaskState snapshot = testHarness.snapshot(0L, 0);
         testHarness.close();
 
-        assertTrue("Close was not called.", aggsFunction.closeCalled.get() > 0);
+        assertThat(aggsFunction.closeCalled.get()).as("Close was not called.").isGreaterThan(0);
 
         expectedOutput.clear();
         testHarness = createTestHarness(operator);
@@ -189,7 +127,7 @@ public class SlicingWindowAggOperatorTest {
                 "Output was not correct.", expectedOutput, testHarness.getOutput());
 
         // late element for [1K, 4K), but should be accumulated into [2K, 5K), [3K, 6K)
-        testHarness.processElement(insertRecord("key2", 1, 3500L));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(3500L)));
 
         testHarness.processWatermark(new Watermark(4999));
         expectedOutput.add(insertRecord("key2", 3L, 3L, localMills(2000L), localMills(5000L)));
@@ -198,7 +136,7 @@ public class SlicingWindowAggOperatorTest {
                 "Output was not correct.", expectedOutput, testHarness.getOutput());
 
         // late for all assigned windows, should be dropped
-        testHarness.processElement(insertRecord("key1", 1, 2999L));
+        testHarness.processElement(insertRecord("key1", 1, fromEpochMillis(2999L)));
 
         testHarness.processWatermark(new Watermark(5999));
         expectedOutput.add(insertRecord("key2", 3L, 3L, localMills(3000L), localMills(6000L)));
@@ -215,7 +153,7 @@ public class SlicingWindowAggOperatorTest {
         ASSERTER.assertOutputEqualsSorted(
                 "Output was not correct.", expectedOutput, testHarness.getOutput());
 
-        assertEquals(1, operator.getNumLateRecordsDropped().getCount());
+        assertThat(operator.getNumLateRecordsDropped().getCount()).isEqualTo(1);
 
         testHarness.close();
     }
@@ -224,14 +162,15 @@ public class SlicingWindowAggOperatorTest {
     public void testProcessingTimeHoppingWindows() throws Exception {
         final SliceAssigner assigner =
                 SliceAssigners.hopping(-1, shiftTimeZone, Duration.ofHours(3), Duration.ofHours(1));
-        final SumAndCountAggsFunction aggsFunction = new SumAndCountAggsFunction(assigner);
-        SlicingWindowOperator<RowData, ?> operator =
-                SlicingWindowAggOperatorBuilder.builder()
+        final SlicingSumAndCountAggsFunction aggsFunction =
+                new SlicingSumAndCountAggsFunction(assigner);
+        WindowAggOperator<RowData, ?> operator =
+                WindowAggOperatorBuilder.builder()
                         .inputSerializer(INPUT_ROW_SER)
                         .shiftTimeZone(shiftTimeZone)
                         .keySerializer(KEY_SER)
                         .assigner(assigner)
-                        .aggregate(wrapGenerated(aggsFunction), ACC_SER)
+                        .aggregate(createGeneratedAggsHandle(aggsFunction), ACC_SER)
                         .countStarIndex(1)
                         .build();
 
@@ -246,7 +185,7 @@ public class SlicingWindowAggOperatorTest {
 
         // timestamp is ignored in processing time
         testHarness.setProcessingTime(epochMills(shiftTimeZone, "1970-01-01T00:00:00.003"));
-        testHarness.processElement(insertRecord("key2", 1, Long.MAX_VALUE));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(Long.MAX_VALUE)));
 
         testHarness.setProcessingTime(epochMills(shiftTimeZone, "1970-01-01T01:00:00"));
 
@@ -261,8 +200,8 @@ public class SlicingWindowAggOperatorTest {
         ASSERTER.assertOutputEqualsSorted(
                 "Output was not correct.", expectedOutput, testHarness.getOutput());
 
-        testHarness.processElement(insertRecord("key2", 1, Long.MAX_VALUE));
-        testHarness.processElement(insertRecord("key2", 1, Long.MAX_VALUE));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(Long.MAX_VALUE)));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(Long.MAX_VALUE)));
 
         testHarness.setProcessingTime(epochMills(shiftTimeZone, "1970-01-01T02:00:00"));
 
@@ -276,8 +215,8 @@ public class SlicingWindowAggOperatorTest {
         ASSERTER.assertOutputEqualsSorted(
                 "Output was not correct.", expectedOutput, testHarness.getOutput());
 
-        testHarness.processElement(insertRecord("key1", 1, Long.MAX_VALUE));
-        testHarness.processElement(insertRecord("key1", 1, Long.MAX_VALUE));
+        testHarness.processElement(insertRecord("key1", 1, fromEpochMillis(Long.MAX_VALUE)));
+        testHarness.processElement(insertRecord("key1", 1, fromEpochMillis(Long.MAX_VALUE)));
 
         testHarness.setProcessingTime(epochMills(shiftTimeZone, "1970-01-01T03:00:00"));
 
@@ -299,9 +238,9 @@ public class SlicingWindowAggOperatorTest {
         ASSERTER.assertOutputEqualsSorted(
                 "Output was not correct.", expectedOutput, testHarness.getOutput());
 
-        testHarness.processElement(insertRecord("key1", 1, Long.MAX_VALUE));
-        testHarness.processElement(insertRecord("key1", 1, Long.MAX_VALUE));
-        testHarness.processElement(insertRecord("key1", 1, Long.MAX_VALUE));
+        testHarness.processElement(insertRecord("key1", 1, fromEpochMillis(Long.MAX_VALUE)));
+        testHarness.processElement(insertRecord("key1", 1, fromEpochMillis(Long.MAX_VALUE)));
+        testHarness.processElement(insertRecord("key1", 1, fromEpochMillis(Long.MAX_VALUE)));
 
         testHarness.setProcessingTime(epochMills(shiftTimeZone, "1970-01-01T07:00:00"));
 
@@ -338,7 +277,7 @@ public class SlicingWindowAggOperatorTest {
                 "Output was not correct.", expectedOutput, testHarness.getOutput());
 
         testHarness.close();
-        assertTrue("Close was not called.", aggsFunction.closeCalled.get() > 0);
+        assertThat(aggsFunction.closeCalled.get()).as("Close was not called.").isGreaterThan(0);
     }
 
     @Test
@@ -346,14 +285,15 @@ public class SlicingWindowAggOperatorTest {
         final SliceAssigner assigner =
                 SliceAssigners.cumulative(
                         2, shiftTimeZone, Duration.ofSeconds(3), Duration.ofSeconds(1));
-        final SumAndCountAggsFunction aggsFunction = new SumAndCountAggsFunction(assigner);
-        SlicingWindowOperator<RowData, ?> operator =
-                SlicingWindowAggOperatorBuilder.builder()
+        final SlicingSumAndCountAggsFunction aggsFunction =
+                new SlicingSumAndCountAggsFunction(assigner);
+        WindowAggOperator<RowData, ?> operator =
+                WindowAggOperatorBuilder.builder()
                         .inputSerializer(INPUT_ROW_SER)
                         .shiftTimeZone(shiftTimeZone)
                         .keySerializer(KEY_SER)
                         .assigner(assigner)
-                        .aggregate(wrapGenerated(aggsFunction), ACC_SER)
+                        .aggregate(createGeneratedAggsHandle(aggsFunction), ACC_SER)
                         .build();
 
         OneInputStreamOperatorTestHarness<RowData, RowData> testHarness =
@@ -366,16 +306,16 @@ public class SlicingWindowAggOperatorTest {
         ConcurrentLinkedQueue<Object> expectedOutput = new ConcurrentLinkedQueue<>();
 
         // add elements out-of-order
-        testHarness.processElement(insertRecord("key2", 1, 2999L));
-        testHarness.processElement(insertRecord("key2", 1, 3000L));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(2999L)));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(3000L)));
 
-        testHarness.processElement(insertRecord("key1", 1, 20L));
-        testHarness.processElement(insertRecord("key1", 1, 0L));
-        testHarness.processElement(insertRecord("key1", 1, 999L));
+        testHarness.processElement(insertRecord("key1", 1, fromEpochMillis(20L)));
+        testHarness.processElement(insertRecord("key1", 1, fromEpochMillis(0L)));
+        testHarness.processElement(insertRecord("key1", 1, fromEpochMillis(999L)));
 
-        testHarness.processElement(insertRecord("key2", 1, 1998L));
-        testHarness.processElement(insertRecord("key2", 1, 1999L));
-        testHarness.processElement(insertRecord("key2", 1, 1000L));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(1998L)));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(1999L)));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(1000L)));
 
         testHarness.processWatermark(new Watermark(999));
         expectedOutput.add(insertRecord("key1", 3L, 3L, localMills(0L), localMills(1000L)));
@@ -395,7 +335,7 @@ public class SlicingWindowAggOperatorTest {
         OperatorSubtaskState snapshot = testHarness.snapshot(0L, 0);
         testHarness.close();
 
-        assertTrue("Close was not called.", aggsFunction.closeCalled.get() > 0);
+        assertThat(aggsFunction.closeCalled.get()).as("Close was not called.").isGreaterThan(0);
 
         expectedOutput.clear();
         testHarness = createTestHarness(operator);
@@ -404,7 +344,7 @@ public class SlicingWindowAggOperatorTest {
         testHarness.open();
         // the late event would not trigger window [0, 2000L) again even if the job restore from
         // savepoint
-        testHarness.processElement(insertRecord("key2", 1, 1000L));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(1000L)));
         testHarness.processWatermark(new Watermark(1999));
 
         expectedOutput.add(new Watermark(1999));
@@ -424,7 +364,7 @@ public class SlicingWindowAggOperatorTest {
                 "Output was not correct.", expectedOutput, testHarness.getOutput());
 
         // late element for [3K, 4K), but should be accumulated into [3K, 5K) [3K, 6K)
-        testHarness.processElement(insertRecord("key1", 2, 3500L));
+        testHarness.processElement(insertRecord("key1", 2, fromEpochMillis(3500L)));
 
         testHarness.processWatermark(new Watermark(4999));
         expectedOutput.add(insertRecord("key2", 1L, 1L, localMills(3000L), localMills(5000L)));
@@ -434,7 +374,7 @@ public class SlicingWindowAggOperatorTest {
                 "Output was not correct.", expectedOutput, testHarness.getOutput());
 
         // late for all assigned windows, should be dropped
-        testHarness.processElement(insertRecord("key1", 1, 2999L));
+        testHarness.processElement(insertRecord("key1", 1, fromEpochMillis(2999L)));
 
         testHarness.processWatermark(new Watermark(5999));
         expectedOutput.add(insertRecord("key2", 1L, 1L, localMills(3000L), localMills(6000L)));
@@ -452,7 +392,7 @@ public class SlicingWindowAggOperatorTest {
         ASSERTER.assertOutputEqualsSorted(
                 "Output was not correct.", expectedOutput, testHarness.getOutput());
 
-        assertEquals(1, operator.getNumLateRecordsDropped().getCount());
+        assertThat(operator.getNumLateRecordsDropped().getCount()).isEqualTo(1);
 
         testHarness.close();
     }
@@ -462,14 +402,15 @@ public class SlicingWindowAggOperatorTest {
         final SliceAssigner assigner =
                 SliceAssigners.cumulative(
                         -1, shiftTimeZone, Duration.ofDays(1), Duration.ofHours(8));
-        final SumAndCountAggsFunction aggsFunction = new SumAndCountAggsFunction(assigner);
-        SlicingWindowOperator<RowData, ?> operator =
-                SlicingWindowAggOperatorBuilder.builder()
+        final SlicingSumAndCountAggsFunction aggsFunction =
+                new SlicingSumAndCountAggsFunction(assigner);
+        WindowAggOperator<RowData, ?> operator =
+                WindowAggOperatorBuilder.builder()
                         .inputSerializer(INPUT_ROW_SER)
                         .shiftTimeZone(shiftTimeZone)
                         .keySerializer(KEY_SER)
                         .assigner(assigner)
-                        .aggregate(wrapGenerated(aggsFunction), ACC_SER)
+                        .aggregate(createGeneratedAggsHandle(aggsFunction), ACC_SER)
                         .build();
 
         OneInputStreamOperatorTestHarness<RowData, RowData> testHarness =
@@ -483,7 +424,7 @@ public class SlicingWindowAggOperatorTest {
 
         // timestamp is ignored in processing time
         testHarness.setProcessingTime(epochMills(shiftTimeZone, "1970-01-01T00:00:00.003"));
-        testHarness.processElement(insertRecord("key2", 1, Long.MAX_VALUE));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(Long.MAX_VALUE)));
 
         testHarness.setProcessingTime(epochMills(shiftTimeZone, "1970-01-01T08:00:00"));
 
@@ -498,8 +439,8 @@ public class SlicingWindowAggOperatorTest {
         ASSERTER.assertOutputEqualsSorted(
                 "Output was not correct.", expectedOutput, testHarness.getOutput());
 
-        testHarness.processElement(insertRecord("key2", 1, Long.MAX_VALUE));
-        testHarness.processElement(insertRecord("key2", 1, Long.MAX_VALUE));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(Long.MAX_VALUE)));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(Long.MAX_VALUE)));
 
         testHarness.setProcessingTime(epochMills(shiftTimeZone, "1970-01-01T16:00:00"));
 
@@ -513,8 +454,8 @@ public class SlicingWindowAggOperatorTest {
         ASSERTER.assertOutputEqualsSorted(
                 "Output was not correct.", expectedOutput, testHarness.getOutput());
 
-        testHarness.processElement(insertRecord("key1", 1, Long.MAX_VALUE));
-        testHarness.processElement(insertRecord("key1", 1, Long.MAX_VALUE));
+        testHarness.processElement(insertRecord("key1", 1, fromEpochMillis(Long.MAX_VALUE)));
+        testHarness.processElement(insertRecord("key1", 1, fromEpochMillis(Long.MAX_VALUE)));
 
         testHarness.setProcessingTime(epochMills(shiftTimeZone, "1970-01-02T00:00:00"));
 
@@ -536,9 +477,9 @@ public class SlicingWindowAggOperatorTest {
         ASSERTER.assertOutputEqualsSorted(
                 "Output was not correct.", expectedOutput, testHarness.getOutput());
 
-        testHarness.processElement(insertRecord("key1", 1, Long.MAX_VALUE));
-        testHarness.processElement(insertRecord("key2", 1, Long.MAX_VALUE));
-        testHarness.processElement(insertRecord("key1", 1, Long.MAX_VALUE));
+        testHarness.processElement(insertRecord("key1", 1, fromEpochMillis(Long.MAX_VALUE)));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(Long.MAX_VALUE)));
+        testHarness.processElement(insertRecord("key1", 1, fromEpochMillis(Long.MAX_VALUE)));
 
         testHarness.setProcessingTime(epochMills(shiftTimeZone, "1970-01-03T08:00:00"));
 
@@ -589,21 +530,22 @@ public class SlicingWindowAggOperatorTest {
                 "Output was not correct.", expectedOutput, testHarness.getOutput());
 
         testHarness.close();
-        assertTrue("Close was not called.", aggsFunction.closeCalled.get() > 0);
+        assertThat(aggsFunction.closeCalled.get()).as("Close was not called.").isGreaterThan(0);
     }
 
     @Test
     public void testEventTimeTumblingWindows() throws Exception {
         final SliceAssigner assigner =
                 SliceAssigners.tumbling(2, shiftTimeZone, Duration.ofSeconds(3));
-        final SumAndCountAggsFunction aggsFunction = new SumAndCountAggsFunction(assigner);
-        SlicingWindowOperator<RowData, ?> operator =
-                SlicingWindowAggOperatorBuilder.builder()
+        final SlicingSumAndCountAggsFunction aggsFunction =
+                new SlicingSumAndCountAggsFunction(assigner);
+        WindowAggOperator<RowData, ?> operator =
+                WindowAggOperatorBuilder.builder()
                         .inputSerializer(INPUT_ROW_SER)
                         .shiftTimeZone(shiftTimeZone)
                         .keySerializer(KEY_SER)
                         .assigner(assigner)
-                        .aggregate(wrapGenerated(aggsFunction), ACC_SER)
+                        .aggregate(createGeneratedAggsHandle(aggsFunction), ACC_SER)
                         .build();
 
         OneInputStreamOperatorTestHarness<RowData, RowData> testHarness =
@@ -616,16 +558,16 @@ public class SlicingWindowAggOperatorTest {
         ConcurrentLinkedQueue<Object> expectedOutput = new ConcurrentLinkedQueue<>();
 
         // add elements out-of-order
-        testHarness.processElement(insertRecord("key2", 1, 3999L));
-        testHarness.processElement(insertRecord("key2", 1, 3000L));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(3999L)));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(3000L)));
 
-        testHarness.processElement(insertRecord("key1", 1, 20L));
-        testHarness.processElement(insertRecord("key1", 1, 0L));
-        testHarness.processElement(insertRecord("key1", 1, 999L));
+        testHarness.processElement(insertRecord("key1", 1, fromEpochMillis(20L)));
+        testHarness.processElement(insertRecord("key1", 1, fromEpochMillis(0L)));
+        testHarness.processElement(insertRecord("key1", 1, fromEpochMillis(999L)));
 
-        testHarness.processElement(insertRecord("key2", 1, 1998L));
-        testHarness.processElement(insertRecord("key2", 1, 1999L));
-        testHarness.processElement(insertRecord("key2", 1, 1000L));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(1998L)));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(1999L)));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(1000L)));
 
         testHarness.processWatermark(new Watermark(999));
         expectedOutput.add(new Watermark(999));
@@ -642,7 +584,7 @@ public class SlicingWindowAggOperatorTest {
         OperatorSubtaskState snapshot = testHarness.snapshot(0L, 0);
         testHarness.close();
 
-        assertTrue("Close was not called.", aggsFunction.closeCalled.get() > 0);
+        assertThat(aggsFunction.closeCalled.get()).as("Close was not called.").isGreaterThan(0);
 
         expectedOutput.clear();
         testHarness = createTestHarness(operator);
@@ -663,7 +605,7 @@ public class SlicingWindowAggOperatorTest {
                 "Output was not correct.", expectedOutput, testHarness.getOutput());
 
         // late element, should be dropped
-        testHarness.processElement(insertRecord("key1", 1, 2500L));
+        testHarness.processElement(insertRecord("key1", 1, fromEpochMillis(2500L)));
 
         testHarness.processWatermark(new Watermark(4999));
         expectedOutput.add(new Watermark(4999));
@@ -671,7 +613,7 @@ public class SlicingWindowAggOperatorTest {
                 "Output was not correct.", expectedOutput, testHarness.getOutput());
 
         // late element, should be dropped
-        testHarness.processElement(insertRecord("key2", 1, 2999L));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(2999L)));
 
         testHarness.processWatermark(new Watermark(5999));
         expectedOutput.add(insertRecord("key2", 2L, 2L, localMills(3000L), localMills(6000L)));
@@ -688,7 +630,7 @@ public class SlicingWindowAggOperatorTest {
         ASSERTER.assertOutputEqualsSorted(
                 "Output was not correct.", expectedOutput, testHarness.getOutput());
 
-        assertEquals(2, operator.getNumLateRecordsDropped().getCount());
+        assertThat(operator.getNumLateRecordsDropped().getCount()).isEqualTo(2);
 
         testHarness.close();
     }
@@ -703,14 +645,15 @@ public class SlicingWindowAggOperatorTest {
         // [1970-01-01 00:00, 1970-01-01 05:00] <=> [1969-12-31 16:00, 1969-12-31 21:00]
         // [1970-01-01 05:00, 1970-01-01 10:00] <=> [1969-12-31 21:00, 1970-01-01 02:00]
 
-        final SumAndCountAggsFunction aggsFunction = new SumAndCountAggsFunction(assigner);
-        SlicingWindowOperator<RowData, ?> operator =
-                SlicingWindowAggOperatorBuilder.builder()
+        final SlicingSumAndCountAggsFunction aggsFunction =
+                new SlicingSumAndCountAggsFunction(assigner);
+        WindowAggOperator<RowData, ?> operator =
+                WindowAggOperatorBuilder.builder()
                         .inputSerializer(INPUT_ROW_SER)
                         .shiftTimeZone(shiftTimeZone)
                         .keySerializer(KEY_SER)
                         .assigner(assigner)
-                        .aggregate(wrapGenerated(aggsFunction), ACC_SER)
+                        .aggregate(createGeneratedAggsHandle(aggsFunction), ACC_SER)
                         .build();
 
         OneInputStreamOperatorTestHarness<RowData, RowData> testHarness =
@@ -725,12 +668,12 @@ public class SlicingWindowAggOperatorTest {
         testHarness.setProcessingTime(epochMills(shiftTimeZone, "1970-01-01T00:00:00.003"));
 
         // timestamp is ignored in processing time
-        testHarness.processElement(insertRecord("key2", 1, Long.MAX_VALUE));
-        testHarness.processElement(insertRecord("key2", 1, 7000L));
-        testHarness.processElement(insertRecord("key2", 1, 7000L));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(Long.MAX_VALUE)));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(7000L)));
+        testHarness.processElement(insertRecord("key2", 1, fromEpochMillis(7000L)));
 
-        testHarness.processElement(insertRecord("key1", 1, 7000L));
-        testHarness.processElement(insertRecord("key1", 1, 7000L));
+        testHarness.processElement(insertRecord("key1", 1, fromEpochMillis(7000L)));
+        testHarness.processElement(insertRecord("key1", 1, fromEpochMillis(7000L)));
 
         testHarness.setProcessingTime(epochMills(shiftTimeZone, "1970-01-01T05:00:00"));
 
@@ -752,9 +695,9 @@ public class SlicingWindowAggOperatorTest {
         ASSERTER.assertOutputEqualsSorted(
                 "Output was not correct.", expectedOutput, testHarness.getOutput());
 
-        testHarness.processElement(insertRecord("key1", 1, 7000L));
-        testHarness.processElement(insertRecord("key1", 1, 7000L));
-        testHarness.processElement(insertRecord("key1", 1, 7000L));
+        testHarness.processElement(insertRecord("key1", 1, fromEpochMillis(7000L)));
+        testHarness.processElement(insertRecord("key1", 1, fromEpochMillis(7000L)));
+        testHarness.processElement(insertRecord("key1", 1, fromEpochMillis(7000L)));
 
         testHarness.setProcessingTime(epochMills(shiftTimeZone, "1970-01-01T10:00:01"));
 
@@ -766,7 +709,7 @@ public class SlicingWindowAggOperatorTest {
                         epochMills(UTC_ZONE_ID, "1970-01-01T05:00:00"),
                         epochMills(UTC_ZONE_ID, "1970-01-01T10:00:00")));
 
-        assertEquals(Long.valueOf(0L), operator.getWatermarkLatency().getValue());
+        assertThat(operator.getWatermarkLatency().getValue()).isEqualTo(Long.valueOf(0L));
         ASSERTER.assertOutputEqualsSorted(
                 "Output was not correct.", expectedOutput, testHarness.getOutput());
         testHarness.close();
@@ -777,190 +720,42 @@ public class SlicingWindowAggOperatorTest {
         final SliceAssigner assigner =
                 SliceAssigners.hopping(
                         2, shiftTimeZone, Duration.ofSeconds(3), Duration.ofSeconds(1));
-        final SumAndCountAggsFunction aggsFunction = new SumAndCountAggsFunction(assigner);
+        final SlicingSumAndCountAggsFunction aggsFunction =
+                new SlicingSumAndCountAggsFunction(assigner);
 
-        try {
-            // hopping window without specifying count star index
-            SlicingWindowAggOperatorBuilder.builder()
-                    .inputSerializer(INPUT_ROW_SER)
-                    .shiftTimeZone(shiftTimeZone)
-                    .keySerializer(KEY_SER)
-                    .assigner(assigner)
-                    .aggregate(wrapGenerated(aggsFunction), ACC_SER)
-                    .build();
-            fail("should fail");
-        } catch (Exception e) {
-            assertThat(
-                    e,
-                    containsMessage(
-                            "Hopping window requires a COUNT(*) in the aggregate functions."));
-        }
+        // hopping window without specifying count star index
+        assertThatThrownBy(
+                        () ->
+                                WindowAggOperatorBuilder.builder()
+                                        .inputSerializer(INPUT_ROW_SER)
+                                        .shiftTimeZone(shiftTimeZone)
+                                        .keySerializer(KEY_SER)
+                                        .assigner(assigner)
+                                        .aggregate(createGeneratedAggsHandle(aggsFunction), ACC_SER)
+                                        .build())
+                .hasMessageContaining(
+                        "Hopping window requires a COUNT(*) in the aggregate functions.");
     }
 
-    /** Get the timestamp in mills by given epoch mills and timezone. */
-    private long localMills(long epochMills) {
-        return toUtcTimestampMills(epochMills, shiftTimeZone);
-    }
-
-    private static OneInputStreamOperatorTestHarness<RowData, RowData> createTestHarness(
-            SlicingWindowOperator<RowData, ?> operator) throws Exception {
-        return new KeyedOneInputStreamOperatorTestHarness<>(
-                operator, KEY_SELECTOR, KEY_SELECTOR.getProducedType());
-    }
-
-    private static GeneratedNamespaceAggsHandleFunction<Long> wrapGenerated(
-            NamespaceAggsHandleFunction<Long> aggsFunction) {
-        return new GeneratedNamespaceAggsHandleFunction<Long>("N/A", "", new Object[0]) {
-            private static final long serialVersionUID = 1L;
-
-            @Override
-            public NamespaceAggsHandleFunction<Long> newInstance(ClassLoader classLoader) {
-                return aggsFunction;
-            }
-        };
-    }
-
-    /**
-     * This performs a {@code SUM(f1), COUNT(f1)}, where f1 is BIGINT type. The return value
-     * contains {@code sum, count, window_start, window_end}.
-     */
-    private static class SumAndCountAggsFunction implements NamespaceAggsHandleFunction<Long> {
-
-        private static final long serialVersionUID = 1L;
+    /** A test agg function for {@link SlicingWindowAggOperatorTest}. */
+    protected static class SlicingSumAndCountAggsFunction
+            extends SumAndCountAggsFunctionBase<Long> {
 
         private final SliceAssigner assigner;
 
-        boolean openCalled;
-        final AtomicInteger closeCalled = new AtomicInteger(0);
-
-        long sum;
-        boolean sumIsNull;
-        long count;
-        boolean countIsNull;
-
-        protected transient JoinedRowData result;
-
-        private SumAndCountAggsFunction(SliceAssigner assigner) {
+        public SlicingSumAndCountAggsFunction(SliceAssigner assigner) {
             this.assigner = assigner;
         }
 
-        public void open(StateDataViewStore store) throws Exception {
-            openCalled = true;
-            result = new JoinedRowData();
-        }
-
-        public void setAccumulators(Long window, RowData acc) throws Exception {
-            if (!openCalled) {
-                fail("Open was not called");
-            }
-            sumIsNull = acc.isNullAt(0);
-            if (!sumIsNull) {
-                sum = acc.getLong(0);
-            } else {
-                sum = 0L;
-            }
-
-            countIsNull = acc.isNullAt(1);
-            if (!countIsNull) {
-                count = acc.getLong(1);
-            } else {
-                count = 0L;
-            }
-        }
-
-        public void accumulate(RowData inputRow) throws Exception {
-            if (!openCalled) {
-                fail("Open was not called");
-            }
-            boolean inputIsNull = inputRow.isNullAt(1);
-            if (!inputIsNull) {
-                sum += inputRow.getInt(1);
-                count += 1;
-                sumIsNull = false;
-                countIsNull = false;
-            }
-        }
-
-        public void retract(RowData inputRow) throws Exception {
-            if (!openCalled) {
-                fail("Open was not called");
-            }
-            boolean inputIsNull = inputRow.isNullAt(1);
-            if (!inputIsNull) {
-                sum -= inputRow.getInt(1);
-                count -= 1;
-            }
-        }
-
-        public void merge(Long window, RowData otherAcc) throws Exception {
-            if (!openCalled) {
-                fail("Open was not called");
-            }
-            boolean sumIsNull2 = otherAcc.isNullAt(0);
-            if (!sumIsNull2) {
-                sum += otherAcc.getLong(0);
-                sumIsNull = false;
-            }
-            boolean countIsNull2 = otherAcc.isNullAt(1);
-            if (!countIsNull2) {
-                count += otherAcc.getLong(1);
-                countIsNull = false;
-            }
-        }
-
-        public RowData createAccumulators() {
-            if (!openCalled) {
-                fail("Open was not called");
-            }
-            GenericRowData rowData = new GenericRowData(2);
-            rowData.setField(1, 0L); // count has default 0 value
-            return rowData;
-        }
-
-        public RowData getAccumulators() throws Exception {
-            if (!openCalled) {
-                fail("Open was not called");
-            }
-            GenericRowData row = new GenericRowData(2);
-            if (!sumIsNull) {
-                row.setField(0, sum);
-            }
-            if (!countIsNull) {
-                row.setField(1, count);
-            }
-            return row;
-        }
-
-        public void cleanup(Long window) {}
-
-        public void close() {
-            closeCalled.incrementAndGet();
+        @Override
+        protected long getWindowStart(Long window) {
+            return assigner.getWindowStart(window);
         }
 
         @Override
-        public RowData getValue(Long window) throws Exception {
-            if (!openCalled) {
-                fail("Open was not called");
-            }
-            GenericRowData row = new GenericRowData(4);
-            if (!sumIsNull) {
-                row.setField(0, sum);
-            }
-            if (!countIsNull) {
-                row.setField(1, count);
-            }
-            row.setField(1, count);
-            row.setField(2, assigner.getWindowStart(window));
-            row.setField(3, window);
-            return row;
+        protected long getWindowEnd(Long window) {
+            return window;
         }
-    }
-
-    /** Get epoch mills from a timestamp string and the time zone the timestamp belongs. */
-    private static long epochMills(ZoneId shiftTimeZone, String timestampStr) {
-        LocalDateTime localDateTime = LocalDateTime.parse(timestampStr);
-        ZoneOffset zoneOffset = shiftTimeZone.getRules().getOffset(localDateTime);
-        return localDateTime.toInstant(zoneOffset).toEpochMilli();
     }
 
     @Parameterized.Parameters(name = "TimeZone = {0}")

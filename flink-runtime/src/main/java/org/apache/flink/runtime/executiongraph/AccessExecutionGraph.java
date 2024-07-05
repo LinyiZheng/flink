@@ -23,10 +23,12 @@ import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
 import org.apache.flink.runtime.accumulators.StringifiedAccumulatorResult;
 import org.apache.flink.runtime.checkpoint.CheckpointStatsSnapshot;
+import org.apache.flink.runtime.jobgraph.JobType;
 import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.runtime.jobgraph.tasks.CheckpointCoordinatorConfiguration;
 import org.apache.flink.util.OptionalFailure;
 import org.apache.flink.util.SerializedValue;
+import org.apache.flink.util.TernaryBoolean;
 
 import javax.annotation.Nullable;
 
@@ -65,6 +67,14 @@ public interface AccessExecutionGraph extends JobStatusProvider {
      * @return job status for this execution graph
      */
     JobStatus getState();
+
+    /**
+     * Returns the {@link JobType} for this execution graph.
+     *
+     * @return job type for this execution graph. It may be null when an exception occurs.
+     */
+    @Nullable
+    JobType getJobType();
 
     /**
      * Returns the exception that caused the job to fail. This is the first root exception that was
@@ -175,4 +185,18 @@ public interface AccessExecutionGraph extends JobStatusProvider {
      * @return The checkpoint storage name, or an empty Optional in the case of batch jobs
      */
     Optional<String> getCheckpointStorageName();
+
+    /**
+     * Returns whether the state changelog is enabled for this ExecutionGraph.
+     *
+     * @return true, if state changelog enabled, false otherwise.
+     */
+    TernaryBoolean isChangelogStateBackendEnabled();
+
+    /**
+     * Returns the changelog storage name for this ExecutionGraph.
+     *
+     * @return The changelog storage name, or an empty Optional in the case of batch jobs
+     */
+    Optional<String> getChangelogStorageName();
 }

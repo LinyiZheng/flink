@@ -29,34 +29,34 @@ package org.apache.flink.runtime.metrics;
 import org.apache.flink.metrics.View;
 import org.apache.flink.util.clock.ManualClock;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.TimeUnit;
 
-import static org.hamcrest.Matchers.greaterThanOrEqualTo;
-import static org.hamcrest.Matchers.is;
-import static org.junit.Assert.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for {@link TimerGauge}. */
-public class TimerGaugeTest {
+class TimerGaugeTest {
     private static final long SLEEP = 10;
 
     @Test
-    public void testBasicUsage() {
+    void testBasicUsage() {
         ManualClock clock = new ManualClock(42_000_000);
-        TimerGauge gauge = new TimerGauge(clock);
+        TimerGauge gauge = new TimerGauge(clock, View.UPDATE_INTERVAL_SECONDS);
 
         gauge.update();
-        assertThat(gauge.getValue(), is(0L));
-        assertThat(gauge.getMaxSingleMeasurement(), is(0L));
+        assertThat(gauge.getValue()).isZero();
+        assertThat(gauge.getMaxSingleMeasurement()).isZero();
+        assertThat(gauge.getAccumulatedCount()).isZero();
 
         gauge.markStart();
         clock.advanceTime(SLEEP, TimeUnit.MILLISECONDS);
         gauge.markEnd();
         gauge.update();
 
-        assertThat(gauge.getValue(), greaterThanOrEqualTo(SLEEP / View.UPDATE_INTERVAL_SECONDS));
-        assertThat(gauge.getMaxSingleMeasurement(), is(SLEEP));
+        assertThat(gauge.getValue()).isGreaterThanOrEqualTo(SLEEP / View.UPDATE_INTERVAL_SECONDS);
+        assertThat(gauge.getMaxSingleMeasurement()).isEqualTo(SLEEP);
+        assertThat(gauge.getAccumulatedCount()).isEqualTo(SLEEP);
 
         // Check that the getMaxSingleMeasurement can go down after an update
         gauge.markStart();
@@ -64,43 +64,88 @@ public class TimerGaugeTest {
         gauge.markEnd();
         gauge.update();
 
-        assertThat(gauge.getMaxSingleMeasurement(), is(SLEEP / 2));
+        assertThat(gauge.getMaxSingleMeasurement()).isEqualTo(SLEEP / 2);
+        assertThat(gauge.getAccumulatedCount()).isEqualTo(SLEEP + SLEEP / 2);
     }
 
     @Test
-    public void testUpdateWithoutMarkingEnd() {
+    void testUpdateWithoutMarkingEnd() {
         ManualClock clock = new ManualClock(42_000_000);
-        TimerGauge gauge = new TimerGauge(clock);
+        TimerGauge gauge = new TimerGauge(clock, View.UPDATE_INTERVAL_SECONDS);
 
         gauge.markStart();
         clock.advanceTime(SLEEP, TimeUnit.MILLISECONDS);
         gauge.update();
 
-        assertThat(gauge.getValue(), greaterThanOrEqualTo(SLEEP / View.UPDATE_INTERVAL_SECONDS));
-        assertThat(gauge.getMaxSingleMeasurement(), is(SLEEP));
+        assertThat(gauge.getValue()).isGreaterThanOrEqualTo(SLEEP / View.UPDATE_INTERVAL_SECONDS);
+        assertThat(gauge.getMaxSingleMeasurement()).isEqualTo(SLEEP);
 
         // keep the measurement going for another update
         clock.advanceTime(SLEEP, TimeUnit.MILLISECONDS);
         gauge.update();
 
-        assertThat(gauge.getValue(), greaterThanOrEqualTo(SLEEP / View.UPDATE_INTERVAL_SECONDS));
+        assertThat(gauge.getValue()).isGreaterThanOrEqualTo(SLEEP / View.UPDATE_INTERVAL_SECONDS);
         // max single measurement is now spanning two updates
-        assertThat(gauge.getMaxSingleMeasurement(), is(SLEEP * 2));
+        assertThat(gauge.getMaxSingleMeasurement()).isEqualTo(SLEEP * 2);
     }
 
     @Test
-    public void testGetWithoutUpdate() {
+    void testGetWithoutUpdate() {
         ManualClock clock = new ManualClock(42_000_000);
         TimerGauge gauge = new TimerGauge(clock);
 
         gauge.markStart();
         clock.advanceTime(SLEEP, TimeUnit.MILLISECONDS);
 
-        assertThat(gauge.getValue(), is(0L));
+        assertThat(gauge.getValue()).isZero();
 
         gauge.markEnd();
 
-        assertThat(gauge.getValue(), is(0L));
-        assertThat(gauge.getMaxSingleMeasurement(), is(0L));
+        assertThat(gauge.getValue()).isZero();
+        assertThat(gauge.getMaxSingleMeasurement()).isZero();
+    }
+
+    @Test
+    void testLargerTimespan() {
+        ManualClock clock = new ManualClock(42_000_000);
+        TimerGauge gauge = new TimerGauge(clock, 2 * View.UPDATE_INTERVAL_SECONDS);
+
+        gauge.markStart();
+        clock.advanceTime(SLEEP, TimeUnit.MILLISECONDS);
+        gauge.markEnd();
+        gauge.update();
+
+        assertThat(gauge.getValue()).isEqualTo(SLEEP / View.UPDATE_INTERVAL_SECONDS);
+        assertThat(gauge.getMaxSingleMeasurement()).isEqualTo(SLEEP);
+        assertThat(gauge.getAccumulatedCount()).isEqualTo(SLEEP);
+
+        gauge.update();
+        // One sleep in 2 intervals
+        assertThat(gauge.getValue()).isEqualTo(SLEEP / (View.UPDATE_INTERVAL_SECONDS * 2));
+        assertThat(gauge.getMaxSingleMeasurement()).isZero();
+        assertThat(gauge.getAccumulatedCount()).isEqualTo(SLEEP);
+
+        // One sleep in each interval
+
+        gauge.markStart();
+        clock.advanceTime(SLEEP, TimeUnit.MILLISECONDS);
+        gauge.markEnd();
+        gauge.update();
+
+        gauge.markStart();
+        clock.advanceTime(SLEEP, TimeUnit.MILLISECONDS);
+        gauge.markEnd();
+        gauge.update();
+
+        assertThat(gauge.getValue()).isEqualTo(SLEEP / (View.UPDATE_INTERVAL_SECONDS));
+
+        // Check that the getMaxSingleMeasurement can go down after an update
+        gauge.markStart();
+        clock.advanceTime(SLEEP / 2, TimeUnit.MILLISECONDS);
+        gauge.markEnd();
+        gauge.update();
+
+        assertThat(gauge.getMaxSingleMeasurement()).isEqualTo(SLEEP / 2);
+        assertThat(gauge.getAccumulatedCount()).isEqualTo(3 * SLEEP + SLEEP / 2);
     }
 }

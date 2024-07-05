@@ -19,20 +19,27 @@
 package org.apache.flink.runtime.checkpoint;
 
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.runtime.state.AbstractChannelStateHandle;
 import org.apache.flink.runtime.state.CompositeStateHandle;
 import org.apache.flink.runtime.state.InputChannelStateHandle;
 import org.apache.flink.runtime.state.KeyedStateHandle;
 import org.apache.flink.runtime.state.OperatorStateHandle;
 import org.apache.flink.runtime.state.ResultSubpartitionStateHandle;
 import org.apache.flink.runtime.state.SharedStateRegistry;
+import org.apache.flink.runtime.state.SharedStateRegistryImpl.EmptyDiscardStateObjectForRegister;
+import org.apache.flink.runtime.state.SharedStateRegistryKey;
 import org.apache.flink.runtime.state.StateObject;
 import org.apache.flink.runtime.state.StateUtil;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
+import java.util.Objects;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static org.apache.flink.runtime.state.AbstractChannelStateHandle.collectUniqueDelegates;
 import static org.apache.flink.util.Preconditions.checkNotNull;
@@ -107,6 +114,8 @@ public class OperatorSubtaskState implements CompositeStateHandle {
      */
     private final long stateSize;
 
+    private final long checkpointedSize;
+
     private OperatorSubtaskState(
             StateObjectCollection<OperatorStateHandle> managedOperatorState,
             StateObjectCollection<OperatorStateHandle> rawOperatorState,
@@ -126,13 +135,26 @@ public class OperatorSubtaskState implements CompositeStateHandle {
         this.inputRescalingDescriptor = checkNotNull(inputRescalingDescriptor);
         this.outputRescalingDescriptor = checkNotNull(outputRescalingDescriptor);
 
-        long calculateStateSize = managedOperatorState.getStateSize();
-        calculateStateSize += rawOperatorState.getStateSize();
-        calculateStateSize += managedKeyedState.getStateSize();
-        calculateStateSize += rawKeyedState.getStateSize();
-        calculateStateSize += inputChannelState.getStateSize();
-        calculateStateSize += resultSubpartitionState.getStateSize();
-        stateSize = calculateStateSize;
+        this.stateSize = streamSubCollections().mapToLong(StateObject::getStateSize).sum();
+        this.checkpointedSize =
+                streamSubCollections().mapToLong(StateObjectCollection::getCheckpointedSize).sum();
+    }
+
+    private Stream<StateObjectCollection<?>> streamSubCollections() {
+        return Stream.of(streamOperatorAndKeyedStates(), streamChannelStates())
+                .flatMap(Function.identity());
+    }
+
+    private Stream<StateObjectCollection<? extends StateObject>> streamOperatorAndKeyedStates() {
+        return Stream.of(managedOperatorState, rawOperatorState, managedKeyedState, rawKeyedState)
+                .filter(Objects::nonNull);
+    }
+
+    private Stream<StateObjectCollection<? extends AbstractChannelStateHandle<?>>>
+            streamChannelStates() {
+        return Stream.<StateObjectCollection<? extends AbstractChannelStateHandle<?>>>of(
+                        inputChannelState, resultSubpartitionState)
+                .filter(Objects::nonNull);
     }
 
     @VisibleForTesting
@@ -182,22 +204,17 @@ public class OperatorSubtaskState implements CompositeStateHandle {
         return outputRescalingDescriptor;
     }
 
+    public List<StateObject> getDiscardables() {
+        return Stream.concat(
+                        streamOperatorAndKeyedStates().flatMap(Collection::stream),
+                        collectUniqueDelegates(streamChannelStates()))
+                .collect(Collectors.toList());
+    }
+
     @Override
     public void discardState() {
         try {
-            List<StateObject> toDispose =
-                    new ArrayList<>(
-                            managedOperatorState.size()
-                                    + rawOperatorState.size()
-                                    + managedKeyedState.size()
-                                    + rawKeyedState.size()
-                                    + inputChannelState.size()
-                                    + resultSubpartitionState.size());
-            toDispose.addAll(managedOperatorState);
-            toDispose.addAll(rawOperatorState);
-            toDispose.addAll(managedKeyedState);
-            toDispose.addAll(rawKeyedState);
-            toDispose.addAll(collectUniqueDelegates(inputChannelState, resultSubpartitionState));
+            List<StateObject> toDispose = getDiscardables();
             StateUtil.bestEffortDiscardAllStateObjects(toDispose);
         } catch (Exception e) {
             LOG.warn("Error while discarding operator states.", e);
@@ -216,9 +233,21 @@ public class OperatorSubtaskState implements CompositeStateHandle {
             long checkpointID) {
         for (KeyedStateHandle stateHandle : stateHandles) {
             if (stateHandle != null) {
+                // Registering state handle to the given sharedStateRegistry serves one purpose:
+                // update the status of the checkpoint in sharedStateRegistry to which the state
+                // handle belongs.
+                sharedStateRegistry.registerReference(
+                        new SharedStateRegistryKey(stateHandle.getStateHandleId().getKeyString()),
+                        new EmptyDiscardStateObjectForRegister(stateHandle.getStateHandleId()),
+                        checkpointID);
                 stateHandle.registerSharedStates(sharedStateRegistry, checkpointID);
             }
         }
+    }
+
+    @Override
+    public long getCheckpointedSize() {
+        return checkpointedSize;
     }
 
     @Override
@@ -281,6 +310,7 @@ public class OperatorSubtaskState implements CompositeStateHandle {
         result = 31 * result + getInputRescalingDescriptor().hashCode();
         result = 31 * result + getOutputRescalingDescriptor().hashCode();
         result = 31 * result + (int) (getStateSize() ^ (getStateSize() >>> 32));
+        result = 31 * result + (int) (getCheckpointedSize() ^ (getCheckpointedSize() >>> 32));
         return result;
     }
 
@@ -301,6 +331,8 @@ public class OperatorSubtaskState implements CompositeStateHandle {
                 + resultSubpartitionState
                 + ", stateSize="
                 + stateSize
+                + ", checkpointedSize="
+                + checkpointedSize
                 + '}';
     }
 

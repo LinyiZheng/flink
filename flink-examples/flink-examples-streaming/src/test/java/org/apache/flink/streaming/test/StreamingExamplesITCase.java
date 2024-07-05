@@ -32,15 +32,18 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.examples.iteration.util.IterateExampleData;
 import org.apache.flink.streaming.test.examples.join.WindowJoinData;
 import org.apache.flink.test.testdata.WordCountData;
-import org.apache.flink.test.util.AbstractTestBase;
+import org.apache.flink.test.util.AbstractTestBaseJUnit4;
 
 import org.apache.commons.io.FileUtils;
 import org.junit.Test;
 
 import java.io.File;
 
+import static org.apache.flink.test.util.TestBaseUtils.checkLinesAgainstRegexp;
+import static org.apache.flink.test.util.TestBaseUtils.compareResultsByLinesInMemory;
+
 /** Integration test for streaming programs in Java examples. */
-public class StreamingExamplesITCase extends AbstractTestBase {
+public class StreamingExamplesITCase extends AbstractTestBaseJUnit4 {
 
     @Test
     public void testIterateExample() throws Exception {
@@ -77,12 +80,12 @@ public class StreamingExamplesITCase extends AbstractTestBase {
                     StreamExecutionEnvironment.getExecutionEnvironment();
 
             DataStream<Tuple2<String, Integer>> grades =
-                    env.fromElements(WindowJoinData.GRADES_INPUT.split("\n"))
+                    env.fromData(WindowJoinData.GRADES_INPUT.split("\n"))
                             .assignTimestampsAndWatermarks(IngestionTimeWatermarkStrategy.create())
                             .map(new Parser());
 
             DataStream<Tuple2<String, Integer>> salaries =
-                    env.fromElements(WindowJoinData.SALARIES_INPUT.split("\n"))
+                    env.fromData(WindowJoinData.SALARIES_INPUT.split("\n"))
                             .assignTimestampsAndWatermarks(IngestionTimeWatermarkStrategy.create())
                             .map(new Parser());
 
@@ -101,13 +104,6 @@ public class StreamingExamplesITCase extends AbstractTestBase {
             } catch (Throwable ignored) {
             }
         }
-    }
-
-    @Test
-    public void testTwitterStream() throws Exception {
-        final String resultPath = getTempDirPath("result");
-        org.apache.flink.streaming.examples.twitter.TwitterExample.main(
-                new String[] {"--output", resultPath});
     }
 
     @Test

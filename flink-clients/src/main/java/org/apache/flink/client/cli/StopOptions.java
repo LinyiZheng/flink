@@ -18,8 +18,13 @@
 
 package org.apache.flink.client.cli;
 
+import org.apache.flink.configuration.ConfigurationUtils;
+import org.apache.flink.core.execution.SavepointFormatType;
+
 import org.apache.commons.cli.CommandLine;
 
+import static org.apache.flink.client.cli.CliFrontendParser.SAVEPOINT_DETACHED_OPTION;
+import static org.apache.flink.client.cli.CliFrontendParser.SAVEPOINT_FORMAT_OPTION;
 import static org.apache.flink.client.cli.CliFrontendParser.STOP_AND_DRAIN;
 import static org.apache.flink.client.cli.CliFrontendParser.STOP_WITH_SAVEPOINT_PATH;
 
@@ -35,6 +40,10 @@ class StopOptions extends CommandLineOptions {
 
     private final boolean advanceToEndOfEventTime;
 
+    private final SavepointFormatType formatType;
+
+    private boolean isDetached;
+
     StopOptions(CommandLine line) {
         super(line);
         this.args = line.getArgs();
@@ -43,6 +52,17 @@ class StopOptions extends CommandLineOptions {
         this.targetDirectory = line.getOptionValue(STOP_WITH_SAVEPOINT_PATH.getOpt());
 
         this.advanceToEndOfEventTime = line.hasOption(STOP_AND_DRAIN.getOpt());
+
+        if (line.hasOption(SAVEPOINT_FORMAT_OPTION)) {
+            formatType =
+                    ConfigurationUtils.convertValue(
+                            line.getOptionValue(SAVEPOINT_FORMAT_OPTION),
+                            SavepointFormatType.class);
+        } else {
+            formatType = SavepointFormatType.DEFAULT;
+        }
+
+        this.isDetached = line.hasOption(SAVEPOINT_DETACHED_OPTION.getOpt());
     }
 
     String[] getArgs() {
@@ -59,5 +79,13 @@ class StopOptions extends CommandLineOptions {
 
     boolean shouldAdvanceToEndOfEventTime() {
         return advanceToEndOfEventTime;
+    }
+
+    public SavepointFormatType getFormatType() {
+        return formatType;
+    }
+
+    public boolean isDetached() {
+        return isDetached;
     }
 }

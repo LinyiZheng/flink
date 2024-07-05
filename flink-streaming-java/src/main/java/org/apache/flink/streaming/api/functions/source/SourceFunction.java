@@ -94,18 +94,22 @@ import java.io.Serializable;
  * SourceContext#emitWatermark(Watermark)}.
  *
  * @param <T> The type of the elements produced by this source.
+ * @deprecated This interface will be removed in future versions. Use the new {@link
+ *     org.apache.flink.api.connector.source.Source} interface instead. NOTE: All sub-tasks from
+ *     FLINK-28045 must be closed before this API can be completely removed.
  */
+@Deprecated
 @Public
 public interface SourceFunction<T> extends Function, Serializable {
 
     /**
      * Starts the source. Implementations use the {@link SourceContext} to emit elements. Sources
      * that checkpoint their state for fault tolerance should use the {@link
-     * SourceContext#getCheckpointLock()} checkpoint lock} to ensure consistency between the
+     * SourceContext#getCheckpointLock() checkpoint lock} to ensure consistency between the
      * bookkeeping and emitting the elements.
      *
      * <p>Sources that implement {@link CheckpointedFunction} must lock on the {@link
-     * SourceContext#getCheckpointLock()} checkpoint lock} checkpoint lock (using a synchronized
+     * SourceContext#getCheckpointLock() checkpoint lock} checkpoint lock (using a synchronized
      * block) before updating internal state and emitting elements, to make both an atomic
      * operation.
      *

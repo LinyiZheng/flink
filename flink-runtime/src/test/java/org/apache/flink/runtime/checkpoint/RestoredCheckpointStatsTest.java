@@ -18,29 +18,39 @@
 
 package org.apache.flink.runtime.checkpoint;
 
-import org.junit.Test;
+import org.apache.flink.core.execution.SavepointFormatType;
 
-import static org.junit.Assert.assertEquals;
+import org.junit.jupiter.api.Test;
 
-public class RestoredCheckpointStatsTest {
+import static org.assertj.core.api.Assertions.assertThat;
+
+class RestoredCheckpointStatsTest {
 
     /** Tests simple access to restore properties. */
     @Test
-    public void testSimpleAccess() throws Exception {
+    void testSimpleAccess() {
         long checkpointId = Integer.MAX_VALUE + 1L;
-        long triggerTimestamp = Integer.MAX_VALUE + 1L;
         CheckpointProperties props =
                 new CheckpointProperties(
-                        true, CheckpointType.SAVEPOINT, false, false, true, false, true, false);
+                        true,
+                        SavepointType.savepoint(SavepointFormatType.CANONICAL),
+                        false,
+                        false,
+                        true,
+                        false,
+                        true,
+                        false);
         long restoreTimestamp = Integer.MAX_VALUE + 1L;
         String externalPath = "external-path";
 
         RestoredCheckpointStats restored =
-                new RestoredCheckpointStats(checkpointId, props, restoreTimestamp, externalPath);
+                new RestoredCheckpointStats(
+                        checkpointId, props, restoreTimestamp, externalPath, 42);
 
-        assertEquals(checkpointId, restored.getCheckpointId());
-        assertEquals(props, restored.getProperties());
-        assertEquals(restoreTimestamp, restored.getRestoreTimestamp());
-        assertEquals(externalPath, restored.getExternalPath());
+        assertThat(restored.getCheckpointId()).isEqualTo(checkpointId);
+        assertThat(restored.getProperties()).isEqualTo(props);
+        assertThat(restored.getRestoreTimestamp()).isEqualTo(restoreTimestamp);
+        assertThat(restored.getExternalPath()).isEqualTo(externalPath);
+        assertThat(restored.getStateSize()).isEqualTo(42);
     }
 }

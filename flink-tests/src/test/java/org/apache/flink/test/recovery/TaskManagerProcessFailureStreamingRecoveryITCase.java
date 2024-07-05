@@ -19,6 +19,7 @@
 package org.apache.flink.test.recovery;
 
 import org.apache.flink.api.common.functions.MapFunction;
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.functions.RichMapFunction;
 import org.apache.flink.api.common.functions.RuntimeContext;
 import org.apache.flink.api.common.restartstrategy.RestartStrategies;
@@ -29,16 +30,17 @@ import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.RichSinkFunction;
 import org.apache.flink.streaming.api.functions.source.RichParallelSourceFunction;
+import org.apache.flink.testutils.junit.extensions.parameterized.NoOpTestExtension;
+import org.apache.flink.testutils.junit.utils.TempDirUtils;
 
-import org.apache.commons.io.FileUtils;
-import org.junit.Assert;
-import org.junit.Rule;
-import org.junit.rules.TemporaryFolder;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.Collections;
 import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Test for streaming program behaviour in case of TaskManager failure based on {@link
@@ -50,18 +52,16 @@ import java.util.List;
  * slow, because otherwise the checkpoint barrier cannot pass the mapper and no checkpoint will be
  * completed before the killing of the first TaskManager.
  */
-@SuppressWarnings("serial")
-public class TaskManagerProcessFailureStreamingRecoveryITCase
+@ExtendWith(NoOpTestExtension.class)
+class TaskManagerProcessFailureStreamingRecoveryITCase
         extends AbstractTaskManagerProcessFailureRecoveryTest {
-    @Rule public TemporaryFolder tempFolder = new TemporaryFolder();
-
     private static final int DATA_COUNT = 10000;
 
     @Override
     public void testTaskManagerFailure(Configuration configuration, final File coordinateDir)
             throws Exception {
 
-        final File tempCheckpointDir = tempFolder.newFolder();
+        final File tempCheckpointDir = TempDirUtils.newFolder(temporaryFolder);
 
         StreamExecutionEnvironment env =
                 StreamExecutionEnvironment.createRemoteEnvironment(
@@ -92,19 +92,8 @@ public class TaskManagerProcessFailureStreamingRecoveryITCase
         // write result to temporary file
         result.addSink(new CheckpointedSink(DATA_COUNT));
 
-        try {
-            // blocking call until execution is done
-            env.execute();
-
-            // TODO: Figure out why this fails when ran with other tests
-            // Check whether checkpoints have been cleaned up properly
-            // assertDirectoryEmpty(tempCheckpointDir);
-        } finally {
-            // clean up
-            if (tempCheckpointDir.exists()) {
-                FileUtils.deleteDirectory(tempCheckpointDir);
-            }
-        }
+        // blocking call until execution is done
+        env.execute();
     }
 
     private static class SleepyDurableGenerateSequence extends RichParallelSourceFunction<Long>
@@ -130,8 +119,8 @@ public class TaskManagerProcessFailureStreamingRecoveryITCase
 
             RuntimeContext runtimeCtx = getRuntimeContext();
 
-            final long stepSize = runtimeCtx.getNumberOfParallelSubtasks();
-            final long congruence = runtimeCtx.getIndexOfThisSubtask();
+            final long stepSize = runtimeCtx.getTaskInfo().getNumberOfParallelSubtasks();
+            final long congruence = runtimeCtx.getTaskInfo().getIndexOfThisSubtask();
             final long toCollect =
                     (end % stepSize > congruence) ? (end / stepSize + 1) : (end / stepSize);
 
@@ -188,7 +177,7 @@ public class TaskManagerProcessFailureStreamingRecoveryITCase
         @Override
         public Long map(Long value) throws Exception {
             if (!markerCreated) {
-                int taskIndex = getRuntimeContext().getIndexOfThisSubtask();
+                int taskIndex = getRuntimeContext().getTaskInfo().getIndexOfThisSubtask();
                 touchFile(new File(coordinateDir, READY_MARKER_FILE_PREFIX + taskIndex));
                 markerCreated = true;
             }
@@ -210,9 +199,9 @@ public class TaskManagerProcessFailureStreamingRecoveryITCase
         }
 
         @Override
-        public void open(Configuration parameters) throws IOException {
-            stepSize = getRuntimeContext().getNumberOfParallelSubtasks();
-            congruence = getRuntimeContext().getIndexOfThisSubtask();
+        public void open(OpenContext openContext) throws IOException {
+            stepSize = getRuntimeContext().getTaskInfo().getNumberOfParallelSubtasks();
+            congruence = getRuntimeContext().getTaskInfo().getIndexOfThisSubtask();
             toCollect = (end % stepSize > congruence) ? (end / stepSize + 1) : (end / stepSize);
         }
 
@@ -220,15 +209,16 @@ public class TaskManagerProcessFailureStreamingRecoveryITCase
         public void invoke(Long value) throws Exception {
             long expected = collected * stepSize + congruence;
 
-            Assert.assertTrue(
-                    "Value did not match expected value. " + expected + " != " + value,
-                    value.equals(expected));
+            assertThat(value)
+                    .withFailMessage(
+                            "Value did not match expected value. " + expected + " != " + value)
+                    .isEqualTo(expected);
 
             collected++;
 
-            if (collected > toCollect) {
-                Assert.fail("Collected <= toCollect: " + collected + " > " + toCollect);
-            }
+            assertThat(collected)
+                    .withFailMessage("Collected <= toCollect: " + collected + " > " + toCollect)
+                    .isLessThanOrEqualTo(toCollect);
         }
 
         @Override
@@ -238,7 +228,7 @@ public class TaskManagerProcessFailureStreamingRecoveryITCase
 
         @Override
         public void restoreState(List<Long> state) throws Exception {
-            if (state.isEmpty() || state.size() > 1) {
+            if (state.size() != 1) {
                 throw new RuntimeException(
                         "Test failed due to unexpected recovered state size " + state.size());
             }

@@ -54,12 +54,18 @@ function build_image() {
     if [[ ${PROFILE} == *"jdk11"* ]]; then
         java_version=11
     fi
+    if [[ ${PROFILE} == *"jdk17"* ]]; then
+        java_version=17
+    fi
+    if [[ ${PROFILE} == *"jdk21"* ]]; then
+        java_version=21
+    fi
 
     cd flink-docker
     ./add-custom.sh -u ${file_server_address}:9999/flink.tgz -n ${image_name} -j ${java_version}
 
     echo "Building images"
-    run_with_timeout 600 docker build --no-cache --network="host" -t ${image_name} dev/${image_name}-debian
+    run_with_timeout 600 docker build --no-cache --network="host" -t ${image_name} dev/${image_name}-ubuntu
     local build_image_result=$?
     popd
     return $build_image_result

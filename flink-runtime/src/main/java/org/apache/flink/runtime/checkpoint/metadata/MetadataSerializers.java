@@ -18,7 +18,8 @@
 
 package org.apache.flink.runtime.checkpoint.metadata;
 
-import java.util.HashMap;
+import org.apache.flink.util.CollectionUtil;
+
 import java.util.Map;
 
 /**
@@ -28,12 +29,14 @@ import java.util.Map;
  */
 public class MetadataSerializers {
 
-    private static final Map<Integer, MetadataSerializer> SERIALIZERS = new HashMap<>(3);
+    private static final Map<Integer, MetadataSerializer> SERIALIZERS =
+            CollectionUtil.newHashMapWithExpectedSize(4);
 
     static {
         registerSerializer(MetadataV1Serializer.INSTANCE);
         registerSerializer(MetadataV2Serializer.INSTANCE);
         registerSerializer(MetadataV3Serializer.INSTANCE);
+        registerSerializer(MetadataV4Serializer.INSTANCE);
     }
 
     private static void registerSerializer(MetadataSerializer serializer) {

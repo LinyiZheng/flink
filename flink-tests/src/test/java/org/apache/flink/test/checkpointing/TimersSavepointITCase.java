@@ -29,6 +29,7 @@ import org.apache.flink.configuration.StateBackendOptions;
 import org.apache.flink.contrib.streaming.state.EmbeddedRocksDBStateBackend;
 import org.apache.flink.contrib.streaming.state.EmbeddedRocksDBStateBackend.PriorityQueueStateType;
 import org.apache.flink.contrib.streaming.state.RocksDBOptions;
+import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.core.testutils.OneShotLatch;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobgraph.SavepointRestoreSettings;
@@ -38,7 +39,7 @@ import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
-import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
+import org.apache.flink.streaming.api.functions.sink.v2.DiscardingSink;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
 import org.apache.flink.test.util.MiniClusterWithClientResource;
 import org.apache.flink.util.Collector;
@@ -122,7 +123,7 @@ public class TimersSavepointITCase {
         client.submitJob(jobGraph).get();
         waitForAllTaskRunning(miniClusterResource.getMiniCluster(), jobGraph.getJobID(), false);
         CompletableFuture<String> savepointPathFuture =
-                client.triggerSavepoint(jobGraph.getJobID(), null);
+                client.triggerSavepoint(jobGraph.getJobID(), null, SavepointFormatType.CANONICAL);
 
         String jobmanagerSavepointPath = savepointPathFuture.get(2, TimeUnit.SECONDS);
 
@@ -140,7 +141,7 @@ public class TimersSavepointITCase {
                                 .withTimestampAssigner((i, p) -> i))
                 .keyBy(i -> i)
                 .process(new TimersProcessFunction())
-                .addSink(new DiscardingSink<>());
+                .sinkTo(new DiscardingSink<>());
 
         final Configuration config = new Configuration();
         config.set(StateBackendOptions.STATE_BACKEND, "rocksdb");

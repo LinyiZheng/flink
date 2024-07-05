@@ -80,7 +80,7 @@ When deploying Flink, there are often multiple options available for each buildi
             </td>
             <td>
                 <ul id="jmimpls">
-                    <li><a href="{{< ref "docs/deployment/resource-providers/standalone/" >}}">Standalone</a> (this is the barebone mode that requires just JVMs to be launched. Deployment with <a href="{{< ref "docs/deployment/resource-providers/standalone/docker" >}}">Docker, Docker Swarm / Compose</a>, <a href="{{< ref "docs/deployment/resource-providers/standalone/kubernetes" >}}">non-native Kubernetes</a> and other models is possible through manual setup in this mode)
+                    <li><a href="{{< ref "docs/deployment/resource-providers/standalone" >}}">Standalone</a> (this is the barebone mode that requires just JVMs to be launched. Deployment with <a href="{{< ref "docs/deployment/resource-providers/standalone/docker" >}}">Docker, Docker Swarm / Compose</a>, <a href="{{< ref "docs/deployment/resource-providers/standalone/kubernetes" >}}">non-native Kubernetes</a> and other models is possible through manual setup in this mode)
                     </li>
                     <li><a href="{{< ref "docs/deployment/resource-providers/native_kubernetes" >}}">Kubernetes</a></li>
                     <li><a href="{{< ref "docs/deployment/resource-providers/yarn" >}}">YARN</a></li>
@@ -143,7 +143,7 @@ When deploying Flink, there are often multiple options available for each buildi
                 <ul>
                     <li>Apache Kafka</li>
                     <li>Amazon S3</li>
-                    <li>ElasticSearch</li>
+                    <li>Elasticsearch</li>
                     <li>Apache Cassandra</li>
                 </ul>
                 See <a href="{{< ref "docs/connectors/datastream/overview" >}}">Connectors</a> page.
@@ -152,7 +152,22 @@ When deploying Flink, there are often multiple options available for each buildi
     </tbody>
 </table>
 
+### Repeatable Resource Cleanup
 
+Once a job has reached a globally terminal state of either finished, failed or cancelled, the
+external component resources associated with the job are then cleaned up. In the event of a
+failure when cleaning up a resource, Flink will attempt to retry the cleanup. You can
+[configure]({{< ref "docs/deployment/config#retryable-cleanup" >}}) the retry strategy used.
+Reaching the maximum number of retries without succeeding will leave the job in a dirty state.
+Its artifacts would need to be cleaned up manually (see the
+[High Availability Services / JobResultStore]({{< ref "docs/deployment/ha/overview#jobresultstore" >}})
+section for further details). Restarting the very same job (i.e. using the same
+job ID) will result in the cleanup being restarted without running the job again.
+
+There is currently an issue with the cleanup of CompletedCheckpoints that failed to be deleted
+while subsuming them as part of the usual CompletedCheckpoint management. These artifacts are
+not covered by the repeatable cleanup, i.e. they have to be deleted manually, still. This is
+covered by [FLINK-26606](https://issues.apache.org/jira/browse/FLINK-26606).
 
 ## Deployment Modes
 
@@ -267,16 +282,16 @@ Supported Environments:
 Supported Environments:
 {{< label AWS >}}
 
-#### Amazon Kinesis Data Analytics for Apache Flink
+#### Amazon Managed Service for Apache Flink
 
-[Website](https://docs.aws.amazon.com/kinesisanalytics/latest/java/what-is.html)
+[Website](https://docs.aws.amazon.com/managed-flink/latest/java/what-is.html)
 
 Supported Environments:
 {{< label AWS >}}
 
-#### Cloudera DataFlow
+#### Cloudera Stream Processing
 
-[Website](https://www.cloudera.com/products/cdf.html)
+[Website](https://www.cloudera.com/products/stream-processing.html)
 
 Supported Environment:
 {{< label AWS >}}
@@ -284,16 +299,9 @@ Supported Environment:
 {{< label Google Cloud >}}
 {{< label On-Premise >}}
 
-#### Eventador
-
-[Website](https://eventador.io)
-
-Supported Environment:
-{{< label AWS >}}
-
 #### Huawei Cloud Stream Service
 
-[Website](https://www.huaweicloud.com/en-us/product/cs.html)
+[Website](https://www.huaweicloud.com/intl/zh-cn/product/cs.html)
 
 Supported Environment:
 {{< label Huawei Cloud >}}

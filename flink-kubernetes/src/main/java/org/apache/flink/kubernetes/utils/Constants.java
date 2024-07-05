@@ -25,6 +25,9 @@ public class Constants {
     public static final String API_VERSION = "v1";
     public static final String APPS_API_VERSION = "apps/v1";
 
+    public static final String DNS_POLICY_DEFAULT = "ClusterFirst";
+    public static final String DNS_POLICY_HOSTNETWORK = "ClusterFirstWithHostNet";
+
     public static final String CONFIG_FILE_LOGBACK_NAME = "logback-console.xml";
     public static final String CONFIG_FILE_LOG4J_NAME = "log4j-console.properties";
     public static final String ENV_FLINK_LOG_DIR = "FLINK_LOG_DIR";
@@ -59,7 +62,18 @@ public class Constants {
     public static final String LABEL_COMPONENT_KEY = "component";
     public static final String LABEL_COMPONENT_JOB_MANAGER = "jobmanager";
     public static final String LABEL_COMPONENT_TASK_MANAGER = "taskmanager";
-    public static final String LABEL_CONFIGMAP_TYPE_KEY = "configmap-type";
+
+    /**
+     * This constant is deprecated since we do not use it for deletion currently. We still keep the
+     * constants here for backward compatibility.
+     */
+    @Deprecated public static final String LABEL_CONFIGMAP_TYPE_KEY = "configmap-type";
+
+    /**
+     * This constant is deprecated since we do not use it for deletion currently. We still keep the
+     * constants here for backward compatibility.
+     */
+    @Deprecated
     public static final String LABEL_CONFIGMAP_TYPE_HIGH_AVAILABILITY = "high-availability";
 
     // Use fixed port in kubernetes, it needs to be exposed.
@@ -82,7 +96,9 @@ public class Constants {
 
     public static final String POD_IP_FIELD_PATH = "status.podIP";
 
-    public static final String HEADLESS_SERVICE_CLUSTER_IP = "None";
+    public static final String ENV_FLINK_POD_NODE_ID = "_POD_NODE_ID";
+
+    public static final String POD_NODE_ID_FIELD_PATH = "spec.nodeName";
 
     public static final int MAXIMUM_CHARACTERS_OF_CLUSTER_ID = 45;
 
@@ -93,7 +109,6 @@ public class Constants {
     public static final String LEADER_SESSION_ID_KEY = "sessionId";
     public static final String JOB_GRAPH_STORE_KEY_PREFIX = "jobGraph-";
     public static final String SUBMITTED_JOBGRAPH_FILE_PREFIX = "submittedJobGraph";
-    public static final String RUNNING_JOBS_REGISTRY_KEY_PREFIX = "runningJobsRegistry-";
     public static final String CHECKPOINT_COUNTER_KEY = "counter";
     public static final String CHECKPOINT_ID_KEY_PREFIX = "checkpointID-";
     public static final String COMPLETED_CHECKPOINT_FILE_SUFFIX = "completedCheckpoint";
@@ -111,4 +126,11 @@ public class Constants {
     public static final String KUBERNETES_TASK_MANAGER_SCRIPT_PATH = "kubernetes-taskmanager.sh";
 
     public static final String ENV_TM_JVM_MEM_OPTS = "FLINK_TM_JVM_MEM_OPTS";
+
+    // "resourceVersion="0" is any resource version.It saves time to access etcd and improves
+    // performance.
+    // https://kubernetes.io/docs/reference/using-api/api-concepts/#the-resourceversion-parameter
+    public static final String KUBERNETES_ZERO_RESOURCE_VERSION = "0";
+
+    public static final String USER_ARTIFACTS_VOLUME = "user-artifacts-volume";
 }

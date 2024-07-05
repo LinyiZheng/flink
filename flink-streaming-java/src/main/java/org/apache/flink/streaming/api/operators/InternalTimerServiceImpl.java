@@ -21,10 +21,12 @@ package org.apache.flink.streaming.api.operators;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.common.typeutils.TypeSerializerSchemaCompatibility;
+import org.apache.flink.runtime.metrics.groups.TaskIOMetricGroup;
 import org.apache.flink.runtime.state.InternalPriorityQueue;
 import org.apache.flink.runtime.state.KeyGroupRange;
 import org.apache.flink.runtime.state.KeyGroupedInternalPriorityQueue;
 import org.apache.flink.streaming.runtime.tasks.ProcessingTimeService;
+import org.apache.flink.streaming.runtime.tasks.StreamTaskCancellationContext;
 import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.Preconditions;
@@ -42,17 +44,21 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
 /** {@link InternalTimerService} that stores timers on the Java heap. */
 public class InternalTimerServiceImpl<K, N> implements InternalTimerService<N> {
 
-    private final ProcessingTimeService processingTimeService;
+    protected final ProcessingTimeService processingTimeService;
 
-    private final KeyContext keyContext;
+    protected final TaskIOMetricGroup taskIOMetricGroup;
+    protected final KeyContext keyContext;
 
     /** Processing time timers that are currently in-flight. */
-    private final KeyGroupedInternalPriorityQueue<TimerHeapInternalTimer<K, N>>
+    protected final KeyGroupedInternalPriorityQueue<TimerHeapInternalTimer<K, N>>
             processingTimeTimersQueue;
 
     /** Event time timers that are currently in-flight. */
-    private final KeyGroupedInternalPriorityQueue<TimerHeapInternalTimer<K, N>>
+    protected final KeyGroupedInternalPriorityQueue<TimerHeapInternalTimer<K, N>>
             eventTimeTimersQueue;
+
+    /** Context that allows us to stop firing timers if the containing task has been cancelled. */
+    protected final StreamTaskCancellationContext cancellationContext;
 
     /** Information concerning the local key-group range. */
     private final KeyGroupRange localKeyGroupRange;
@@ -63,13 +69,13 @@ public class InternalTimerServiceImpl<K, N> implements InternalTimerService<N> {
      * The local event time, as denoted by the last received {@link
      * org.apache.flink.streaming.api.watermark.Watermark Watermark}.
      */
-    private long currentWatermark = Long.MIN_VALUE;
+    protected long currentWatermark = Long.MIN_VALUE;
 
     /**
      * The one and only Future (if any) registered to execute the next {@link Triggerable} action,
      * when its (processing) time arrives.
      */
-    private ScheduledFuture<?> nextTimer;
+    protected ScheduledFuture<?> nextTimer;
 
     // Variables to be set when the service is started.
 
@@ -77,7 +83,7 @@ public class InternalTimerServiceImpl<K, N> implements InternalTimerService<N> {
 
     private TypeSerializer<N> namespaceSerializer;
 
-    private Triggerable<K, N> triggerTarget;
+    protected Triggerable<K, N> triggerTarget;
 
     private volatile boolean isInitialized;
 
@@ -89,17 +95,21 @@ public class InternalTimerServiceImpl<K, N> implements InternalTimerService<N> {
     private InternalTimersSnapshot<K, N> restoredTimersSnapshot;
 
     InternalTimerServiceImpl(
+            TaskIOMetricGroup taskIOMetricGroup,
             KeyGroupRange localKeyGroupRange,
             KeyContext keyContext,
             ProcessingTimeService processingTimeService,
             KeyGroupedInternalPriorityQueue<TimerHeapInternalTimer<K, N>> processingTimeTimersQueue,
-            KeyGroupedInternalPriorityQueue<TimerHeapInternalTimer<K, N>> eventTimeTimersQueue) {
+            KeyGroupedInternalPriorityQueue<TimerHeapInternalTimer<K, N>> eventTimeTimersQueue,
+            StreamTaskCancellationContext cancellationContext) {
+        this.taskIOMetricGroup = taskIOMetricGroup;
 
         this.keyContext = checkNotNull(keyContext);
         this.processingTimeService = checkNotNull(processingTimeService);
         this.localKeyGroupRange = checkNotNull(localKeyGroupRange);
         this.processingTimeTimersQueue = checkNotNull(processingTimeTimersQueue);
         this.eventTimeTimersQueue = checkNotNull(eventTimeTimersQueue);
+        this.cancellationContext = cancellationContext;
 
         // find the starting index of the local key-group range
         int startIdx = Integer.MAX_VALUE;
@@ -143,9 +153,10 @@ public class InternalTimerServiceImpl<K, N> implements InternalTimerService<N> {
             // the following is the case where we restore
             if (restoredTimersSnapshot != null) {
                 TypeSerializerSchemaCompatibility<K> keySerializerCompatibility =
-                        restoredTimersSnapshot
-                                .getKeySerializerSnapshot()
-                                .resolveSchemaCompatibility(keySerializer);
+                        keySerializer
+                                .snapshotConfiguration()
+                                .resolveSchemaCompatibility(
+                                        restoredTimersSnapshot.getKeySerializerSnapshot());
 
                 if (keySerializerCompatibility.isIncompatible()
                         || keySerializerCompatibility.isCompatibleAfterMigration()) {
@@ -154,9 +165,10 @@ public class InternalTimerServiceImpl<K, N> implements InternalTimerService<N> {
                 }
 
                 TypeSerializerSchemaCompatibility<N> namespaceSerializerCompatibility =
-                        restoredTimersSnapshot
-                                .getNamespaceSerializerSnapshot()
-                                .resolveSchemaCompatibility(namespaceSerializer);
+                        namespaceSerializer
+                                .snapshotConfiguration()
+                                .resolveSchemaCompatibility(
+                                        restoredTimersSnapshot.getNamespaceSerializerSnapshot());
 
                 restoredTimersSnapshot = null;
 
@@ -258,7 +270,7 @@ public class InternalTimerServiceImpl<K, N> implements InternalTimerService<N> {
         foreachTimer(consumer, processingTimeTimersQueue);
     }
 
-    private void foreachTimer(
+    protected void foreachTimer(
             BiConsumerWithException<N, Long, Exception> consumer,
             KeyGroupedInternalPriorityQueue<TimerHeapInternalTimer<K, N>> queue)
             throws Exception {
@@ -271,17 +283,20 @@ public class InternalTimerServiceImpl<K, N> implements InternalTimerService<N> {
         }
     }
 
-    private void onProcessingTime(long time) throws Exception {
+    void onProcessingTime(long time) throws Exception {
         // null out the timer in case the Triggerable calls registerProcessingTimeTimer()
         // inside the callback.
         nextTimer = null;
 
         InternalTimer<K, N> timer;
 
-        while ((timer = processingTimeTimersQueue.peek()) != null && timer.getTimestamp() <= time) {
-            processingTimeTimersQueue.poll();
+        while ((timer = processingTimeTimersQueue.peek()) != null
+                && timer.getTimestamp() <= time
+                && !cancellationContext.isCancelled()) {
             keyContext.setCurrentKey(timer.getKey());
+            processingTimeTimersQueue.poll();
             triggerTarget.onProcessingTime(timer);
+            taskIOMetricGroup.getNumFiredTimers().inc();
         }
 
         if (timer != null && nextTimer == null) {
@@ -292,15 +307,38 @@ public class InternalTimerServiceImpl<K, N> implements InternalTimerService<N> {
     }
 
     public void advanceWatermark(long time) throws Exception {
+        Preconditions.checkState(
+                tryAdvanceWatermark(
+                        time,
+                        () -> {
+                            // Never stop advancing.
+                            return false;
+                        }));
+    }
+
+    /**
+     * @return true if following watermarks can be processed immediately. False if the firing timers
+     *     should be interrupted as soon as possible.
+     */
+    public boolean tryAdvanceWatermark(
+            long time, InternalTimeServiceManager.ShouldStopAdvancingFn shouldStopAdvancingFn)
+            throws Exception {
         currentWatermark = time;
-
         InternalTimer<K, N> timer;
-
-        while ((timer = eventTimeTimersQueue.peek()) != null && timer.getTimestamp() <= time) {
-            eventTimeTimersQueue.poll();
+        boolean interrupted = false;
+        while ((timer = eventTimeTimersQueue.peek()) != null
+                && timer.getTimestamp() <= time
+                && !cancellationContext.isCancelled()
+                && !interrupted) {
             keyContext.setCurrentKey(timer.getKey());
+            eventTimeTimersQueue.poll();
             triggerTarget.onEventTime(timer);
+            taskIOMetricGroup.getNumFiredTimers().inc();
+            // Check if we should stop advancing after at least one iteration to guarantee progress
+            // and prevent a potential starvation.
+            interrupted = shouldStopAdvancingFn.test();
         }
+        return !interrupted;
     }
 
     /**

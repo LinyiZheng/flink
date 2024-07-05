@@ -20,6 +20,8 @@ package org.apache.flink.api.common.operators.base;
 
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.TaskInfo;
+import org.apache.flink.api.common.TaskInfoImpl;
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.functions.ReduceFunction;
 import org.apache.flink.api.common.functions.RichReduceFunction;
 import org.apache.flink.api.common.functions.RuntimeContext;
@@ -29,11 +31,9 @@ import org.apache.flink.api.common.typeinfo.TypeHint;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.java.operators.ReduceOperator;
 import org.apache.flink.api.java.tuple.Tuple2;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.metrics.groups.UnregisteredMetricsGroup;
-import org.apache.flink.util.TestLogger;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.Serializable;
 import java.util.ArrayList;
@@ -44,19 +44,18 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static java.util.Arrays.asList;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 /** Tests for {@link ReduceOperator}. */
 @SuppressWarnings({"serial", "unchecked"})
-public class ReduceOperatorTest extends TestLogger implements Serializable {
+class ReduceOperatorTest implements Serializable {
 
     private static final TypeInformation<Tuple2<String, Integer>> STRING_INT_TUPLE =
             TypeInformation.of(new TypeHint<Tuple2<String, Integer>>() {});
 
     @Test
-    public void testReduceCollection() {
+    void testReduceCollection() {
         try {
             final ReduceFunction<Tuple2<String, Integer>> reducer =
                     (value1, value2) -> new Tuple2<>(value1.f0, value1.f1 + value2.f1);
@@ -92,8 +91,8 @@ public class ReduceOperatorTest extends TestLogger implements Serializable {
             Set<Tuple2<String, Integer>> expectedResult =
                     new HashSet<>(asList(new Tuple2<>("foo", 4), new Tuple2<>("bar", 6)));
 
-            assertEquals(expectedResult, resultSetMutableSafe);
-            assertEquals(expectedResult, resultSetRegular);
+            assertThat(resultSetMutableSafe).isEqualTo(expectedResult);
+            assertThat(resultSetRegular).isEqualTo(expectedResult);
         } catch (Exception e) {
             e.printStackTrace();
             fail(e.getMessage());
@@ -101,7 +100,7 @@ public class ReduceOperatorTest extends TestLogger implements Serializable {
     }
 
     @Test
-    public void testReduceCollectionWithRuntimeContext() {
+    void testReduceCollectionWithRuntimeContext() {
         try {
             final String taskName = "Test Task";
             final AtomicBoolean opened = new AtomicBoolean();
@@ -119,12 +118,12 @@ public class ReduceOperatorTest extends TestLogger implements Serializable {
                         }
 
                         @Override
-                        public void open(Configuration parameters) throws Exception {
+                        public void open(OpenContext openContext) throws Exception {
                             opened.set(true);
                             RuntimeContext ctx = getRuntimeContext();
-                            assertEquals(0, ctx.getIndexOfThisSubtask());
-                            assertEquals(1, ctx.getNumberOfParallelSubtasks());
-                            assertEquals(taskName, ctx.getTaskName());
+                            assertThat(ctx.getTaskInfo().getIndexOfThisSubtask()).isZero();
+                            assertThat(ctx.getTaskInfo().getNumberOfParallelSubtasks()).isOne();
+                            assertThat(ctx.getTaskInfo().getTaskName()).isEqualTo(taskName);
                         }
 
                         @Override
@@ -150,7 +149,7 @@ public class ReduceOperatorTest extends TestLogger implements Serializable {
                                     new Tuple2<>("bar", 2),
                                     new Tuple2<>("bar", 4)));
 
-            final TaskInfo taskInfo = new TaskInfo(taskName, 1, 0, 1, 0);
+            final TaskInfo taskInfo = new TaskInfoImpl(taskName, 1, 0, 1, 0);
 
             ExecutionConfig executionConfig = new ExecutionConfig();
 
@@ -186,11 +185,11 @@ public class ReduceOperatorTest extends TestLogger implements Serializable {
             Set<Tuple2<String, Integer>> expectedResult =
                     new HashSet<>(asList(new Tuple2<>("foo", 4), new Tuple2<>("bar", 6)));
 
-            assertEquals(expectedResult, resultSetMutableSafe);
-            assertEquals(expectedResult, resultSetRegular);
+            assertThat(resultSetMutableSafe).isEqualTo(expectedResult);
+            assertThat(resultSetRegular).isEqualTo(expectedResult);
 
-            assertTrue(opened.get());
-            assertTrue(closed.get());
+            assertThat(opened.get()).isTrue();
+            assertThat(closed.get()).isTrue();
         } catch (Exception e) {
             e.printStackTrace();
             fail(e.getMessage());
